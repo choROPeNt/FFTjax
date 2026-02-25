@@ -1,1 +1,60 @@
-site_name: My Docs
+site_name: FFTjax
+repo_url: https://github.com/choROPeNt/FFTjax
+repo_name: choROPeNt/FFTjax
+
+theme:
+  name: material
+  logo: assets/fftjax_logo.svg        # optional (remove if none)
+  # favicon: assets/favicon.ico  # optional
+
+  features:
+    - navigation.sections
+    - navigation.expand
+    - navigation.instant
+    - content.code.copy
+    - content.code.annotate
+    - header.autohide
+
+  palette:
+    # Light mode
+    - scheme: default
+      primary: deep purple
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+
+    # Dark mode
+    - scheme: slate
+      primary: deep purple
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+  icon:
+    repo: fontawesome/brands/github
+
+plugins:
+    - search  # default search plugin; needs manually re-enabling when using any other plugins
+    - autorefs  # Cross-links to headings
+    - mknotebooks  # Jupyter notebooks
+    - mkdocstrings:
+        handlers:
+            python:
+                options:
+                    inherited_members: true  # Allow looking up inherited methods
+                    show_root_heading: true  # actually display anything at all...
+                    show_root_full_path: true  # display "diffrax.asdf" not just "asdf"
+                    show_if_no_docstring: true
+                    show_signature_annotations: true
+                    separate_signature: true
+                    show_source: true  # don't include source code
+                    members_order: source  # order methods according to their order of definition in the source code, not alphabetical order
+                    heading_level: 4
+                    show_symbol_type_heading: true
+                    docstring_style: null
+
+nav:
+  - Home: index.md
+  - Getting Started: start.md
+  - Theorie: theorie.md
+  - Examples: examples.md
