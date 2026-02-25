@@ -2,6 +2,17 @@ site_name: FFTjax
 repo_url: https://github.com/choROPeNt/FFTjax
 repo_name: choROPeNt/FFTjax
 
+markdown_extensions:
+  - pymdownx.arithmatex:
+      generic: true
+
+extra_javascript:
+  # Arithmatex bridge for Material
+  - javascripts/mathjax.js
+  # MathJax v3
+  - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js
+
+
 theme:
   name: material
   logo: assets/fftjax_logo.svg        # optional (remove if none)
@@ -36,7 +47,7 @@ theme:
 plugins:
     - search  # default search plugin; needs manually re-enabling when using any other plugins
     - autorefs  # Cross-links to headings
-    - mknotebooks  # Jupyter notebooks
+    - mkdocs-jupyter
     - mkdocstrings:
         handlers:
             python:
