@@ -6,6 +6,8 @@
 data/
 data
 
+**/archiv/
+
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
