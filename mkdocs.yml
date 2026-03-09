@@ -13,6 +13,9 @@ extra_javascript:
   - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js
 
 
+extra_css:
+  - css/extra.css
+
 theme:
   name: material
   logo: assets/fftjax_logo.svg        # optional (remove if none)
