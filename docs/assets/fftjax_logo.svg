@@ -12,7 +12,7 @@
       }
     </style>
     <clipPath id="clippath">
-      <rect class="st0" width="512" height="512" rx="80" ry="80"/>
+      <rect class="st0" x="0" width="512" height="512" rx="100" ry="100"/>
     </clipPath>
   </defs>
   <g class="st1">
