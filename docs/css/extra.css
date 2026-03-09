@@ -1,0 +1,13 @@
+/* hide dark image by default */
+.dark-mode {
+  display: none;
+}
+
+/* when dark theme is active (Material for MkDocs) */
+[data-md-color-scheme="slate"] .light-mode {
+  display: none;
+}
+
+[data-md-color-scheme="slate"] .dark-mode {
+  display: inline;
+}
