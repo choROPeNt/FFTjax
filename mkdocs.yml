@@ -18,8 +18,8 @@ extra_css:
 
 theme:
   name: material
-  logo: assets/fftjax_logo.svg        # optional (remove if none)
-  # favicon: assets/favicon.ico  # optional
+  logo: assets/fftjax_logo.svg    
+
 
   features:
     - navigation.sections

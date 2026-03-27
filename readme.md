@@ -5,9 +5,6 @@
 </p>
 
 
-
-
-
 <div align="center">
 
 [![GitHub](https://img.shields.io/badge/GitHub-FFTjax-181717?logo=github&logoColor=white)](https://github.com/choROPeNt/FFTjax)&nbsp;
