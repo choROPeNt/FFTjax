@@ -37,7 +37,7 @@ def set_freq_jax(ndim: int, n: tuple[int, ...], L: tuple[float, ...]):
         raise ValueError("ndim must be 2 or 3")
 
 
-# ✅ mark ALL shape-relevant args as static IMPORTANT for JIT compilation and performance
+# mark ALL shape-relevant args as static IMPORTANT for JIT compilation and performance
 set_freq_jax_jit = jax.jit(set_freq_jax, static_argnames=("ndim", "n", "L"))
 
 
