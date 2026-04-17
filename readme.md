@@ -8,7 +8,7 @@
 <div align="center">
 
 [![GitHub](https://img.shields.io/badge/GitHub-FFTjax-181717?logo=github&logoColor=white)](https://github.com/choROPeNt/FFTjax)&nbsp;
-[![Docs](https://img.shields.io/badge/Docs-Documentation-4CAF50?logo=readthedocs&logoColor=white)](./docs)
+[![Docs](https://img.shields.io/badge/Docs-Documentation-4CAF50?logo=readthedocs&logoColor=white)](https://choROPeNt.github.io/FFTjax/)
 [![arXiv](https://img.shields.io/badge/arXiv-coming-B31B1B.svg)]()&nbsp;
 [![DOI](https://img.shields.io/badge/DOI-coming-0A7BBB.svg)]()&nbsp;
 
