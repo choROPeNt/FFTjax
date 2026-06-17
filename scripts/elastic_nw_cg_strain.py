@@ -16,6 +16,7 @@ Output
 """
 
 import os
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 os.environ["JAX_ENABLE_X64"] = "1"
 
 import sys
@@ -26,6 +27,7 @@ import jax.numpy as jnp
 from jax import jit
 from jax.scipy.sparse.linalg import cg as jax_cg
 from functools import partial
+import time
 import numpy as np
 
 from generation.rve              import make_square_composite_rve
@@ -171,6 +173,7 @@ with IncrementalWriter("output/rve_loadsteps", grid_shape=n, grid_spacing=dx) as
 
         # ── attempt the increment, cut back on failure ──────────────────────
         converged = False
+        t_step_start = time.perf_counter()
         for attempt in range(max_cutbacks + 1):
             eps_bar_i             = float(t + dt) * eps_goal
             eps_i, sigma_i, info  = solve_elastic(n, C_field, G_glob, eps_bar_i)
@@ -208,8 +211,10 @@ with IncrementalWriter("output/rve_loadsteps", grid_shape=n, grid_spacing=dx) as
             "von_mises":    von_mises(sigma_grid).astype(np.float64),
         }, time=float(t))
 
+        step_time = time.perf_counter() - t_step_start
         print(f"  step {step:2d}  t={t:.4f}  dt={dt:.4f}  "
-              f"sig12={float(sigma_bar[0, 1]):.3f} MPa  CG={info}")
+              f"sig12={float(sigma_bar[0, 1]):.3f} MPa  CG={info}  "
+              f"time={step_time:.2f}s")
 
         # ── suggest next dt based on convergence quality ────────────────────
         # converged cleanly → grow dt; will be clamped to max_dt next iteration
