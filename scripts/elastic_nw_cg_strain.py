@@ -24,9 +24,6 @@ sys.path.insert(0, "src")
 
 import jax
 import jax.numpy as jnp
-from jax import jit
-from jax.scipy.sparse.linalg import cg as jax_cg
-from functools import partial
 import time
 import numpy as np
 
@@ -37,38 +34,10 @@ from mat_models.elastic          import (LinearElasticIsotropic,
 from operators.green             import build_freq_grid, build_green_operator
 from post.fields                 import field_to_grid, von_mises, compute_displacement
 from post.io                     import IncrementalWriter, to_voigt
+from solvers.types               import SolveState, SolverSettings
+from solvers.elastic_nw_cg      import solve_elastic
 
 jax.config.update("jax_enable_x64", True)
-
-# ── Solver ────────────────────────────────────────────────────────────────────
-
-@partial(jit, static_argnames=("n_i", "maxiter"))
-def solve_elastic(n_i, C_field, G_glob, eps_bar,
-                  stress_goal=None, toler_lin=1e-4, maxiter=1000):
-    Nv = int(np.prod(n_i))
-
-    def fft_(x, _n=n_i):
-        s = x.shape
-        return jnp.fft.fftn(x.reshape(s[:-1] + _n), axes=(-3, -2, -1)).reshape(s)
-
-    def ifft_(x, _n=n_i):
-        s = x.shape
-        return jnp.fft.ifftn(x.reshape(s[:-1] + _n), axes=(-3, -2, -1)).real.reshape(s)
-
-    def A_op(v_flat, _C=C_field, _G=G_glob, _Nv=Nv, _f=fft_, _if=ifft_):
-        v = v_flat.reshape(3, 3, _Nv)
-        return _if(jnp.einsum("ijklm,klm->ijm", _G,
-                   _f(jnp.einsum("ijklm,klm->ijm", _C, v)))).reshape(-1)
-
-    sg     = jnp.zeros((3, 3, Nv)) if stress_goal is None else stress_goal
-    eps0   = jnp.ones((3, 3, Nv)) * eps_bar[:, :, None]
-    sigma0 = jnp.einsum("ijklm,klm->ijm", C_field, eps0)
-    bb     = -ifft_(jnp.einsum("ijklm,klm->ijm", G_glob, fft_(sigma0 - sg))).reshape(-1)
-
-    delta, info = jax_cg(A_op, bb, tol=toler_lin, maxiter=maxiter)
-    eps   = eps0 + delta.reshape(3, 3, Nv)
-    sigma = jnp.einsum("ijklm,klm->ijm", C_field, eps)
-    return eps, sigma, info
 
 
 # ── RVE setup ─────────────────────────────────────────────────────────────────
@@ -88,6 +57,7 @@ materials = [
         name="carbon fibre",
     ),
 ]
+
 
 phase_np, N, n, L, phi_ = make_square_composite_rve(phi, r_fib_um, vox_um, nz=nz)
 phase = jnp.array(phase_np.ravel())
@@ -130,7 +100,7 @@ print(f"Reference medium: lam0={lam0/1e3:.2f} GPa  mu0={mu0/1e3:.2f} GPa")
 for m in materials:
     print(" ", m)
 
-# ── Load-step parameters ──────────────────────────────────────────────────────
+# ── Settings ──────────────────────────────────────────────────────────────────
 
 eps_goal = jnp.array([
     [1.0e-3,  0.0, 0.0],
@@ -138,72 +108,135 @@ eps_goal = jnp.array([
     [0.0,  0.0,  0.0],
 ])  # pure shear  (ε̄₁₂ = ε̄₂₁ = 1×10⁻³ at t = 1)
 
-# ── Increment control  [initial_dt, t_max, min_dt, max_dt, max_steps] ─────────
-# Mirrors the ABAQUS *STATIC increment line:
-#   initial_dt  first time increment
-#   t_max       total load factor to reach  (1.0 = full eps_goal)
-#   min_dt      smallest allowed increment
-#   max_dt      largest allowed increment
-#   max_steps   hard cap on number of increments
-initial_dt = 0.1
-t_max      = 1.0
-min_dt     = 0.05
-max_dt     = 0.2
-max_steps  = 20
+settings = SolverSettings(
+    ndim=3,
+    n=n,
+    L=L,
+    toler_lin=1e-4,
+    toler_nw=1e-7,
+    maxiter_cg=1000,
+    maxiter_nw=6,
+    jobname="rve_loadsteps",
+    output="output",
+)
+settings.add_load_step(
+    control=jnp.zeros((3, 3)),           # 0 everywhere = pure strain control
+    strain_ave_goal=eps_goal,
+    stress_ave_goal=jnp.zeros((3, 3)),
+    timer=(0.1, 1.0, 0.05, 0.2),        # (dt_init, t_end, dt_min, dt_max)
+)
 
-# ── Load-stepping loop ────────────────────────────────────────────────────────
+dt_init, t_end, dt_min, dt_max = settings.timer[0]
 
-os.makedirs("output", exist_ok=True)
+# ── Initial state ─────────────────────────────────────────────────────────────
 
-# ── Variable time-stepper parameters ─────────────────────────────────────────
+zero33 = jnp.zeros((3, 3))
+zero_v = jnp.zeros((3, 3, Nv))
+
+state = SolveState(
+    strain_loc=zero_v,
+    stress_loc=zero_v,
+    tangent_glob=C_field,
+    strain_ave=zero33,
+    stress_ave=zero33,
+    strain_ave_inc_goal=zero33,
+    stress_ave_inc_goal=zero33,
+    Deltastrain_loc=zero_v,
+    Deltastress_loc=zero_v,
+    stress_loc_goal=zero_v,
+    deltastrain_loc=zero_v,
+    time=0.0,
+    dtime=dt_init,
+    kinc=0,
+    kstep=1,
+    iter_nw=0,
+    iter_cg=0,
+    info=0,
+    bb0n=1.0,
+    pnewdt=1.0,
+)
+
+# ── Adaptive time-stepper parameters ─────────────────────────────────────────
 factor_inc   = 1.5   # multiply dt by this after a converged step
 factor_dec   = 0.5   # multiply dt by this after a failed attempt
 max_cutbacks = 5     # max dt reductions per step before aborting
+max_steps    = 20
 
-# ── Load-stepping loop with adaptive dt ───────────────────────────────────────
-t    = 0.0
-dt   = initial_dt
-step = 0
+# ── Load-stepping loop ────────────────────────────────────────────────────────
 
-with IncrementalWriter("output/rve_loadsteps", grid_shape=n, grid_spacing=dx) as w:
-    while t < t_max and step < max_steps:
+os.makedirs(settings.output, exist_ok=True)
 
-        # clamp dt to allowed window and don't overshoot t_max
-        dt = float(np.clip(dt, min_dt, max_dt))
-        dt = min(dt, t_max - t)
+dt   = state.dtime
+t    = state.time
+step = state.kinc
+
+orient_grid = np.asarray(orientations).T.reshape(*n, 3).astype(np.float32)
+
+with IncrementalWriter(f"{settings.output}/{settings.jobname}", grid_shape=n, grid_spacing=dx) as w:
+
+    # ── write undeformed initial state at t = 0 ───────────────────────────────
+    zero_grid = np.zeros((*n, 6), dtype=np.float64)
+    zero_scal = np.zeros(n,       dtype=np.float64)
+    zero_u    = np.zeros((*n, 3), dtype=np.float64)
+    w.write_increment(0, {
+        "phase":        phase_np.astype(np.float32),
+        "orientation":  orient_grid,
+        "displacement": zero_u,
+        "strain":       zero_grid,
+        "stress":       zero_grid,
+        "von_mises":    zero_scal,
+    }, time=0.0)
+
+    while t < t_end and step < max_steps:
+
+        dt = float(np.clip(dt, dt_min, dt_max))
+        dt = min(dt, t_end - t)
 
         # ── attempt the increment, cut back on failure ──────────────────────
-        converged = False
+        converged    = False
         t_step_start = time.perf_counter()
         for attempt in range(max_cutbacks + 1):
-            eps_bar_i             = float(t + dt) * eps_goal
-            eps_i, sigma_i, info  = solve_elastic(n, C_field, G_glob, eps_bar_i)
-            converged             = (info is None or info == 0)
+            eps_bar_i                     = float(t + dt) * eps_goal
+            eps_i, sigma_i, delta_i, info = solve_elastic(
+                n, C_field, G_glob, eps_bar_i,
+                toler_lin=settings.toler_lin,
+                maxiter=settings.maxiter_cg,
+            )
+            converged = (info is None or info == 0)
 
             if converged:
                 break
 
-            dt = max(dt * factor_dec, min_dt)
+            dt = max(dt * factor_dec, dt_min)
             print(f"    cutback #{attempt + 1}  dt → {dt:.6f}  (CG info={info})")
 
         if not converged:
             raise RuntimeError(
                 f"Step {step + 1} did not converge after {max_cutbacks} cutbacks "
-                f"at t={t:.4f}, min_dt={min_dt}"
+                f"at t={t:.4f}, min_dt={dt_min}"
             )
 
         # ── accept the increment ────────────────────────────────────────────
         t    += dt
         step += 1
 
-        sigma_bar  = jnp.mean(sigma_i, axis=-1)
-        eps_grid   = field_to_grid(eps_i,   n)
-        sigma_grid = field_to_grid(sigma_i, n)
-        u_grid     = compute_displacement(eps_i, eps_bar_i, xi_flat, n, dx)
-        # Orientation vector reshaped to (*n, 3) for ParaView Vector attribute
-        orient_grid = np.asarray(orientations).T.reshape(*n, 3).astype(np.float32)
+        state = state._replace(
+            strain_loc=eps_i,
+            stress_loc=sigma_i,
+            deltastrain_loc=delta_i,
+            strain_ave=jnp.mean(eps_i,   axis=-1),
+            stress_ave=jnp.mean(sigma_i, axis=-1),
+            time=t,
+            dtime=dt,
+            kinc=step,
+            info=0 if converged else info,
+        )
 
-        w.write_increment(step - 1, {
+        eps_grid   = field_to_grid(state.strain_loc, n)
+        sigma_grid = field_to_grid(state.stress_loc, n)
+        u_grid     = compute_displacement(state.strain_loc, eps_bar_i, xi_flat, n, dx)
+
+        w.write_increment(step, {
             "phase":        phase_np.astype(np.float32),
             "orientation":  orient_grid,
             "displacement": u_grid.astype(np.float64),
@@ -214,13 +247,11 @@ with IncrementalWriter("output/rve_loadsteps", grid_shape=n, grid_spacing=dx) as
 
         step_time = time.perf_counter() - t_step_start
         print(f"  step {step:2d}  t={t:.4f}  dt={dt:.4f}  "
-              f"sig12={float(sigma_bar[0, 1]):.3f} MPa  CG={info}  "
+              f"sig12={float(state.stress_ave[0, 1]):.3f} MPa  CG={state.info}  "
               f"time={step_time:.2f}s")
 
-        # ── suggest next dt based on convergence quality ────────────────────
-        # converged cleanly → grow dt; will be clamped to max_dt next iteration
-        dt = min(dt * factor_inc, max_dt)
+        dt = min(dt * factor_inc, dt_max)
 
-print(f"\nWritten → output/rve_loadsteps.h5")
-print(f"          output/rve_loadsteps.xdmf")
+print(f"\nWritten → {settings.output}/{settings.jobname}.h5")
+print(f"          {settings.output}/{settings.jobname}.xdmf")
 print("Open the .xdmf in ParaView with the 'Xdmf3ReaderT' reader.")
