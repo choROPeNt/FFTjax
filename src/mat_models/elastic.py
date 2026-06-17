@@ -362,3 +362,140 @@ def assemble_C_field_oriented(
             C_field = jnp.where(mask5, C_iso_b, C_field)
 
     return C_field
+
+
+# ------------------------------------------------------------------
+# Strain energy helpers
+# ------------------------------------------------------------------
+
+def strain_energy_density(
+    eps_loc: jnp.ndarray,
+    C_field: jnp.ndarray,
+) -> jnp.ndarray:
+    """
+    Total elastic strain energy density per voxel.
+
+        ψ_e = ½ ε : C : ε
+
+    Parameters
+    ----------
+    eps_loc : (3, 3, Nv)
+    C_field : (3, 3, 3, 3, Nv)
+
+    Returns
+    -------
+    psi : (Nv,)
+    """
+    sigma = jnp.einsum("ijklm,klm->ijm", C_field, eps_loc)
+    return 0.5 * jnp.einsum("ijm,ijm->m", sigma, eps_loc)
+
+
+def lame_from_C_field(
+    C_field: jnp.ndarray,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """
+    Extract per-voxel Lamé constants from an isotropic stiffness field.
+
+        λ = C_1122,   μ = C_1212
+
+    Only valid for isotropic phases.
+
+    Parameters
+    ----------
+    C_field : (3, 3, 3, 3, Nv)
+
+    Returns
+    -------
+    lam_vox : (Nv,)
+    mu_vox  : (Nv,)
+    """
+    return C_field[0, 0, 1, 1, :], C_field[0, 1, 0, 1, :]
+
+
+def strain_energy_miehe_split(
+    eps_loc:  jnp.ndarray,
+    lam_vox:  jnp.ndarray,
+    mu_vox:   jnp.ndarray,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """
+    Per-voxel spectral energy split (Miehe et al. 2010).
+
+    Decomposes  ψ_e = ψ⁺ + ψ⁻  based on the sign of the principal strains:
+
+        ψ⁺ = λ/2 ⟨tr ε⟩₊²  +  μ Σᵢ ⟨εᵢ⟩₊²
+        ψ⁻ = λ/2 ⟨tr ε⟩₋²  +  μ Σᵢ ⟨εᵢ⟩₋²
+
+    ⟨x⟩₊ = max(x, 0),  ⟨x⟩₋ = min(x, 0).
+    Only ψ⁺ (tensile) drives crack growth.
+
+    Parameters
+    ----------
+    eps_loc : (3, 3, Nv)
+    lam_vox : (Nv,)   Lamé λ per voxel — use ``lame_from_C_field``
+    mu_vox  : (Nv,)   shear modulus μ per voxel
+
+    Returns
+    -------
+    psi_pos : (Nv,)
+    psi_neg : (Nv,)
+    """
+    def _one(args):
+        eps, lam, mu = args
+        eigvals, _ = jnp.linalg.eigh(eps)
+        pos = jnp.maximum(eigvals, 0.0)
+        neg = jnp.minimum(eigvals, 0.0)
+        psi_pos = 0.5 * lam * jnp.sum(pos) ** 2 + mu * jnp.sum(pos ** 2)
+        psi_neg = 0.5 * lam * jnp.sum(neg) ** 2 + mu * jnp.sum(neg ** 2)
+        return psi_pos, psi_neg
+
+    eps_vox = eps_loc.transpose(2, 0, 1)    # (Nv, 3, 3)
+    psi_pos, psi_neg = jax.vmap(_one)((eps_vox, lam_vox, mu_vox))
+    return psi_pos, psi_neg
+
+
+def strain_energy_amor_split(
+    eps_loc:  jnp.ndarray,
+    lam_vox:  jnp.ndarray,
+    mu_vox:   jnp.ndarray,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """
+    Per-voxel volumetric-deviatoric energy split (Amor et al. 2009).
+
+    Decomposes  ψ_e = ψ⁺ + ψ⁻  by separating volumetric tension from
+    compression; all deviatoric energy is assigned to the tensile part:
+
+        K   = λ + 2μ/3          (3-D bulk modulus)
+        ψ⁺  = K/2 ⟨tr ε⟩₊²  +  μ ε_dev : ε_dev
+        ψ⁻  = K/2 ⟨tr ε⟩₋²
+
+    where  ε_dev = ε − (tr ε / 3) I  is the deviatoric strain.
+    ψ⁺ + ψ⁻ = ψ_e exactly.
+
+    Parameters
+    ----------
+    eps_loc : (3, 3, Nv)
+    lam_vox : (Nv,)   Lamé λ per voxel — use ``lame_from_C_field``
+    mu_vox  : (Nv,)   shear modulus μ per voxel
+
+    Returns
+    -------
+    psi_pos : (Nv,)
+    psi_neg : (Nv,)
+    """
+    def _one(args):
+        eps, lam, mu = args
+        K      = lam + 2.0 * mu / 3.0
+        tr_eps = jnp.trace(eps)
+        eps_dev     = eps - (tr_eps / 3.0) * jnp.eye(3)
+        dev_norm_sq = jnp.sum(eps_dev ** 2)          # ε_dev : ε_dev
+        psi_pos = 0.5 * K * jnp.maximum(tr_eps, 0.0) ** 2 + mu * dev_norm_sq
+        psi_neg = 0.5 * K * jnp.minimum(tr_eps, 0.0) ** 2
+        return psi_pos, psi_neg
+
+    eps_vox = eps_loc.transpose(2, 0, 1)    # (Nv, 3, 3)
+    psi_pos, psi_neg = jax.vmap(_one)((eps_vox, lam_vox, mu_vox))
+    return psi_pos, psi_neg
+
+
+# backward-compatible alias
+strain_energy_spectral_split = strain_energy_miehe_split
