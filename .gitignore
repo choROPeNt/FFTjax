@@ -1,10 +1,14 @@
 
 # user folders and symbolic links
 
-.venv/
+
 .venv
-data/
 data
+data
+out
+output
+
+
 
 **/archiv/
 
