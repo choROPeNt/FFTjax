@@ -76,7 +76,7 @@ def solve_elastic(n_i, C_field, G_glob, eps_bar,
 phi      = 0.6
 r_fib_um = 3.5
 vox_um   = 0.1
-nz       = 10
+nz       = 1
 
 materials = [
     LinearElasticIsotropic(E=3.5e3, nu=0.35, name="epoxy matrix"),
