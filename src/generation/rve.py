@@ -1,33 +1,39 @@
 import numpy as np
 
 
-def make_square_composite_rve(phi, r_fiber_um, spacing_um, N_min=32):
+def make_square_composite_rve(phi, r_fiber_um, spacing_um, N_min=32, nz=1):
     """
     Build the 2-fibre square-cell RVE for given volume fraction and resolution.
+
+    The in-plane (XY) microstructure is a square-packed fibre arrangement; it is
+    extruded uniformly along Z to give a prismatic 3-D domain.
 
     Parameters
     ----------
     phi         : float  target fibre volume fraction  (0 < phi < pi/4 ≈ 0.785)
     r_fiber_um  : float  fibre radius  [µm]
-    spacing_um  : float  physical voxel size  [µm/px]
-    N_min       : int    minimum grid size per side (default 32)
+    spacing_um  : float  physical voxel size  [µm/px]  (same in all directions)
+    N_min       : int    minimum grid size per in-plane side (default 32)
+    nz          : int    number of voxels through the thickness (default 1)
 
     Returns
     -------
-    phase_np  : ndarray (N, N, 1), int   0 = matrix, 1 = fibre
-    N         : int                      voxels per side
-    n         : tuple                    (N, N, 1)
-    L         : tuple                    (L_side, L_side, 1.0) [µm]
-    phi_act   : float                    actual volume fraction on the mesh
+    phase_np  : ndarray (N, N, nz), int   0 = matrix, 1 = fibre
+    N         : int                       voxels per in-plane side
+    n         : tuple                     (N, N, nz)
+    L         : tuple                     (L_side, L_side, nz * spacing_um) [µm]
+    phi_act   : float                     actual volume fraction on the mesh
     """
+    if nz < 1:
+        raise ValueError(f'nz must be >= 1, got {nz}')
     phi_max = np.pi / 4                                # square-packing limit ≈ 0.785
     if phi >= phi_max:
         raise ValueError(f'phi={phi:.4f} exceeds square-packing max {phi_max:.4f}')
 
-    L_side = r_fiber_um * np.sqrt(2 * np.pi / phi)    # cell side [µm]
+    L_side = r_fiber_um * np.sqrt(2 * np.pi / phi)    # in-plane cell side [µm]
     N      = max(N_min, int(np.ceil(L_side / spacing_um)))
-    n      = (N, N, 1)
-    L      = (L_side, L_side, 1.0)
+    n      = (N, N, nz)
+    L      = (L_side, L_side, nz * spacing_um)
 
     xs = (np.arange(N) + 0.5) / N * L_side
     X, Y = np.meshgrid(xs, xs, indexing='ij')          # (N, N)
@@ -37,8 +43,8 @@ def make_square_composite_rve(phi, r_fiber_um, spacing_um, N_min=32):
         dy = Y - cy;  dy -= L_side * np.round(dy / L_side)
         return dx**2 + dy**2 < r_fiber_um**2
 
-    phase_np = (_circle(0.5*L_side, 0.5*L_side) | _circle(0.0, 0.0)).astype(int)
-    phase_np = phase_np[:, :, np.newaxis]               # (N, N, 1)
+    phase_2d = (_circle(0.5*L_side, 0.5*L_side) | _circle(0.0, 0.0)).astype(int)
+    phase_np = np.repeat(phase_2d[:, :, np.newaxis], nz, axis=2)  # (N, N, nz)
     phi_act  = float(phase_np.mean())
 
     return phase_np, N, n, L, phi_act
