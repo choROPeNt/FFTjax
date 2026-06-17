@@ -10,6 +10,21 @@ import jax.numpy as jnp
 
 
 # ---------------------------------------
+# Tensor contractions
+# ---------------------------------------
+
+@jax.jit
+def ddot42(A: jnp.ndarray, B: jnp.ndarray) -> jnp.ndarray:
+    """
+    Double contraction  C_ijm = A_ijklm B_klm.
+
+    Shapes: (3,3,3,3,Nv) × (3,3,Nv) → (3,3,Nv)
+    Used for  σ = C : ε  and  Γ : σ  in the FFT solver.
+    """
+    return jnp.einsum('ijklm,klm->ijm', A, B)
+
+
+# ---------------------------------------
 # 3D Identity Tensors
 # ---------------------------------------
 

@@ -84,7 +84,7 @@ class IncrementalWriter:
         self._h5_basename = os.path.basename(self.h5_path)
 
         self._h5 = h5py.File(self.h5_path, "w")
-        self._increments: list[tuple[int, list[str]]] = []  # (inc_id, [field_names])
+        self._increments: list[tuple[int, list[str], float]] = []  # (inc_id, [field_names], time)
 
     # ------------------------------------------------------------------
     # Public API
@@ -94,6 +94,7 @@ class IncrementalWriter:
         self,
         increment: int,
         fields: dict[str, np.ndarray],
+        time: float | None = None,
     ) -> None:
         """
         Write one increment to HDF5.
@@ -101,12 +102,15 @@ class IncrementalWriter:
         Parameters
         ----------
         increment : int
-            Increment / time step index (used as HDF5 group name and XDMF time value).
+            Increment index — used as the HDF5 group name.
         fields : dict[str, np.ndarray]
             Mapping of field name → numpy array.
             Each array must match grid_shape for scalar fields,
             or (*grid_shape, components) for vector / tensor fields.
             JAX arrays are converted automatically via np.asarray().
+        time : float | None
+            Physical time value written to the XDMF ``<Time Value="..."/>``.
+            Defaults to the increment index when not provided.
         """
         grp = self._h5.require_group(f"increment_{increment:06d}")
         written: list[str] = []
@@ -114,11 +118,17 @@ class IncrementalWriter:
         for name, arr in fields.items():
             arr = np.asarray(arr)  # detach from JAX / device
             _check_field_shape(arr, self.grid_shape, name)
+            # XDMF CoRectMesh convention: Dimensions="nz ny nx" (last dim = X = fastest).
+            # Transpose spatial axes to ZYX order so the HDF5 layout matches.
+            spatial = tuple(range(self.ndim - 1, -1, -1))   # (2,1,0) for 3-D
+            trailing = tuple(range(self.ndim, arr.ndim))
+            arr = arr.transpose(spatial + trailing)
             grp.create_dataset(name, data=arr, compression="gzip", compression_opts=4)
             written.append(name)
 
         self._h5.flush()
-        self._increments.append((increment, written))
+        time_val = float(increment) if time is None else float(time)
+        self._increments.append((increment, written, time_val))
         self._write_xdmf()  # rewrite XDMF so it is always valid on disk
 
     def close(self) -> None:
@@ -143,10 +153,10 @@ class IncrementalWriter:
         lines.append("  <Domain>")
         lines.append('    <Grid Name="TimeSeries" GridType="Collection" CollectionType="Temporal">')
 
-        for inc_id, field_names in self._increments:
+        for inc_id, field_names, time_val in self._increments:
             grp_path = f"increment_{inc_id:06d}"
             lines.append(f'      <Grid Name="{grp_path}" GridType="Uniform">')
-            lines.append(f'        <Time Value="{inc_id}" />')
+            lines.append(f'        <Time Value="{time_val}" />')
             lines.append(f"        {self._topology_tag()}")
             lines.append(f"        {self._geometry_tag()}")
 
@@ -154,11 +164,15 @@ class IncrementalWriter:
                 ds = self._h5[grp_path][fname]
                 arr_shape = ds.shape
                 number_type, precision = _xdmf_dtype(ds)
-                attr_type, n_components, dims_str = _attribute_meta(arr_shape, self.grid_shape)
+                # grid_shape is (nx,ny,nz); stored data is transposed to (nz,ny,nx,...),
+                # so pass the reversed shape so dims_str matches the HDF5 layout.
+                attr_type, n_components, dims_str = _attribute_meta(
+                    arr_shape, tuple(reversed(self.grid_shape))
+                )
                 h5_ref = f"{self._h5_basename}:/{grp_path}/{fname}"
 
                 lines.append(
-                    f'        <Attribute Name="{fname}" AttributeType="{attr_type}" Center="Cell">'
+                    f'        <Attribute Name="{fname}" AttributeType="{attr_type}" Center="Node">'
                 )
                 lines.append(
                     f'          <DataItem Dimensions="{dims_str}" '
@@ -178,31 +192,42 @@ class IncrementalWriter:
             f.write("\n".join(lines) + "\n")
 
     def _topology_tag(self) -> str:
+        # XDMF CoRectMesh: Dimensions are listed slowest→fastest (ZYX for 3-D).
+        # Last dim = X (fastest in C-order) so ParaView maps it to the X axis.
+        # Nodes are placed at voxel centers (origin shifted by dx/2 in _geometry_tag).
         if self.ndim == 2:
             nx, ny = self.grid_shape
-            return f'<Topology TopologyType="2DCoRectMesh" Dimensions="{nx+1} {ny+1}" />'
+            return f'<Topology TopologyType="2DCoRectMesh" Dimensions="{ny} {nx}" />'
         else:
             nx, ny, nz = self.grid_shape
-            return f'<Topology TopologyType="3DCoRectMesh" Dimensions="{nx+1} {ny+1} {nz+1}" />'
+            return f'<Topology TopologyType="3DCoRectMesh" Dimensions="{nz} {ny} {nx}" />'
 
     def _geometry_tag(self) -> str:
+        # Geometry values must be in the same ZYX order as the topology Dimensions
+        # (slowest axis first, fastest last) so ParaView assigns the correct spacing
+        # to each axis.  Nodes are shifted by half a voxel to land at voxel centres.
         if self.ndim == 2:
             ox, oy = self.origin
             dx, dy = self.grid_spacing
-            nx, ny = self.grid_shape
+            # topology order: ny (Y, slow) → nx (X, fast)
             return (
                 f'<Geometry GeometryType="ORIGIN_DXDY">'
-                f'<DataItem Dimensions="2" NumberType="Float" Precision="8" Format="XML">{ox} {oy}</DataItem>'
-                f'<DataItem Dimensions="2" NumberType="Float" Precision="8" Format="XML">{dx} {dy}</DataItem>'
+                f'<DataItem Dimensions="2" NumberType="Float" Precision="8" Format="XML">'
+                f'{oy + dy/2} {ox + dx/2}</DataItem>'
+                f'<DataItem Dimensions="2" NumberType="Float" Precision="8" Format="XML">'
+                f'{dy} {dx}</DataItem>'
                 f"</Geometry>"
             )
         else:
             ox, oy, oz = self.origin
             dx, dy, dz = self.grid_spacing
+            # topology order: nz (Z, slow) → ny (Y) → nx (X, fast)
             return (
                 f'<Geometry GeometryType="ORIGIN_DXDYDZ">'
-                f'<DataItem Dimensions="3" NumberType="Float" Precision="8" Format="XML">{ox} {oy} {oz}</DataItem>'
-                f'<DataItem Dimensions="3" NumberType="Float" Precision="8" Format="XML">{dx} {dy} {dz}</DataItem>'
+                f'<DataItem Dimensions="3" NumberType="Float" Precision="8" Format="XML">'
+                f'{oz + dz/2} {oy + dy/2} {ox + dx/2}</DataItem>'
+                f'<DataItem Dimensions="3" NumberType="Float" Precision="8" Format="XML">'
+                f'{dz} {dy} {dx}</DataItem>'
                 f"</Geometry>"
             )
 
