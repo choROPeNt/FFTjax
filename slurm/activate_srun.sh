@@ -27,7 +27,7 @@ srun \
     cd '$PROJECT_DIR'
 
     ml release/24.10 GCC/13.3.0 Python/3.12.3 CUDA/12.8.0
-    # source '$VENV_PATH/bin/activate'
+    source '$VENV_PATH/bin/activate'
 
     echo '--- Capella interactive session ready ---'
     echo Host: \$(hostname)

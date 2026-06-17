@@ -44,7 +44,7 @@ jax.config.update("jax_enable_x64", True)
 
 @partial(jit, static_argnames=("n_i", "maxiter"))
 def solve_elastic(n_i, C_field, G_glob, eps_bar,
-                  stress_goal=None, toler_lin=1e-10, maxiter=1000):
+                  stress_goal=None, toler_lin=1e-4, maxiter=1000):
     Nv = int(np.prod(n_i))
 
     def fft_(x, _n=n_i):
@@ -75,8 +75,8 @@ def solve_elastic(n_i, C_field, G_glob, eps_bar,
 
 phi      = 0.6
 r_fib_um = 3.5
-vox_um   = 0.1
-nz       = 10
+vox_um   = 0.01
+nz       = 1
 
 materials = [
     LinearElasticIsotropic(E=3.5e3, nu=0.35, name="epoxy matrix"),
@@ -124,6 +124,7 @@ xi_flat = build_freq_grid(n, L)
 G_glob  = build_green_operator(xi_flat, lam0, mu0)
 dx      = tuple(float(Li / ni) for Li, ni in zip(L, n))
 
+print(f"Using jax-device: {jax.devices()[0].device_kind}")
 print(f"RVE: N={N}  nz={nz}  phi={phi_:.3f}")
 print(f"Reference medium: lam0={lam0/1e3:.2f} GPa  mu0={mu0/1e3:.2f} GPa")
 for m in materials:
@@ -132,9 +133,9 @@ for m in materials:
 # ── Load-step parameters ──────────────────────────────────────────────────────
 
 eps_goal = jnp.array([
-    [0.0,  0.0, 0.0],
+    [1.0e-3,  0.0, 0.0],
     [0.0, 0.0,  0.0],
-    [0.0,  0.0,  1.0e-3],
+    [0.0,  0.0,  0.0],
 ])  # pure shear  (ε̄₁₂ = ε̄₂₁ = 1×10⁻³ at t = 1)
 
 # ── Increment control  [initial_dt, t_max, min_dt, max_dt, max_steps] ─────────
