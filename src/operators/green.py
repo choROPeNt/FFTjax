@@ -36,41 +36,104 @@ def build_freq_grid(
 
 
 # ---------------------------------------------------------------------------
-# DBFFT Green's operator  Γ̂₀(ξ)  for isotropic reference medium
+# ---------------------------------------------------------------------------
+# Willot rotated-scheme effective frequencies
+# ---------------------------------------------------------------------------
+
+def build_willot_freq(
+    xi_flat: jnp.ndarray,
+    dx:      tuple[float, ...],
+) -> jnp.ndarray:
+    """
+    Willot (2015) rotated-scheme effective frequencies for an isotropic
+    reference medium.
+
+    Replaces the continuous DFT frequencies ξ_j with the discrete
+    finite-difference equivalent:
+
+        ξ_j^eff = (2 / h_j) sin(ξ_j h_j / 2)
+
+    For an isotropic reference medium the complex phase factor of the
+    full Willot frequency exp(i Σ_k ξ_k h_k / 2) cancels in the Green's
+    operator, leaving these real-valued effective frequencies.
+
+    Key properties
+    --------------
+    - At low wavenumbers:  ξ_j^eff ≈ ξ_j  (matches continuous limit)
+    - At Nyquist:          ξ_j^eff = 2/h_j  (finite, no Gibbs overshoot)
+    - Isotropic on the grid: eliminates the 45° crack-propagation bias
+      present in the standard Moulinec–Suquet discretisation
+
+    Parameters
+    ----------
+    xi_flat : (ndim, Nv)  continuous angular frequencies from ``build_freq_grid``
+    dx      : (ndim,)     voxel spacing per dimension  h_j = L_j / n_j
+
+    Returns
+    -------
+    xi_eff : (ndim, Nv)  real-valued effective frequencies
+    """
+    dx_arr = jnp.array(dx)                             # (ndim,)
+    return (2.0 / dx_arr[:, None]) * jnp.sin(xi_flat * dx_arr[:, None] / 2.0)
+
+
+# ---------------------------------------------------------------------------
+# DBFFT Green's operator  Γ̂₀  for isotropic reference medium
 # ---------------------------------------------------------------------------
 
 def build_green_operator(
     xi_flat: jnp.ndarray,
-    lam0: float,
-    mu0: float,
+    lam0:    float,
+    mu0:     float,
+    scheme:  str = 'standard',
+    dx:      tuple[float, ...] | None = None,
 ) -> jnp.ndarray:
     """
-    4th-order Green's operator Γ̂₀_ijkl(ξ) for an isotropic reference medium.
+    4th-order Green's operator Γ̂₀_ijkl for an isotropic reference medium.
 
-    Uses the DBFFT / FFTMAD convention (Lucarini & Segurado 2018):
+    DBFFT / FFTMAD convention:
 
-        K_eff_ik  = (δ_ik − c n̂_i n̂_k) / μ₀     (no 1/|ξ|² factor)
+        K_eff_ik  = (δ_ik − c n̂_i n̂_k) / μ₀
         Γ̂₀_ijkl  = ¼ (K_eff_ik n̂_j n̂_l + 3 sym. terms)
+        c = (λ₀ + μ₀) / (λ₀ + 2μ₀)
 
-    where  c = (λ₀ + μ₀) / (λ₀ + 2μ₀).
+    Schemes
+    -------
+    'standard'
+        Uses the continuous DFT frequencies ξ_j from ``build_freq_grid``.
+        Equivalent to the Moulinec–Suquet discretisation.  Prone to Gibbs
+        oscillations and a 45° anisotropy bias at high stiffness contrasts.
 
-    This choice makes the Lippmann–Schwinger operator A(v) ≈ v for compatible
-    modes, giving a contrast-ratio condition number rather than N²-scaling.
+    'rotated'
+        Uses the Willot (2015) effective frequencies ξ_j^eff = (2/h_j)sin(ξ_j h_j/2).
+        Equivalent to linear hexahedral elements with reduced integration
+        (Schneider et al. 2016).  Eliminates the diagonal crack-propagation
+        bias and improves CG convergence at high stiffness contrasts.
+        Requires ``dx`` to be provided.
 
     Parameters
     ----------
-    xi_flat : (3, Nv)   angular-frequency grid from ``build_freq_grid``
-    lam0    : float     reference Lamé λ₀
-    mu0     : float     reference shear modulus μ₀
+    xi_flat : (3, Nv)              angular-frequency grid from ``build_freq_grid``
+    lam0    : float                reference Lamé λ₀
+    mu0     : float                reference shear modulus μ₀
+    scheme  : 'standard'|'rotated' discretisation scheme (default 'standard')
+    dx      : (3,) tuple or None   voxel spacing — required for scheme='rotated'
 
     Returns
     -------
     G : (3, 3, 3, 3, Nv)  Green's operator; zero at ξ = 0.
     """
-    xi_sq = jnp.sum(xi_flat ** 2, axis=0)           # (Nv,)
+    if scheme == 'rotated':
+        if dx is None:
+            raise ValueError("dx must be provided for scheme='rotated'")
+        xi = build_willot_freq(xi_flat, dx)
+    else:
+        xi = xi_flat
+
+    xi_sq = jnp.sum(xi ** 2, axis=0)                  # (Nv,)
     safe  = xi_sq > 0
     xi_s  = jnp.where(safe, xi_sq, 1.0)
-    n_hat = xi_flat / jnp.sqrt(xi_s)[None, :]       # (3, Nv)
+    n_hat = xi / jnp.sqrt(xi_s)[None, :]              # (3, Nv)
 
     c    = (lam0 + mu0) / (lam0 + 2.0 * mu0)
     d    = jnp.eye(3)
@@ -83,7 +146,7 @@ def build_green_operator(
         jnp.einsum('ilN,jkN->ijklN', Kinv, nn) +
         jnp.einsum('jkN,ilN->ijklN', Kinv, nn) +
         jnp.einsum('jlN,ikN->ijklN', Kinv, nn)
-    )                                                 # (3,3,3,3,Nv)
+    )                                                  # (3,3,3,3,Nv)
     return jnp.where(safe[None, None, None, None, :], Gamma, 0.0)
 
 
