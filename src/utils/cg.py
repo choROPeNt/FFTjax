@@ -5,11 +5,6 @@ import jax
 import jax.numpy as jnp
 
 
-def _safe_denom(x: jnp.ndarray) -> jnp.ndarray:
-    """Replace zeros with 1 so downstream division is safe."""
-    return jnp.where(x != 0.0, x, jnp.ones_like(x))   # type: ignore[return-value]
-
-
 def cg_count(
     A,
     b:       jnp.ndarray,
@@ -56,12 +51,12 @@ def cg_count(
         x, r, p, rz, k = state
         Ap    = A(p)
         pAp   = jnp.dot(p, Ap)
-        alpha  = rz / _safe_denom(pAp)
-        x_new  = x + alpha * p
-        r_new  = r - alpha * Ap
-        z_new  = M_op(r_new)
+        alpha = rz / jnp.where(pAp != 0.0, pAp, 1.0)
+        x_new = x + alpha * p
+        r_new = r - alpha * Ap
+        z_new = M_op(r_new)
         rz_new = jnp.dot(r_new, z_new)
-        beta   = rz_new / _safe_denom(rz)
+        beta   = rz_new / jnp.where(rz != 0.0, rz, 1.0)
         p_new  = z_new + beta * p
         return x_new, r_new, p_new, rz_new, k + 1
 

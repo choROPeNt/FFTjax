@@ -47,10 +47,7 @@ def update_history(
     psi_pos: jnp.ndarray,
 ) -> jnp.ndarray:
     """
-    Damage-like irreversibility (Miehe et al. 2010): H = max(H_prev, ψ⁺).
-
-    History accumulates at every material point regardless of damage state.
-    Simple but overestimates the crack surface (wide diffuse band).
+    Enforce crack irreversibility: H = max(H_prev, ψ⁺).
 
     Parameters
     ----------
@@ -62,39 +59,6 @@ def update_history(
     H : (Nv,)
     """
     return jnp.maximum(H_prev, psi_pos)
-
-
-def update_history_hybrid(
-    H_prev:   jnp.ndarray,
-    psi_pos:  jnp.ndarray,
-    d:        jnp.ndarray,
-    dthres:   float = 0.95,
-) -> jnp.ndarray:
-    """
-    Hybrid irreversibility formulation (Steinke & Kaliske [52], as used in
-    Schneider & Kästner 2025, Section 2.4 and 4.2.2).
-
-    History accumulates only at material points where d ≥ dthres (committed
-    crack).  Points below the threshold use the current ψ⁺ directly, allowing
-    the driving force to decrease on unloading.  This gives a sharper crack
-    profile than the pure damage-like formulation.
-
-        H(X) = max(H_prev, ψ⁺)   if d(X) ≥ dthres   [crack committed]
-        H(X) = ψ⁺(X)              if d(X) < dthres   [reversible]
-
-    Parameters
-    ----------
-    H_prev  : (Nv,)   history variable from the previous increment
-    psi_pos : (Nv,)   current tensile strain energy density ψ⁺
-    d       : (Nv,)   current damage field
-    dthres  : float   damage threshold — default 0.95 (Schneider & Kästner 2025)
-
-    Returns
-    -------
-    H : (Nv,)
-    """
-    H_committed = jnp.maximum(H_prev, psi_pos)   # history active
-    return jnp.where(d >= dthres, H_committed, psi_pos)
 
 
 # ── Helmholtz preconditioned CG ───────────────────────────────────────────────
