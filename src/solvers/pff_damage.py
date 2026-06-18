@@ -23,7 +23,7 @@ from mat_models.elastic import (  # noqa: F401
 
 def degradation(d: jnp.ndarray, k: float = 1e-6) -> jnp.ndarray:
     """
-    Quadratic degradation function  g(d) = (1 − d)² + k.
+    Quadratic degradation function  g(d) = (1 - k) * (1 − d)² + k.
 
     k is the numerical residual stiffness k_res.  The default 1e-6 matches
     the void-phase stiffness reduction used in Schneider & Kästner (2024).
@@ -37,7 +37,7 @@ def degradation(d: jnp.ndarray, k: float = 1e-6) -> jnp.ndarray:
     -------
     g : (Nv,)
     """
-    return (1.0 - d) ** 2 + k
+    return (1 - k)*(1.0 - d) ** 2 + k
 
 
 # ── History variable ──────────────────────────────────────────────────────────

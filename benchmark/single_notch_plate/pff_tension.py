@@ -5,11 +5,11 @@ Extends benchmark_elastic_tension.py with a staggered mechanics–damage loop.
 
 Reference
 ---------
-    Schneider & Kästner (2024)  https://doi.org/10.1111/ffe.14553
+    Schneider & Kästner (2025)  https://doi.org/10.1111/ffe.14553
 
 Domain      : 250 × 250 × 1 voxels,  L = [50, 50, 0.2] mm
 Material    : steel  E = 210 GPa,  ν = 0.3
-PFF params  : l₀ = 1.0 mm,  Gc = 1.35 MPa·mm  (= 2.7/2 N/mm)
+PFF params  : l₀ = 1.0 mm,  Gc = 2.7 MPa·mm  
 Pre-crack   : voxels x ∈ [20, 60),  y = 125 (centre)
 Load        : uniaxial strain ramp  ε₂₂ → 1.2 × 10⁻³,  10 equal increments
 
@@ -39,13 +39,17 @@ os.environ["JAX_ENABLE_X64"] = "1"
 import sys
 sys.path.insert(0, "src")
 
+import csv
 import jax
 import jax.numpy as jnp
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import numpy as np
 import time
 
 from mat_models.elastic    import (LinearElasticIsotropic, assemble_C_field,
-                                   strain_energy_miehe_split, lame_from_C_field)
+                                   strain_energy_miehe_split,strain_energy_amor_split, lame_from_C_field)
 from operators.green       import build_freq_grid, build_green_operator
 from post.fields           import field_to_grid, von_mises, compute_displacement
 from post.io               import IncrementalWriter, to_voigt
@@ -132,7 +136,7 @@ settings.add_load_step(
 
 dt_init, t_end, dt_min, dt_max = settings.timer[0]
 
-# Staggered scheme parameters — Schneider & Kästner (2024)
+# Staggered scheme parameters — Schneider & Kästner (2025)
 # Convergence when EITHER absolute OR relative criterion is met:
 #   |d_new − d_old|_∞  < toler_st_abs     (εa = 1e-2)
 #   |d_new − d_old|_∞ / (|d_new|_∞ + ε)  < toler_st_rel  (εr = 1e-3)
@@ -201,6 +205,8 @@ zero_grid  = np.zeros((*n, 6), dtype=np.float64)
 zero_scal  = np.zeros(n,       dtype=np.float64)
 zero_u     = np.zeros((*n, 3), dtype=np.float64)
 
+history: list[dict] = []
+
 with IncrementalWriter(
     f"{settings.output}/{settings.jobname}", grid_shape=n, grid_spacing=dx
 ) as w:
@@ -247,7 +253,7 @@ with IncrementalWriter(
                 )
 
                 # 3. crack driving force from undegraded Miehe split
-                psi_pos, _ = strain_energy_miehe_split(eps_i, lam_vox, mu_vox)
+                psi_pos, _ = strain_energy_amor_split(eps_i, lam_vox, mu_vox)
 
                 # 4. update history variable (irreversibility)
                 H_st = update_history(H_st, psi_pos)
@@ -327,8 +333,66 @@ with IncrementalWriter(
             f"mech={int(iter_mech)}  helm={int(iter_helm)}  time={step_time:.1f}s"
         )
 
+        sa = state.strain_ave
+        ss = state.stress_ave
+        history.append({
+            "step":       step,
+            "time":       float(t),
+            "dt":         float(dt),
+            "eps_11":     float(sa[0, 0]),
+            "eps_22":     float(sa[1, 1]),
+            "eps_33":     float(sa[2, 2]),
+            "eps_12":     float(sa[0, 1]),
+            "eps_13":     float(sa[0, 2]),
+            "eps_23":     float(sa[1, 2]),
+            "sig_11":     float(ss[0, 0]),
+            "sig_22":     float(ss[1, 1]),
+            "sig_33":     float(ss[2, 2]),
+            "sig_12":     float(ss[0, 1]),
+            "sig_13":     float(ss[0, 2]),
+            "sig_23":     float(ss[1, 2]),
+            "max_d":      float(jnp.max(d_field)),
+            "iter_st":    iter_st,
+            "err_abs":    err_abs,
+            "err_rel":    err_rel,
+            "iter_mech":  int(iter_mech),
+            "iter_helm":  int(iter_helm),
+            "wall_time_s": step_time,
+        })
+
         dt = min(dt * factor_inc, dt_max)
 
 print(f"\nWritten → {settings.output}/{settings.jobname}.h5")
 print(f"          {settings.output}/{settings.jobname}.xdmf")
 print("Open the .xdmf in ParaView with the 'Xdmf3ReaderT' reader.")
+
+# ── CSV history ────────────────────────────────────────────────────────────────
+
+csv_path = f"{settings.output}/{settings.jobname}_history.csv"
+with open(csv_path, "w", newline="") as fh:
+    writer = csv.DictWriter(fh, fieldnames=history[0].keys())
+    writer.writeheader()
+    writer.writerows(history)
+print(f"Written → {csv_path}")
+
+# ── Reference comparison plot ──────────────────────────────────────────────────
+
+ref_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ref_tension.csv")
+ref = np.loadtxt(ref_path, delimiter=",", skiprows=1)
+
+fig, ax = plt.subplots(figsize=(6, 4))
+ax.plot(ref[:, 0], ref[:, 1], "k--", linewidth=1.2, label="Schneider & Kästner (2025)")
+ax.plot(
+    [r["eps_22"] for r in history],
+    [r["sig_22"] for r in history],
+    "b-o", markersize=3, linewidth=1.2, label="FFTjax",
+)
+ax.set_xlabel(r"$\bar{\varepsilon}_{22}$")
+ax.set_ylabel(r"$\bar{\sigma}_{22}$ [MPa]")
+ax.set_title("Mode-I tension — single edge notch plate")
+ax.legend()
+ax.grid(True, linewidth=0.5, alpha=0.6)
+fig.tight_layout()
+plot_path = f"{settings.output}/{settings.jobname}_comparison.png"
+fig.savefig(plot_path, dpi=150)
+print(f"Written → {plot_path}")
