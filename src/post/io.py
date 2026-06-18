@@ -172,7 +172,7 @@ class IncrementalWriter:
                 h5_ref = f"{self._h5_basename}:/{grp_path}/{fname}"
 
                 lines.append(
-                    f'        <Attribute Name="{fname}" AttributeType="{attr_type}" Center="Node">'
+                    f'        <Attribute Name="{fname}" AttributeType="{attr_type}" Center="Cell">'
                 )
                 lines.append(
                     f'          <DataItem Dimensions="{dims_str}" '
@@ -192,28 +192,26 @@ class IncrementalWriter:
             f.write("\n".join(lines) + "\n")
 
     def _topology_tag(self) -> str:
-        # XDMF CoRectMesh: Dimensions are listed slowest→fastest (ZYX for 3-D).
-        # Last dim = X (fastest in C-order) so ParaView maps it to the X axis.
-        # Nodes are placed at voxel centers (origin shifted by dx/2 in _geometry_tag).
+        # XDMF CoRectMesh Dimensions = number of *nodes* (corners), listed ZYX.
+        # We use n+1 nodes per direction so we get exactly n cells, and declare
+        # data with Center="Cell" — each cell corresponds to one voxel.
         if self.ndim == 2:
             nx, ny = self.grid_shape
-            return f'<Topology TopologyType="2DCoRectMesh" Dimensions="{ny} {nx}" />'
+            return f'<Topology TopologyType="2DCoRectMesh" Dimensions="{ny + 1} {nx + 1}" />'
         else:
             nx, ny, nz = self.grid_shape
-            return f'<Topology TopologyType="3DCoRectMesh" Dimensions="{nz} {ny} {nx}" />'
+            return f'<Topology TopologyType="3DCoRectMesh" Dimensions="{nz + 1} {ny + 1} {nx + 1}" />'
 
     def _geometry_tag(self) -> str:
-        # Geometry values must be in the same ZYX order as the topology Dimensions
-        # (slowest axis first, fastest last) so ParaView assigns the correct spacing
-        # to each axis.  Nodes are shifted by half a voxel to land at voxel centres.
+        # Corner nodes start at the domain origin (no half-voxel shift).
+        # Geometry values listed slowest→fastest (ZYX) to match topology Dimensions.
         if self.ndim == 2:
             ox, oy = self.origin
             dx, dy = self.grid_spacing
-            # topology order: ny (Y, slow) → nx (X, fast)
             return (
                 f'<Geometry GeometryType="ORIGIN_DXDY">'
                 f'<DataItem Dimensions="2" NumberType="Float" Precision="8" Format="XML">'
-                f'{oy + dy/2} {ox + dx/2}</DataItem>'
+                f'{oy} {ox}</DataItem>'
                 f'<DataItem Dimensions="2" NumberType="Float" Precision="8" Format="XML">'
                 f'{dy} {dx}</DataItem>'
                 f"</Geometry>"
@@ -221,11 +219,10 @@ class IncrementalWriter:
         else:
             ox, oy, oz = self.origin
             dx, dy, dz = self.grid_spacing
-            # topology order: nz (Z, slow) → ny (Y) → nx (X, fast)
             return (
                 f'<Geometry GeometryType="ORIGIN_DXDYDZ">'
                 f'<DataItem Dimensions="3" NumberType="Float" Precision="8" Format="XML">'
-                f'{oz + dz/2} {oy + dy/2} {ox + dx/2}</DataItem>'
+                f'{oz} {oy} {ox}</DataItem>'
                 f'<DataItem Dimensions="3" NumberType="Float" Precision="8" Format="XML">'
                 f'{dz} {dy} {dx}</DataItem>'
                 f"</Geometry>"
