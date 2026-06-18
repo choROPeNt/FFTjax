@@ -10,7 +10,7 @@ Reference
 Domain      : 250 × 250 × 1 voxels,  L = [50, 50, 0.2] mm
 Material    : steel  E = 210 GPa,  ν = 0.3
 PFF params  : l₀ = 1.0 mm,  Gc = 2.7 MPa·mm  
-Pre-crack   : voxels x ∈ [20, 60),  y = 125 (centre)
+Pre-crack   : x ∈ [5, 15) mm  (i=[25,75) at 250² grid),  y = 125 (centre)
 Load        : uniaxial strain ramp  ε₂₂ → 1.2 × 10⁻³,  10 equal increments
 
 Staggered scheme per increment
@@ -18,7 +18,7 @@ Staggered scheme per increment
     for each staggered iteration:
         1. Degrade stiffness:     C_eff = g(d) · C_field
         2. Mechanical solve:      (ε, σ) = solve_elastic(C_eff, G_glob, ε̄)
-        3. Crack driving force:   ψ⁺ from undegraded Miehe spectral split
+        3. Crack driving force:   ψ⁺ from undegraded Amor spectral split
         4. Update history:        H = max(H_prev, ψ⁺)
         5. Damage solve:          d = solve_helmholtz_cg(H, ...)
         6. Converged?             max|d_new − d_old| < toler_st
@@ -75,14 +75,19 @@ materials = [
 
 # ── Microstructure ────────────────────────────────────────────────────────────
 
-ms      = np.zeros(n, dtype=int)
-j_crack = n[1] // 2
-ms[20:60, j_crack, :] = 1      # void (pre-crack)
-phase   = jnp.array(ms.ravel())
+# Crack geometry in physical coordinates (mm) — voxel indices derived from dx
+x_crack = (5.0, 15.0)   # mm: [start, end)
+
+ms        = np.zeros(n, dtype=int)
+j_crack   = n[1] // 2
+i_start   = round(x_crack[0] / dx[0])
+i_end     = round(x_crack[1] / dx[0])
+ms[i_start:i_end, j_crack, :] = 1   # void (pre-crack)
+phase     = jnp.array(ms.ravel())
 
 print(f"Grid     : {n}  (Nv = {Nv})")
 print(f"Domain   : {L} mm")
-print(f"Crack    : x=[20,60)  y={j_crack}  ({int((ms==1).sum())} voxels)")
+print(f"Crack    : x=[{x_crack[0]},{x_crack[1]}) mm  i=[{i_start},{i_end})  y={j_crack}  ({int((ms==1).sum())} voxels)")
 
 # ── Stiffness field (undegraded) ──────────────────────────────────────────────
 
@@ -110,7 +115,7 @@ print(f"PFF      : l₀ = {l0} mm,  Gc = {Gc} MPa·mm"
 
 eps_goal = jnp.array([
     [0.0,    0.0, 0.0],
-    [0.0, 1.2e-3, 0.0],   # ε₂₂ = 1.2 × 10⁻³
+    [0.0, 1.11e-3, 0.0],   # ε₂₂ = 1.2 × 10⁻³
     [0.0,    0.0, 0.0],
 ])
 
@@ -122,7 +127,7 @@ settings = SolverSettings(
     toler_nw=1e-4,
     maxiter_cg=500,
     maxiter_nw=300,
-    jobname="benchmark_pff_tension",
+    jobname="benchmark_pff_tension_miehe",
     output="output",
 )
 settings.add_load_step(
@@ -253,7 +258,7 @@ with IncrementalWriter(
                 )
 
                 # 3. crack driving force from undegraded Miehe split
-                psi_pos, _ = strain_energy_amor_split(eps_i, lam_vox, mu_vox)
+                psi_pos, _ = strain_energy_miehe_split(eps_i, lam_vox, mu_vox)
 
                 # 4. update history variable (irreversibility)
                 H_st = update_history(H_st, psi_pos)
