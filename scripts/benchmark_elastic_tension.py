@@ -2,7 +2,7 @@
 Elastic benchmark: mode-I tension on a plate with a pre-crack.
 
 Reproduces the elastic loading phase of the benchmark from
-    Düreth et al. (2024)  https://doi.org/10.1111/ffe.14553
+    Schneider & Kästner (2024)  https://doi.org/10.1111/ffe.14553
 
 Domain   : 250 × 250 × 1 voxels,  L = [50, 50, 0.2] mm
 Material : steel  E = 250 GPa,  ν = 0.3
@@ -87,7 +87,7 @@ mu0  = materials[0].mu
 print(f"Reference: lam0={lam0/1e3:.2f} GPa  mu0={mu0/1e3:.2f} GPa")
 
 xi_flat = build_freq_grid(n, L)
-G_glob  = build_green_operator(xi_flat, lam0, mu0)
+G_glob  = build_green_operator(xi_flat, lam0, mu0, scheme='rotated', dx=dx)
 
 # ── Settings ──────────────────────────────────────────────────────────────────
 
@@ -193,18 +193,18 @@ with IncrementalWriter(
 
         for attempt in range(max_cutbacks + 1):
             eps_bar_i                     = float(t + dt) * eps_goal
-            eps_i, sigma_i, delta_i, info = solve_elastic(
+            eps_i, sigma_i, delta_i, iter_mech, conv_mech = solve_elastic(
                 n, C_field, G_glob, eps_bar_i,
                 toler_lin=settings.toler_lin,
                 maxiter=settings.maxiter_cg,
             )
-            converged = (info is None or info == 0)
+            converged = bool(conv_mech)
 
             if converged:
                 break
 
             dt = max(dt * factor_dec, dt_min)
-            print(f"    cutback #{attempt + 1}  dt → {dt:.4f}  (CG info={info})")
+            print(f"    cutback #{attempt + 1}  dt → {dt:.4f}  (mech iter={int(iter_mech)})")
 
         if not converged:
             raise RuntimeError(
@@ -224,7 +224,7 @@ with IncrementalWriter(
             time=t,
             dtime=dt,
             kinc=step,
-            info=0 if converged else info,
+            info=0 if converged else int(iter_mech),
         )
 
         eps_grid   = field_to_grid(state.strain_loc, n)
