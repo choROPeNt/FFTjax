@@ -50,8 +50,7 @@ from operators.green       import build_freq_grid, build_green_operator
 from post.fields           import field_to_grid, von_mises, compute_displacement
 from post.io               import IncrementalWriter, to_voigt
 from solvers.elastic_nw_cg import solve_elastic
-from solvers.pff_damage    import (degradation, update_history_hybrid,
-                                   solve_helmholtz_cg)
+from solvers.pff_damage    import degradation, update_history, solve_helmholtz_cg
 from solvers.types         import SolveState, SolverSettings
 
 jax.config.update("jax_enable_x64", True)
@@ -128,7 +127,7 @@ settings.add_load_step(
     stress_ave_goal=jnp.zeros((3, 3)),
     # 100 equal steps of dt=0.01 — matches paper Section 4.1 reference setup
     # (no adaptive stepping; brittle snap-through in one step is physically correct)
-    timer=(0.01, 1.0, 0.001, 0.01), # dt_init, t_end, dt_min, dt_max
+    timer=(0.01, 1.0, 0.01, 0.01),
 )
 
 dt_init, t_end, dt_min, dt_max = settings.timer[0]
@@ -250,8 +249,8 @@ with IncrementalWriter(
                 # 3. crack driving force from undegraded Miehe split
                 psi_pos, _ = strain_energy_miehe_split(eps_i, lam_vox, mu_vox)
 
-                # 4. update history variable — hybrid irreversibility (dthres=0.95)
-                H_st = update_history_hybrid(H_st, psi_pos, d_st, dthres=0.95)
+                # 4. update history variable (irreversibility)
+                H_st = update_history(H_st, psi_pos)
 
                 # 5. damage solve — Helmholtz preconditioned CG
                 d_st, iter_helm, conv_helm = solve_helmholtz_cg(
