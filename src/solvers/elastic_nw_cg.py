@@ -2,11 +2,13 @@ import os
 os.environ["JAX_ENABLE_X64"] = "1"
 
 from functools import partial
+from math import prod
 
 import jax.numpy as jnp
 import numpy as np
 from jax import jit
-from jax.scipy.sparse.linalg import cg as jax_cg
+
+from utils.cg import cg_count
 
 
 @partial(jit, static_argnames=("n_i", "maxiter"))
@@ -18,7 +20,7 @@ def dstrain_nw_cg(
     stress_goal: jnp.ndarray | None = None,
     toler_lin:  float = 1e-4,
     maxiter:    int   = 1000,
-) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, int | None]:
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
     Inner CG solve for one Newton step of the variational FFT elastic solver
     (small strains, Vondrejc / Lucarini–Segurado formulation).
@@ -29,9 +31,6 @@ def dstrain_nw_cg(
         A(v)  = iFFT( G̃ : FFT( C : v ) )     [Green–stiffness operator]
         b     = -iFFT( G̃ : FFT( C:ε₀ − σ_goal ) )   [projected residual]
         ε₀    = eps_bar broadcast to all voxels   [uniform initial guess]
-
-    The solution Δε is the local strain correction; adding it to ε₀ gives
-    a strain field that satisfies both equilibrium and the macroscopic BC.
 
     Parameters
     ----------
@@ -45,14 +44,15 @@ def dstrain_nw_cg(
 
     Returns
     -------
-    eps   : (3, 3, Nv)  updated local strain  ε = ε₀ + Δε
-    sigma : (3, 3, Nv)  updated local stress  σ = C : ε
-    delta : (3, 3, Nv)  strain correction     Δε  (CG solution)
-    info  : int         CG exit flag — 0 = converged
+    eps        : (3, 3, Nv)   updated local strain  ε = ε₀ + Δε
+    sigma      : (3, 3, Nv)   updated local stress  σ = C : ε
+    delta      : (3, 3, Nv)   strain correction     Δε
+    iter_count : int array    CG iterations performed
+    converged  : bool array   True if residual tolerance met
     """
-    Nv = int(np.prod(n_i))
+    Nv = prod(n_i)
 
-    # ── FFT helpers operating on flat voxel arrays (..., Nv) ─────────────────
+    # ── FFT helpers ───────────────────────────────────────────────────────────
     def fft_(x):
         s = x.shape
         return jnp.fft.fftn(x.reshape(s[:-1] + n_i), axes=(-3, -2, -1)).reshape(s)
@@ -63,26 +63,27 @@ def dstrain_nw_cg(
 
     # ── Linear operator  A(v) = iFFT( G̃ : FFT( C : v ) ) ───────────────────
     def A_op(v_flat):
-        v = v_flat.reshape(3, 3, Nv)
-        Cv   = jnp.einsum("ijklm,klm->ijm", C_field, v)    # C : v
-        GCv  = jnp.einsum("ijklm,klm->ijm", G_glob, fft_(Cv))  # G̃ : F(Cv)
+        v   = v_flat.reshape(3, 3, Nv)
+        Cv  = jnp.einsum("ijklm,klm->ijm", C_field, v)
+        GCv = jnp.einsum("ijklm,klm->ijm", G_glob, fft_(Cv))
         return ifft_(GCv).reshape(-1)
 
-    # ── Right-hand side  b = -iFFT( G̃ : FFT( C:ε₀ − σ_goal ) ) ────────────
+    # ── RHS  b = -iFFT( G̃ : FFT( C:ε₀ − σ_goal ) ) ────────────────────────
     sg     = jnp.zeros((3, 3, Nv)) if stress_goal is None else stress_goal
-    eps0   = jnp.ones((3, 3, Nv)) * eps_bar[:, :, None]    # uniform initial field
-    sigma0 = jnp.einsum("ijklm,klm->ijm", C_field, eps0)   # C : ε₀
-    res0   = fft_(sigma0 - sg)                              # FFT of stress residual
+    eps0   = jnp.ones((3, 3, Nv)) * eps_bar[:, :, None]
+    sigma0 = jnp.einsum("ijklm,klm->ijm", C_field, eps0)
+    res0   = fft_(sigma0 - sg)
     bb     = -ifft_(jnp.einsum("ijklm,klm->ijm", G_glob, res0)).reshape(-1)
 
-    # ── CG solve for Δε ───────────────────────────────────────────────────────
-    delta_flat, info = jax_cg(A_op, bb, tol=toler_lin, maxiter=maxiter)
+    # ── CG solve ──────────────────────────────────────────────────────────────
+    x0 = jnp.zeros_like(bb)
+    delta_flat, iter_count, converged = cg_count(A_op, bb, x0, toler_lin, maxiter)
 
     delta = delta_flat.reshape(3, 3, Nv)
     eps   = eps0 + delta
     sigma = jnp.einsum("ijklm,klm->ijm", C_field, eps)
 
-    return eps, sigma, delta, info
+    return eps, sigma, delta, iter_count, converged
 
 
 # simple alias — prefer dstrain_nw_cg in solver code, solve_elastic in scripts

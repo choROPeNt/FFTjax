@@ -197,18 +197,18 @@ with IncrementalWriter(f"{settings.output}/{settings.jobname}", grid_shape=n, gr
         t_step_start = time.perf_counter()
         for attempt in range(max_cutbacks + 1):
             eps_bar_i                     = float(t + dt) * eps_goal
-            eps_i, sigma_i, delta_i, info = solve_elastic(
+            eps_i, sigma_i, delta_i, iter_mech, conv_mech = solve_elastic(
                 n, C_field, G_glob, eps_bar_i,
                 toler_lin=settings.toler_lin,
                 maxiter=settings.maxiter_cg,
             )
-            converged = (info is None or info == 0)
+            converged = bool(conv_mech)
 
             if converged:
                 break
 
             dt = max(dt * factor_dec, dt_min)
-            print(f"    cutback #{attempt + 1}  dt → {dt:.6f}  (CG info={info})")
+            print(f"    cutback #{attempt + 1}  dt → {dt:.6f}  (mech iter={int(iter_mech)})")
 
         if not converged:
             raise RuntimeError(
@@ -229,7 +229,7 @@ with IncrementalWriter(f"{settings.output}/{settings.jobname}", grid_shape=n, gr
             time=t,
             dtime=dt,
             kinc=step,
-            info=0 if converged else info,
+            info=0 if converged else int(iter_mech),
         )
 
         eps_grid   = field_to_grid(state.strain_loc, n)
