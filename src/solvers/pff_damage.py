@@ -145,3 +145,121 @@ def solve_helmholtz_cg(
 
     d = jnp.maximum(d_prev, d_cg)
     return jnp.clip(d, 0.0, 1.0), iter_count, converged
+
+
+# ── Heterogeneous-Gc Helmholtz CG ─────────────────────────────────────────────
+
+@partial(jax.jit, static_argnames=("n", "maxiter"))
+def solve_helmholtz_cg_het(
+    L_field:  jnp.ndarray,
+    xi_flat:  jnp.ndarray,
+    n:        tuple[int, ...],
+    l0:       float,
+    Gc_field: jnp.ndarray,
+    d_prev:   jnp.ndarray,
+    toler_cg: float = 1e-4,
+    maxiter:  int   = 300,
+    eta:      float = 0.0,
+    dt:       float = 1.0,
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """
+    Preconditioned CG solve for the AT2 damage equation with spatially varying
+    fracture toughness Gc(x).
+
+    The operator is in divergence form (correct variational derivative of
+    ∫ Gc(x) [d²/2l + l/2 |∇d|²] dx):
+
+        -l₀ ∇·(Gc(x) ∇d) + (Gc(x)/l₀ + η/Δt + 2H) d = 2H + (η/Δt) dₙ
+
+    Gc lives inside the divergence — factoring it out is wrong for varying Gc.
+    The operator is SPD (= Gᵀ diag(Gc·l₀) G + c(x), c > 0), so CG converges.
+
+    Preconditioner: constant-coefficient reference-medium operator (same trick
+    as Lippmann–Schwinger) with Gc₀ = geometric mean of Gc_field, inverted
+    exactly in Fourier.  Geometric mean preconditions high-contrast fields
+    better than arithmetic mean.
+
+    Parameters
+    ----------
+    L_field  : (Nv,)       crack driving force ψ⁺(x)
+    xi_flat  : (ndim, Nv)  angular-frequency grid from ``build_freq_grid``
+    n        : tuple        grid shape — static for JIT
+    l0       : float        phase-field length scale
+    Gc_field : (Nv,)        spatially varying critical energy release rate
+    d_prev   : (Nv,)        damage from previous increment
+    toler_cg : float        CG relative residual tolerance
+    maxiter  : int          max CG iterations — static for JIT
+    eta      : float        viscosity η
+    dt       : float        time-step size Δt
+
+    Returns
+    -------
+    d          : (Nv,)
+    iter_count : int array
+    converged  : bool array
+    """
+    Nv     = prod(n)
+    ndim   = xi_flat.shape[0]
+    eta_dt = eta / dt
+
+    def fft_(v):
+        return jnp.fft.fftn(v.reshape(n)).reshape(Nv)
+
+    def ifft_(v_hat):
+        return jnp.fft.ifftn(v_hat.reshape(n)).real.reshape(Nv)
+
+    xi_sq = jnp.sum(xi_flat ** 2, axis=0)   # full |ξ|² including Nyquist
+
+    # Anti-symmetric xi: zero the Nyquist for each even-sized dimension.
+    # The spectral gradient ifft(1j·ξ·V̂).real silently discards the Nyquist
+    # (which is purely imaginary in Fourier), so fft(Gc·ifft(1j·ξ·V̂).real) ≠
+    # Gc·1j·ξ·V̂ at Nyquist — the round-trip introduces error.  Zeroing the
+    # Nyquist in ξ makes the round-trip exact for the correction term.
+    xi_anti = []
+    for i in range(ndim):   # unrolled at trace time — ndim and n are static
+        if n[i] % 2 == 0:
+            idx    = [slice(None)] * ndim
+            idx[i] = n[i] // 2
+            xi_i   = xi_flat[i].reshape(n).at[tuple(idx)].set(0.0).reshape(Nv)
+        else:
+            xi_i   = xi_flat[i]
+        xi_anti.append(xi_i)
+    xi_anti = jnp.stack(xi_anti)            # (ndim, Nv)
+
+    # geometric-mean reference Gc₀ — better than arithmetic mean at high contrast
+    Gc0  = jnp.exp(jnp.mean(jnp.log(Gc_field)))
+    dGc  = Gc_field - Gc0                  # spatial Gc variation
+
+    # Polarisation (Lippmann-Schwinger) decomposition:
+    #   -l₀ ∇·(Gc ∇v) = -Gc₀·l₀·∇²v  -  l₀·∇·(δGc ∇v)
+    #
+    # Reference term:  exact scalar Laplacian with Gc₀ — diagonal in Fourier,
+    #                  no round-trip, Nyquist handled correctly.
+    # Correction term: only δGc = Gc − Gc₀ through the gradient round-trip.
+    #                  For constant Gc (δGc = 0) this is identically zero, so
+    #                  A_op reduces exactly to the scalar Laplacian.
+    def A_op(v_flat):
+        v_hat    = fft_(v_flat)
+        # reference: exact spectral Laplacian with Gc₀
+        ref      = (Gc0 / l0 + eta_dt + 2.0 * L_field) * v_flat + Gc0 * l0 * ifft_(xi_sq * v_hat)
+        # correction: -l₀ ∇·(δGc ∇v) via real-space round-trip with Nyquist-zeroed ξ
+        div_hat  = jnp.zeros(Nv, dtype=v_hat.dtype)
+        for i in range(ndim):
+            flux_i  = dGc * l0 * ifft_(1j * xi_anti[i] * v_hat)
+            div_hat = div_hat + 1j * xi_anti[i] * fft_(flux_i)
+        return ref + ifft_(-div_hat)
+
+    L_avg   = jnp.mean(L_field)
+    # Preconditioner: exact scalar operator with Gc₀, inverted in Fourier.
+    # Gc₀/l₀ keeps the denominator > 0 at k=0.
+    P_denom = Gc0 / l0 + eta_dt + 2.0 * L_avg + Gc0 * l0 * xi_sq
+
+    def P_op(v_flat):
+        return ifft_(fft_(v_flat) / P_denom)
+
+    bb = 2.0 * L_field + eta_dt * d_prev
+
+    d_cg, iter_count, converged = cg_count(A_op, bb, d_prev, toler_cg, maxiter, M=P_op)
+
+    d = jnp.maximum(d_prev, d_cg)
+    return jnp.clip(d, 0.0, 1.0), iter_count, converged

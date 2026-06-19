@@ -37,7 +37,7 @@ import numpy as np
 
 from operators.green    import build_freq_grid
 from post.io            import IncrementalWriter
-from solvers.pff_damage  import solve_helmholtz_cg
+from solvers.pff_damage  import solve_helmholtz_cg, solve_helmholtz_cg_het
 
 jax.config.update("jax_enable_x64", True)
 
@@ -116,7 +116,7 @@ print(f"  d at crack tip (x=40, y={j_crack}) = {d_np[40, j_crack, 0]:.4f}")
 
 # Irreversibility: re-solve with L = 0 — d must not decrease
 L_zero       = jnp.zeros((Nv,))
-d_irrev, _   = solve_helmholtz_cg(L_zero, xi_flat, n, l0, Gc, d_out,
+d_irrev, _, _ = solve_helmholtz_cg(L_zero, xi_flat, n, l0, Gc, d_out,
                                    toler_cg=1e-8, maxiter=500)
 irrev_ok = bool(jnp.all(d_irrev >= d_out - 1e-12))
 print(f"  Irreversibility (d_new >= d_old): {'PASS' if irrev_ok else 'FAIL'}")
@@ -185,3 +185,106 @@ print(f"  Scaling check: {'PASS' if scale_ok else 'FAIL (>15% deviation)'}")
 print()
 print("In ParaView: open a .xdmf and use 'Plot Over Line' perpendicular to")
 print("the crack — the damage profile width should scale with l₀.")
+
+# ── Check 4 — heterogeneous Gc solver ────────────────────────────────────────
+
+print()
+print("─" * 60)
+print("Check 4a: het solver self-consistency and low-k agreement")
+print("─" * 60)
+# The het operator uses spectral grad/div with Nyquist zeroed; the scalar uses
+# the full spectral Laplacian (Nyquist included).  For smooth fields both give
+# nearly the same solution, but differ by O(l₀² · ξ_Nyq² · E_Nyquist / (Gc/l₀))
+# where E_Nyquist is the Nyquist-frequency energy in the solution.
+# We verify: (a) the het residual is small, (b) max(d) is close, (c) the
+# low-wavenumber profile agrees to < 1 %.
+
+l0  = 1.0
+Gc  = Gc_ref
+L_crack_val = Gc / (2.0 * l0)
+
+ms_L = np.zeros(n)
+ms_L[20:60, n[1] // 2, :] = L_crack_val
+L_crack = jnp.array(ms_L.ravel())
+d_prev  = jnp.zeros((Nv,))
+
+d_scalar, _, _    = solve_helmholtz_cg(L_crack, xi_flat, n, l0, Gc, d_prev,
+                                        toler_cg=1e-8, maxiter=500)
+Gc_const          = jnp.full((Nv,), Gc)
+d_het,    it_h, cv_h = solve_helmholtz_cg_het(L_crack, xi_flat, n, l0, Gc_const, d_prev,
+                                               toler_cg=1e-8, maxiter=500)
+
+print(f"  het   : iter={int(it_h)}  conv={bool(cv_h)}")
+
+# (a) het self-residual: evaluate het operator on d_het — should be ≈ bb
+def _fft(v):  return jnp.fft.fftn(v.reshape(n)).reshape(Nv)
+def _ifft(vh): return jnp.fft.ifftn(vh.reshape(n)).real.reshape(Nv)
+bb = 2.0 * L_crack
+# Use scalar operator as surrogate — both operators agree at low k
+xi_sq = jnp.sum(xi_flat**2, axis=0)
+res_het = jnp.linalg.norm(
+    bb - ((Gc/l0 + 2*L_crack)*d_het - Gc*l0*_ifft(-xi_sq*_fft(d_het)))
+) / jnp.linalg.norm(bb)
+print(f"  relative residual of d_het against scalar op = {float(res_het):.2e}  (expect < 0.1)")
+
+# (b) max(d) comparison
+max_d_diff = abs(float(jnp.max(d_scalar)) - float(jnp.max(d_het))) / float(jnp.max(d_scalar))
+print(f"  max(d_scalar) = {float(jnp.max(d_scalar)):.5f}")
+print(f"  max(d_het)    = {float(jnp.max(d_het)):.5f}")
+print(f"  relative max(d) diff = {max_d_diff:.2e}  (expect < 5 %)")
+
+# (c) low-wavenumber profile along crack tip (x=40, all y)
+d_s_prof = np.asarray(d_scalar).reshape(n)[40, :, 0]
+d_h_prof = np.asarray(d_het).reshape(n)[40, :, 0]
+prof_err = np.max(np.abs(d_s_prof - d_h_prof)) / (np.max(d_s_prof) + 1e-30)
+print(f"  profile max rel-diff = {prof_err:.2e}  (expect < 5 %)")
+
+pass_a = bool(cv_h) and float(res_het) < 0.1 and max_d_diff < 0.05 and prof_err < 0.05
+print("  " + ("PASS" if pass_a else "FAIL"))
+
+print()
+print("─" * 60)
+print("Check 4b: high-Gc barrier arrests crack — damage dips at interface")
+print("─" * 60)
+
+# Gc_field: 10× higher in a band at x = [60, 80] — acts as crack arrestor
+Gc_field_np           = np.full(n, Gc)
+Gc_field_np[60:80, :, :] = 10.0 * Gc          # high-toughness barrier
+Gc_field              = jnp.array(Gc_field_np.ravel())
+
+# Same crack-line driving force as before, extending into the barrier region
+ms_L2 = np.zeros(n)
+ms_L2[20:90, n[1] // 2, :] = L_crack_val      # long crack driving force
+L_long  = jnp.array(ms_L2.ravel())
+d_prev  = jnp.zeros((Nv,))
+
+d_arr, iter_h, conv_h = solve_helmholtz_cg_het(L_long, xi_flat, n, l0, Gc_field, d_prev,
+                                                toler_cg=1e-8, maxiter=500)
+d_np = np.asarray(d_arr).reshape(n)
+
+d_before  = float(d_np[55, n[1] // 2, 0])    # just before barrier
+d_inside  = float(d_np[70, n[1] // 2, 0])    # inside barrier
+d_after   = float(d_np[85, n[1] // 2, 0])    # after barrier (should be low)
+arrest_ok = d_inside < d_before              # damage dips in high-Gc zone
+
+print(f"  CG iterations  = {int(iter_h)}  converged={bool(conv_h)}")
+print(f"  d before barrier (x=55) = {d_before:.4f}")
+print(f"  d inside barrier (x=70) = {d_inside:.4f}  ← should be lower")
+print(f"  d after barrier  (x=85) = {d_after:.4f}")
+print("  Crack-arrest check: " + ("PASS" if arrest_ok else "FAIL"))
+
+with IncrementalWriter("output/test_helmholtz_het", grid_shape=n, grid_spacing=dx) as w:
+    w.write_increment(0, {
+        "Gc_field":      Gc_field_np.astype(np.float64),
+        "driving_force": ms_L2.astype(np.float64),
+        "damage":        np.zeros(n, dtype=np.float64),
+    }, time=0.0)
+    w.write_increment(1, {
+        "Gc_field":      Gc_field_np.astype(np.float64),
+        "driving_force": ms_L2.astype(np.float64),
+        "damage":        d_np.astype(np.float64),
+    }, time=1.0)
+
+print()
+print("In ParaView: open output/test_helmholtz_het.xdmf — the damage field")
+print("should dip where Gc is 10×, even though the driving force is uniform.")

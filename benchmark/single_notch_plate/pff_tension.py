@@ -53,6 +53,7 @@ from mat_models.elastic    import (LinearElasticIsotropic, assemble_C_field,
 from operators.green       import build_freq_grid, build_green_operator
 from post.fields           import field_to_grid, von_mises, compute_displacement
 from post.io               import IncrementalWriter, to_voigt
+from solvers.anderson      import AndersonAccelerator
 from solvers.elastic_nw_cg import solve_elastic
 from solvers.pff_damage    import degradation, update_history, solve_helmholtz_cg
 from solvers.types         import SolveState, SolverSettings
@@ -150,6 +151,11 @@ toler_st_rel  = 1e-3
 maxiter_st    = 200
 toler_helm    = 1e-3
 maxiter_helm  = 300
+# Anderson mixing for the staggered fixed-point — matches the PETSc Anderson
+# solver of the reference DAMASK setup.  Plain alternate minimisation stalls at
+# a spurious half-cracked state near snap-through; Anderson drives it through.
+anderson_depth = 5
+anderson_beta  = 1.0
 # Viscous regularisation η — Figure 3b of Schneider & Kästner (2025).
 # η = 10⁻⁶  (same as kres).  With Δt = 0.01:  η/Δt = 10⁻⁴ MPa ≪ Gc/l₀ = 2.7 MPa.
 # This is purely numerical stabilisation — it does NOT prevent the brittle snap-through.
@@ -239,15 +245,16 @@ with IncrementalWriter(
         # ── cutback loop (mechanical convergence) ────────────────────────────
         for attempt in range(max_cutbacks + 1):
 
-            # ── staggered iteration ──────────────────────────────────────────
+            # ── staggered iteration (Anderson-accelerated fixed point) ───────
             d_st   = d_field   # damage at start of this increment attempt
             H_st   = H_field
+            accel  = AndersonAccelerator(depth=anderson_depth, beta=anderson_beta)
 
             for iter_st in range(1, maxiter_st + 1):
-                d_prev_st = d_st
+                d_in = d_st     # current iterate xₖ
 
                 # 1. degrade stiffness with current damage
-                g     = degradation(d_st)                        # (Nv,)
+                g     = degradation(d_in)                        # (Nv,)
                 C_eff = g[None, None, None, None, :] * C_field   # (3,3,3,3,Nv)
 
                 # 2. mechanical solve with degraded stiffness
@@ -263,21 +270,27 @@ with IncrementalWriter(
                 # 4. update history variable (irreversibility)
                 H_st = update_history(H_st, psi_pos)
 
-                # 5. damage solve — Helmholtz preconditioned CG
-                d_st, iter_helm, conv_helm = solve_helmholtz_cg(
-                    H_st, xi_flat, n, l0, Gc, d_prev_st,
+                # 5. damage solve — Helmholtz preconditioned CG → G(d_in)
+                d_out, iter_helm, conv_helm = solve_helmholtz_cg(
+                    H_st, xi_flat, n, l0, Gc, d_in,
                     toler_cg=toler_helm,
                     maxiter=maxiter_helm,
                     eta=eta,
                     dt=dt,
                 )
 
-                # 6. staggered convergence — either absolute or relative criterion
-                diff      = jnp.max(jnp.abs(d_st - d_prev_st))
+                # 6. staggered convergence — on the TRUE residual G(d_in) − d_in
+                diff      = jnp.max(jnp.abs(d_out - d_in))
                 err_abs   = float(diff)
-                err_rel   = float(diff / (jnp.max(jnp.abs(d_st)) + 1e-30))
+                err_rel   = float(diff / (jnp.max(jnp.abs(d_out)) + 1e-30))
                 if err_abs < toler_st_abs or err_rel < toler_st_rel:
+                    d_st = d_out          # accept the consistent fixed-point value
                     break
+
+                # 7. Anderson-accelerated next iterate, projected back onto the
+                #    admissible set: irreversibility floor d ≥ d_field, d ∈ [0,1]
+                d_st = accel.step(d_in, d_out)
+                d_st = jnp.clip(jnp.maximum(d_field, d_st), 0.0, 1.0)
 
             converged_mech = bool(conv_mech)
 
