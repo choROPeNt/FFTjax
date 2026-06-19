@@ -1,25 +1,32 @@
 """
-Anderson mixing (Anderson acceleration) for fixed-point iterations  x = G(x).
+Accelerators for the staggered phase-field-fracture fixed-point  x = G(x).
 
-Used to accelerate the staggered phase-field-fracture iteration.  Plain
-alternate minimisation (one mechanical solve + one damage solve per sweep)
-converges agonisingly slowly near the brittle snap-through and can stall at a
-spurious half-cracked near-fixed-point — the per-sweep change drops below the
-staggered tolerance before the crack has severed the domain.
+Two classes are provided:
 
-Anderson mixing combines a short history of iterates to extrapolate past that
-stalled region, driving the iteration to the true (fully-severed) fixed point.
-This matches the PETSc Anderson-mixing solver used in the reference DAMASK
-setup of Schneider & Kästner (2025), https://doi.org/10.1111/ffe.14553.
+AndersonAccelerator
+    Walker & Ni 2011 Type-II Anderson mixing.  Solves an *unconstrained* LS
+    on *differences* of residuals:
 
-Formulation (Walker & Ni 2011, type-II / "good" Anderson):
+        fₖ = G(xₖ) − xₖ
+        γ  = argmin ‖fₖ − ΔF γ‖₂        (unconstrained)
+        xₖ₊₁ = xₖ + β fₖ − (ΔX + β ΔF) γ
 
-    fₖ = G(xₖ) − xₖ                              (residual)
-    γ  = argmin ‖fₖ − ΔF γ‖₂                     (unconstrained least squares)
-    xₖ₊₁ = xₖ + β fₖ − (ΔX + β ΔF) γ
+NGMRESAccelerator
+    Nonlinear GMRES — matches DAMASK's outer -snes_type ngmres solver
+    (Schneider & Kästner 2025, doi:10.1111/ffe.14553).  Solves a
+    *constrained* LS directly on the residuals:
 
-with ΔX, ΔF the column-wise first differences of the last ``depth`` iterates
-and residuals.  β = 1 reduces the update to  xₖ₊₁ = G(xₖ) − ΔG γ.
+        α  = argmin ‖F α‖²   s.t.  1ᵀα = 1
+        xₖ₊₁ = G α                       (G columns = G(xᵢ))
+
+    The sum-to-1 constraint stabilises the solve when residuals become
+    nearly collinear near the brittle snap-through.
+
+    Full DAMASK config adds Anderson as the inner smoother
+    (-snes_ngmres_anderson), generating a better trial point before each
+    NGMRES function evaluation.  That variant requires one extra staggered
+    sweep per step; NGMRESAccelerator implements the outer NGMRES loop only,
+    at the same cost as AndersonAccelerator (one sweep per step).
 """
 
 import os
@@ -93,3 +100,74 @@ class AndersonAccelerator:
 
         # xₖ₊₁ = xₖ + β fₖ − (ΔX + β ΔF) γ
         return x + self.beta * f - (dX + self.beta * dF) @ gamma
+
+
+# ── NGMRES ─────────────────────────────────────────────────────────────────────
+
+class NGMRESAccelerator:
+    """
+    NGMRES (Nonlinear GMRES) for fixed-point x = G(x).
+
+    Implements the outer -snes_type ngmres solver used in DAMASK
+    (Schneider & Kästner 2025, doi:10.1111/ffe.14553).
+
+    At each step the window of (xᵢ, G(xᵢ)) pairs grows by one entry; the
+    constrained least-squares problem
+
+        α  = argmin ‖F α‖²   subject to  1ᵀα = 1
+        xₖ₊₁ = G α                       (G columns = G(xᵢ), F cols = G(xᵢ)−xᵢ)
+
+    is then solved via regularised normal equations and a Lagrange-multiplier
+    normalisation.  The sum-to-1 constraint (absent in Anderson) prevents the
+    solution from drifting when residuals become collinear near snap-through,
+    and guarantees exact recovery of any fixed-point x* = G(x*).
+
+    API is drop-in compatible with AndersonAccelerator (same step / reset
+    signatures, no beta parameter).  Cost is identical: one staggered sweep
+    per outer iteration, no extra function evaluations.
+
+    Parameters
+    ----------
+    depth : int
+        Window size m — number of past (x, G(x)) pairs retained.
+    reg   : float
+        Tikhonov regularisation on FᵀF to handle near-collinear residuals.
+    """
+
+    def __init__(self, depth: int = 5, reg: float = 1e-10):
+        self.depth = depth
+        self.reg   = reg
+        self.reset()
+
+    def reset(self) -> None:
+        """Clear window (call at the start of each new fixed-point problem)."""
+        self._X: list[jnp.ndarray] = []   # iterates xᵢ
+        self._G: list[jnp.ndarray] = []   # map values G(xᵢ)
+
+    def step(self, x: jnp.ndarray, gx: jnp.ndarray) -> jnp.ndarray:
+        """
+        Return the NGMRES-optimal next iterate given xₖ and G(xₖ) = gx.
+        On the first call (empty window) returns gx (plain Picard step).
+        """
+        self._X.append(x)
+        self._G.append(gx)
+
+        if len(self._X) > self.depth:
+            self._X.pop(0)
+            self._G.pop(0)
+
+        m = len(self._X)
+        if m == 1:
+            return gx   # plain Picard — window not yet populated
+
+        F = jnp.stack([self._G[i] - self._X[i] for i in range(m)], axis=1)  # (Nv, m)
+        G = jnp.stack(self._G,                                   axis=1)      # (Nv, m)
+
+        # Constrained LS solution via Lagrange multiplier:
+        #   α = (FᵀF)⁻¹ 1 / (1ᵀ (FᵀF)⁻¹ 1)   ←→  argmin ‖Fα‖² s.t. 1ᵀα = 1
+        AtA   = F.T @ F + self.reg * jnp.eye(m)
+        ones  = jnp.ones(m)
+        v     = jnp.linalg.solve(AtA, ones)   # (FᵀF)⁻¹ 1
+        alpha = v / (ones @ v)                 # normalise: 1ᵀα = 1
+
+        return G @ alpha                       # output combination Σ αᵢ G(xᵢ)

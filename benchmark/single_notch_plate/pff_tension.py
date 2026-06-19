@@ -53,7 +53,7 @@ from mat_models.elastic    import (LinearElasticIsotropic, assemble_C_field,
 from operators.green       import build_freq_grid, build_green_operator
 from post.fields           import field_to_grid, von_mises, compute_displacement
 from post.io               import IncrementalWriter, to_voigt
-from solvers.anderson      import AndersonAccelerator
+from solvers.anderson      import NGMRESAccelerator
 from solvers.elastic_nw_cg import solve_elastic
 from solvers.pff_damage    import degradation, update_history, solve_helmholtz_cg
 from solvers.types         import SolveState, SolverSettings
@@ -151,11 +151,10 @@ toler_st_rel  = 1e-3
 maxiter_st    = 200
 toler_helm    = 1e-3
 maxiter_helm  = 300
-# Anderson mixing for the staggered fixed-point — matches the PETSc Anderson
-# solver of the reference DAMASK setup.  Plain alternate minimisation stalls at
-# a spurious half-cracked state near snap-through; Anderson drives it through.
-anderson_depth = 5
-anderson_beta  = 1.0
+# NGMRES for the staggered fixed-point — matches DAMASK's -snes_type ngmres.
+# Constrained LS (Σα=1) over a window of G(xᵢ) outputs; more robust than
+# Anderson near snap-through where residuals become collinear.
+ngmres_depth = 5
 # Viscous regularisation η — Figure 3b of Schneider & Kästner (2025).
 # η = 10⁻⁶  (same as kres).  With Δt = 0.01:  η/Δt = 10⁻⁴ MPa ≪ Gc/l₀ = 2.7 MPa.
 # This is purely numerical stabilisation — it does NOT prevent the brittle snap-through.
@@ -245,10 +244,10 @@ with IncrementalWriter(
         # ── cutback loop (mechanical convergence) ────────────────────────────
         for attempt in range(max_cutbacks + 1):
 
-            # ── staggered iteration (Anderson-accelerated fixed point) ───────
+            # ── staggered iteration (NGMRES fixed point) ─────────────────────
             d_st   = d_field   # damage at start of this increment attempt
             H_st   = H_field
-            accel  = AndersonAccelerator(depth=anderson_depth, beta=anderson_beta)
+            accel  = NGMRESAccelerator(depth=ngmres_depth)
 
             for iter_st in range(1, maxiter_st + 1):
                 d_in = d_st     # current iterate xₖ
@@ -287,8 +286,8 @@ with IncrementalWriter(
                     d_st = d_out          # accept the consistent fixed-point value
                     break
 
-                # 7. Anderson-accelerated next iterate, projected back onto the
-                #    admissible set: irreversibility floor d ≥ d_field, d ∈ [0,1]
+                # 7. NGMRES-optimal next iterate, projected onto the admissible
+                #    set: irreversibility floor d ≥ d_field, d ∈ [0,1]
                 d_st = accel.step(d_in, d_out)
                 d_st = jnp.clip(jnp.maximum(d_field, d_st), 0.0, 1.0)
 
