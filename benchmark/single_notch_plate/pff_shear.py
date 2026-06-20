@@ -1,7 +1,7 @@
 """
-PFF benchmark: mode-I tension with phase-field fracture (AT2 model).
+PFF benchmark: mode-II shear with phase-field fracture (AT2 model).
 
-Extends benchmark_elastic_tension.py with a staggered mechanics–damage loop.
+Mirrors pff_tension.py but applies shear loading instead of uniaxial tension.
 
 Reference
 ---------
@@ -9,27 +9,23 @@ Reference
 
 Domain      : 250 × 250 × 1 voxels,  L = [50, 50, 0.2] mm
 Material    : steel  E = 210 GPa,  ν = 0.3
-PFF params  : l₀ = 1.0 mm,  Gc = 2.7 MPa·mm  
+PFF params  : l₀ = 1.0 mm,  Gc = 2.7 MPa·mm
 Pre-crack   : x ∈ [5, 15) mm  (i=[25,75) at 250² grid),  y = 125 (centre)
-Load        : uniaxial strain ramp  ε₂₂ → 1.2 × 10⁻³,  10 equal increments
+Load        : shear strain ramp  ε₁₂ = ε₂₁ → 1.0 × 10⁻³,  100 equal increments
 
 Staggered scheme per increment
 -------------------------------
     for each staggered iteration:
         1. Degrade stiffness:     C_eff = g(d) · C_field
         2. Mechanical solve:      (ε, σ) = solve_elastic(C_eff, G_glob, ε̄)
-        3. Crack driving force:   ψ⁺ from undegraded Amor spectral split
+        3. Crack driving force:   ψ⁺ from undegraded Amor dev/vol
         4. Update history:        H = max(H_prev, ψ⁺)
         5. Damage solve:          d = solve_helmholtz_cg(H, ...)
         6. Converged?             max|d_new − d_old| < toler_st
 
-Note on boundary conditions
----------------------------
-Pure-strain BC (ε₁₁ = ε₃₃ = 0).  Mixed BC (σ₁₁ = σ₃₃ = 0) to be added.
-
 Usage
 -----
-    python scripts/benchmark_pff_tension.py
+    python benchmark/single_notch_plate/pff_shear.py
 """
 
 import os
@@ -75,7 +71,6 @@ materials = [
 
 # ── Microstructure ────────────────────────────────────────────────────────────
 
-# Crack geometry in physical coordinates (mm) — voxel indices derived from dx
 x_crack = (5.0, 15.0)   # mm: [start, end)
 
 ms        = np.zeros(n, dtype=int)
@@ -91,8 +86,8 @@ print(f"Crack    : x=[{x_crack[0]},{x_crack[1]}) mm  i=[{i_start},{i_end})  y={j
 
 # ── Stiffness field (undegraded) ──────────────────────────────────────────────
 
-C_field        = assemble_C_field(materials, phase)          # (3,3,3,3, Nv)
-lam_vox, mu_vox = lame_from_C_field(C_field)                # undegraded λ, μ — fixed
+C_field         = assemble_C_field(materials, phase)          # (3,3,3,3, Nv)
+lam_vox, mu_vox = lame_from_C_field(C_field)                 # undegraded λ, μ — fixed
 
 # ── Reference medium — undegraded steel (G_glob stays fixed throughout) ───────
 
@@ -114,9 +109,9 @@ print(f"PFF      : l₀ = {l0} mm,  Gc = {Gc} MPa·mm"
 # ── Solver settings ───────────────────────────────────────────────────────────
 
 eps_goal = jnp.array([
-    [0.0,    0.0, 0.0],
-    [0.0, 1.11e-3, 0.0],   # ε₂₂ = 1.2 × 10⁻³
-    [0.0,    0.0, 0.0],
+    [0.0,  1e-3, 0.0],
+    [1e-3, 0.0,  0.0],   # ε₁₂ = ε₂₁ = 1.0 × 10⁻³  (mode-II shear)
+    [0.0,  0.0,  0.0],
 ])
 
 settings = SolverSettings(
@@ -127,32 +122,24 @@ settings = SolverSettings(
     toler_nw=1e-4,
     maxiter_cg=500,
     maxiter_nw=300,
-    jobname="benchmark_pff_tension_amor",
+    jobname="benchmark_pff_shear_amor",
     output="output",
 )
 settings.add_load_step(
     control=jnp.zeros((3, 3)),
     strain_ave_goal=eps_goal,
     stress_ave_goal=jnp.zeros((3, 3)),
-    # 100 equal steps of dt=0.01 — matches paper Section 4.1 reference setup
-    # (no adaptive stepping; brittle snap-through in one step is physically correct)
     timer=(0.01, 1.0, 0.01, 0.01),
 )
 
 dt_init, t_end, dt_min, dt_max = settings.timer[0]
 
 # Staggered scheme parameters — Schneider & Kästner (2025)
-# Convergence when EITHER absolute OR relative criterion is met:
-#   |d_new − d_old|_∞  < toler_st_abs     (εa = 1e-2)
-#   |d_new − d_old|_∞ / (|d_new|_∞ + ε)  < toler_st_rel  (εr = 1e-3)
 toler_st_abs  = 1e-2
 toler_st_rel  = 1e-3
 maxiter_st    = 200
 toler_helm    = 1e-3
 maxiter_helm  = 300
-# Viscous regularisation η — Figure 3b of Schneider & Kästner (2025).
-# η = 10⁻⁶  (same as kres).  With Δt = 0.01:  η/Δt = 10⁻⁴ MPa ≪ Gc/l₀ = 2.7 MPa.
-# This is purely numerical stabilisation — it does NOT prevent the brittle snap-through.
 eta = 1e-6
 print(f"Viscosity: η = {eta:.1e}  →  η/Δt = {eta/dt_init:.1e} MPa  "
       f"(Gc/l₀ = {Gc/l0:.4g} MPa)")
@@ -185,10 +172,10 @@ state = SolveState(
     pnewdt=1.0,
 )
 
-# ── Initial damage and history (tracked separately from SolveState for now) ───
+# ── Initial damage and history ────────────────────────────────────────────────
 
-d_field = jnp.zeros((Nv,))   # damage field d ∈ [0, 1]
-H_field = jnp.zeros((Nv,))   # history variable H = max(ψ⁺) over time
+d_field = jnp.zeros((Nv,))
+H_field = jnp.zeros((Nv,))
 
 # ── Adaptive time-stepper parameters ─────────────────────────────────────────
 
@@ -216,7 +203,6 @@ with IncrementalWriter(
     f"{settings.output}/{settings.jobname}", grid_shape=n, grid_spacing=dx
 ) as w:
 
-    # ── write undeformed initial state at t = 0 ───────────────────────────────
     w.write_increment(0, {
         "phase":        phase_grid,
         "displacement": zero_u,
@@ -240,15 +226,15 @@ with IncrementalWriter(
         for attempt in range(max_cutbacks + 1):
 
             # ── staggered iteration ──────────────────────────────────────────
-            d_st   = d_field   # damage at start of this increment attempt
+            d_st   = d_field
             H_st   = H_field
 
             for iter_st in range(1, maxiter_st + 1):
                 d_prev_st = d_st
 
                 # 1. degrade stiffness with current damage
-                g     = degradation(d_st)                        # (Nv,)
-                C_eff = g[None, None, None, None, :] * C_field   # (3,3,3,3,Nv)
+                g     = degradation(d_st)
+                C_eff = g[None, None, None, None, :] * C_field
 
                 # 2. mechanical solve with degraded stiffness
                 eps_i, sigma_i, delta_i, iter_mech, conv_mech = solve_elastic(
@@ -331,8 +317,8 @@ with IncrementalWriter(
         step_time = time.perf_counter() - t_step_start
         print(
             f"  step {step:2d}  t={t:.3f}  "
-            f"ε₂₂={float(state.strain_ave[1,1]):.2e}  "
-            f"σ₂₂={float(state.stress_ave[1,1]):.2f} MPa  "
+            f"ε₁₂={float(state.strain_ave[0,1]):.2e}  "
+            f"σ₁₂={float(state.stress_ave[0,1]):.2f} MPa  "
             f"max(d)={float(jnp.max(d_field)):.4f}  "
             f"st={iter_st}  err_abs={err_abs:.1e}  err_rel={err_rel:.1e}  "
             f"mech={int(iter_mech)}  helm={int(iter_helm)}  time={step_time:.1f}s"
@@ -382,19 +368,19 @@ print(f"Written → {csv_path}")
 
 # ── Reference comparison plot ──────────────────────────────────────────────────
 
-ref_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ref_tension.csv")
+ref_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ref_shear.csv")
 ref = np.loadtxt(ref_path, delimiter=",", skiprows=1)
 
 fig, ax = plt.subplots(figsize=(6, 4))
 ax.plot(ref[:, 0], ref[:, 1], "k--", linewidth=1.2, label="Schneider & Kästner (2025)")
 ax.plot(
-    [r["eps_22"] for r in history],
-    [r["sig_22"] for r in history],
+    [r["eps_12"] for r in history],
+    [r["sig_12"] for r in history],
     "b-o", markersize=3, linewidth=1.2, label="FFTjax",
 )
-ax.set_xlabel(r"$\bar{\varepsilon}_{22}$")
-ax.set_ylabel(r"$\bar{\sigma}_{22}$ [MPa]")
-ax.set_title("Mode-I tension — single edge notch plate")
+ax.set_xlabel(r"$\bar{\varepsilon}_{12}$")
+ax.set_ylabel(r"$\bar{\sigma}_{12}$ [MPa]")
+ax.set_title("Mode-II shear — single edge notch plate")
 ax.legend()
 ax.grid(True, linewidth=0.5, alpha=0.6)
 fig.tight_layout()
