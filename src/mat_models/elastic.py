@@ -364,6 +364,61 @@ def assemble_C_field_oriented(
     return C_field
 
 
+def assemble_C_field_smooth(
+    materials:       list,
+    orientations:    jnp.ndarray,
+    volume_fraction: jnp.ndarray,
+) -> jnp.ndarray:
+    """
+    Smooth Voigt blending of matrix (phase 0) and yarn (phase 1) stiffness
+    using a per-voxel volume fraction φ ∈ [0, 1]:
+
+        C(x) = φ(x) · C_yarn(n(x))  +  (1 − φ(x)) · C_matrix
+
+    ``orientations`` must cover ALL voxels (including interface matrix voxels)
+    with the nearest yarn tangent direction; zero vectors are replaced with
+    a safe default before rotation (their contribution is negligible where φ≈0).
+
+    Parameters
+    ----------
+    materials       : [matrix_mat, yarn_mat]  (index 0 = matrix, 1 = yarn)
+    orientations    : (3, Nv)  nearest yarn tangent per voxel
+    volume_fraction : (Nv,)    smooth φ in [0, 1]
+
+    Returns
+    -------
+    C_field : (3, 3, 3, 3, Nv)
+    """
+    Nv = int(volume_fraction.shape[0])
+
+    # Replace zero-magnitude orientations with e_z to avoid NaN in rotation;
+    # phi≈0 for those voxels so their yarn contribution is negligible.
+    mag       = jnp.linalg.norm(orientations, axis=0)          # (Nv,)
+    safe_ori  = jnp.where(mag[None, :] > 1e-8,
+                          orientations,
+                          jnp.broadcast_to(jnp.array([[0.], [0.], [1.]]),
+                                           (3, Nv)))            # (3, Nv)
+
+    # ── yarn stiffness — rotated per voxel ───────────────────────────────────
+    yarn_mat = materials[1]
+    if hasattr(yarn_mat, 'stiffness_tensor_rotated'):
+        C_ref  = yarn_mat.stiffness_tensor()
+        R_all  = jax.vmap(_rotation_from_fiber_dir)(safe_ori.T)  # (Nv, 3, 3)
+        C_yarn = jax.vmap(lambda R: _rotate_C4(R, C_ref))(R_all) # (Nv, 3,3,3,3)
+        C_yarn = jnp.moveaxis(C_yarn, 0, -1)                      # (3,3,3,3,Nv)
+    else:
+        C_yarn = jnp.broadcast_to(yarn_mat.stiffness_tensor()[..., None],
+                                   (3, 3, 3, 3, Nv))
+
+    # ── matrix stiffness — broadcast ─────────────────────────────────────────
+    C_mat = jnp.broadcast_to(materials[0].stiffness_tensor()[..., None],
+                              (3, 3, 3, 3, Nv))
+
+    # ── smooth Voigt blend ────────────────────────────────────────────────────
+    phi = volume_fraction[None, None, None, None, :]
+    return phi * C_yarn + (1.0 - phi) * C_mat
+
+
 # ------------------------------------------------------------------
 # Strain energy helpers
 # ------------------------------------------------------------------

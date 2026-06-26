@@ -15,12 +15,26 @@ undulations.  Yarn indices:
      2  layer-1 weft
      3  layer-1 fill
 
+Material database
+-----------------
+Fabric geometry is stored in data/fabric_db.json (IDs: 160, 200, 245).
+Pass --material <ID> to load all parameters from the database; all other
+geometric CLI flags are then optional overrides.
+
 Usage
 -----
-    python scripts/generate_weave_vtu.py [--out data/myweave.vtu]
+    # from database (recommended)
+    python scripts/generate_weave_vtu.py --material 200
+
+    # with nesting
+    python scripts/generate_weave_vtu.py --material 200 --nesting_shift
+
+    # manual geometry
+    python scripts/generate_weave_vtu.py --Breite 1.55 --Dicke 0.17 --Muster 2.02
 """
 
 import argparse
+import json
 import math
 import sys
 import xml.etree.ElementTree as ET
@@ -30,6 +44,26 @@ import numpy as np
 
 sys.path.insert(0, "src")
 from post.io import IncrementalWriter
+
+# ── Fabric database ───────────────────────────────────────────────────────────
+
+_DB_PATH = Path(__file__).parent.parent / "data" / "fabric_db.json"
+
+def load_db() -> dict:
+    with open(_DB_PATH) as f:
+        return json.load(f)
+
+def list_materials() -> None:
+    db = load_db()
+    vox = db.get("_voxelsize", "?")
+    print(f"Common voxelsize : {vox} mm")
+    print(f"{'ID':>6}  {'Description':<20}  {'Breite':>8}  {'Dicke':>7}  {'Muster':>8}  {'nesting_max':>11}")
+    print("-" * 72)
+    for mid, v in db.items():
+        if mid.startswith("_"):
+            continue
+        print(f"{mid:>6}  {v['description']:<20}  {v['Breite']:>8.5f}  "
+              f"{v['Dicke']:>7.5f}  {v['Musterbreite']:>8.5f}  {v['nesting_max']:>11.4f}")
 
 
 # ── Geometry parameters ───────────────────────────────────────────────────────
@@ -97,10 +131,12 @@ def build_weave(
     # ── output arrays ─────────────────────────────────────────────────────────
     yarn_index   = np.full((nx, ny, nz), -1, dtype=np.int32)
     yarn_tangent = np.zeros((nx, ny, nz, 3), dtype=np.float64)
+    best_phi     = np.zeros((nx, ny, nz), dtype=np.float64)  # smooth φ accumulator
 
-    # ── half-axes ─────────────────────────────────────────────────────────────
-    a  = Breite / 2.0          # semi-axis along yarn width
-    b  = Dicke  / 2.0          # semi-axis along yarn thickness
+    # ── half-axes & interface width ───────────────────────────────────────────
+    a       = Breite / 2.0          # semi-axis along yarn width
+    b       = Dicke  / 2.0          # semi-axis along yarn thickness
+    epsilon = 1.5 * min(dx, dy, dz) # SDF interface half-width (≈ 1.5 voxels)
 
     # ── assign yarns ──────────────────────────────────────────────────────────
     #
@@ -138,6 +174,22 @@ def build_weave(
         z_hi = z_layer + vertOffset_12 if layer < n_layer - 1 else Lz
         z_clip = (CZ >= z_lo) & (CZ < z_hi)
 
+        def _sdf_phi(r_sq: np.ndarray) -> np.ndarray:
+            """SDF-based smooth phi: r_sq = (d1/a)^2 + (d2/b)^2. Clipped to Z slab."""
+            sdf_mm = (np.sqrt(np.maximum(r_sq, 1e-12)) - 1.0) * min(a, b)
+            phi    = 0.5 * (1.0 + np.tanh(-sdf_mm / epsilon))
+            return phi * z_clip   # zero outside layer Z range
+
+        def _update(phi: np.ndarray, yarn_id: int,
+                    T0: np.ndarray, T1: float | np.ndarray, T2: np.ndarray) -> None:
+            """Update best_phi and yarn_tangent wherever this yarn dominates."""
+            better = phi > best_phi
+            best_phi[better]         = phi[better]
+            yarn_tangent[better, 0]  = T0[better] if hasattr(T0, '__len__') else T0
+            yarn_tangent[better, 1]  = T1[better] if hasattr(T1, '__len__') else T1
+            yarn_tangent[better, 2]  = T2[better] if hasattr(T2, '__len__') else T2
+            yarn_index[better & (phi > 0.5)] = yarn_id
+
         # ── weft yarns (run in X) ─────────────────────────────────────────────
         for iy, y_c in enumerate(y_weft_centres):
             sign  = 1 if iy == 0 else -1
@@ -146,18 +198,13 @@ def build_weave(
             z_c    = z_layer + 2*b + sign * b * np.cos(arg)
             dz_dx  = -sign * b * (np.pi / Musterbreite) * np.sin(arg)
 
-            dY = np.abs(CY - y_c)
-            dY = np.minimum(dY, Ly - dY)
+            dY = np.abs(CY - y_c);  dY = np.minimum(dY, Ly - dY)
             dZ = CZ - z_c
 
             norm   = np.sqrt(1.0 + dz_dx**2)
             Tx, Tz = 1.0 / norm, dz_dx / norm
 
-            inside = ((dY / a)**2 + (dZ / b)**2 <= 1.0) & z_clip
-            yarn_index[inside]      = yarn_weft
-            yarn_tangent[inside, 0] = Tx[inside]
-            yarn_tangent[inside, 1] = 0.0
-            yarn_tangent[inside, 2] = Tz[inside]
+            _update(_sdf_phi((dY/a)**2 + (dZ/b)**2), yarn_weft, Tx, 0.0, Tz)
 
         # ── fill yarns (run in Y) ─────────────────────────────────────────────
         for ix, x_c in enumerate(x_fill_centres):
@@ -167,22 +214,19 @@ def build_weave(
             z_c    = z_layer + 2*b + sign * b * np.cos(arg)
             dz_dy  = -sign * b * (np.pi / Musterbreite) * np.sin(arg)
 
-            dX = np.abs(CX - x_c)
-            dX = np.minimum(dX, Lx - dX)
+            dX = np.abs(CX - x_c);  dX = np.minimum(dX, Lx - dX)
             dZ = CZ - z_c
 
             norm   = np.sqrt(1.0 + dz_dy**2)
             Ty, Tz = 1.0 / norm, dz_dy / norm
 
-            inside = ((dX / a)**2 + (dZ / b)**2 <= 1.0) & z_clip
-            yarn_index[inside]      = yarn_fill
-            yarn_tangent[inside, 0] = 0.0
-            yarn_tangent[inside, 1] = Ty[inside]
-            yarn_tangent[inside, 2] = Tz[inside]
+            _update(_sdf_phi((dX/a)**2 + (dZ/b)**2), yarn_fill, 0.0, Ty, Tz)
 
+    # ── post-process ──────────────────────────────────────────────────────────
     phase           = (yarn_index >= 0).astype(np.int32)
-    orientation     = yarn_tangent.copy()                    # (nx,ny,nz,3) same as tangent
-    volume_fraction = (phase.astype(np.float64) * Vf_yarn)  # (nx,ny,nz)
+    orientation     = yarn_tangent.copy()
+    # volume_fraction: smooth φ scaled by Vf_yarn (fibre packing within tow)
+    volume_fraction = best_phi * Vf_yarn
 
     return (
         (nx, ny, nz),
@@ -298,35 +342,72 @@ def write_vtu(
 
 def main():
     parser = argparse.ArgumentParser(description='Generate two-layer biaxial weave VTU')
-    parser.add_argument('--out',        type=Path,  default=Path('data/weave_2layer.vtu'))
-    parser.add_argument('--Breite',     type=float, default=1.55222,  help='yarn width (mm)')
-    parser.add_argument('--Dicke',      type=float, default=0.17084,  help='yarn thickness (mm)')
-    parser.add_argument('--Muster',     type=float, default=2.01811,  help='centre-to-centre spacing (mm)')
-    parser.add_argument('--resin',      type=float, default=0.08,     help='resin interlayer (mm)')
-    parser.add_argument('--voxelsize',  type=float, default=0.02,     help='isotropic voxel size (mm)')
-    parser.add_argument('--n_layer',       type=int,   default=2,     help='number of fabric layers')
-    parser.add_argument('--Vf_yarn',       type=float, default=0.72,  help='fibre vol. fraction within tow')
-    parser.add_argument('--nesting',       type=float, default=None,
-                        help='vertical nesting depth mm (default: max when --nesting_shift, else 0)')
+    parser.add_argument('--material',  type=str,   default=None,
+                        help='fabric ID from data/fabric_db.json (160 | 200 | 245)')
+    parser.add_argument('--list',      action='store_true',
+                        help='list available material IDs and exit')
+    parser.add_argument('--out',       type=Path,  default=None,
+                        help='output path (default: data/<material>.vtu or data/weave.vtu)')
+    parser.add_argument('--Breite',    type=float, default=None, help='override yarn width (mm)')
+    parser.add_argument('--Dicke',     type=float, default=None, help='override yarn thickness (mm)')
+    parser.add_argument('--Muster',    type=float, default=None, help='override centre-to-centre spacing (mm)')
+    parser.add_argument('--resin',     type=float, default=None, help='override resin interlayer (mm)')
+    parser.add_argument('--voxelsize', type=float, default=None, help='override isotropic voxel size (mm)')
+    parser.add_argument('--n_layer',   type=int,   default=2,    help='number of fabric layers')
+    parser.add_argument('--Vf_yarn',   type=float, default=0.72, help='fibre vol. fraction within tow')
+    parser.add_argument('--nesting',   type=float, default=None,
+                        help='vertical nesting depth mm (default: nesting_max from DB when --nesting_shift)')
     parser.add_argument('--nesting_shift', action='store_true',
-                        help='shift odd layers by (M/2,M/2) in XY; defaults nesting to max')
+                        help='shift odd layers by (M/2,M/2) in XY; auto-sets nesting to DB max')
     args = parser.parse_args()
 
-    # auto-compute nesting depth
-    if args.nesting is None:
-        args.nesting = max_nesting(args.Dicke) if args.nesting_shift else 0.0
+    if args.list:
+        list_materials()
+        return
+
+    # ── load database entry if --material given ────────────────────────────────
+    db_entry: dict = {}
+    if args.material is not None:
+        db = load_db()
+        if args.material not in db:
+            raise SystemExit(f"Unknown material '{args.material}'. "
+                             f"Available: {[k for k in db if not k.startswith('_')]}")
+        db_entry = db[args.material]
+        print(f"Material : {args.material}  —  {db_entry['description']}")
+
+    # resolve parameters: CLI flag > DB > built-in default
+    def _get(flag_val, db_key, default):
+        if flag_val is not None:
+            return flag_val
+        if db_key in db_entry:
+            return db_entry[db_key]
+        return default
+
+    Breite     = _get(args.Breite,    'Breite',            1.55222)
+    Dicke      = _get(args.Dicke,     'Dicke',             0.17084)
+    Muster     = _get(args.Muster,    'Musterbreite',      2.01811)
+    resin      = _get(args.resin,     'Matrixreiche_Zone', 0.02)
+    voxelsize  = _get(args.voxelsize, None,                load_db().get('_voxelsize', 0.02))
+    nesting_db = db_entry.get('nesting_max', Dicke)
+
+    out = args.out or Path(f"data/{args.material}.vtu" if args.material else "data/weave.vtu")
+
+    # auto-compute nesting depth from DB or geometry
+    nesting = args.nesting
+    if nesting is None:
+        nesting = nesting_db if args.nesting_shift else 0.0
         if args.nesting_shift:
-            print(f"Auto nesting : {args.nesting:.5f} mm  (= Dicke, max without interference)")
+            print(f"Auto nesting : {nesting:.5f} mm  (DB max for {args.material or 'custom'})")
 
     n, L, yarn_index, yarn_tangent, orientation, volume_fraction, phase = build_weave(
-        Breite            = args.Breite,
-        Dicke             = args.Dicke,
-        Musterbreite      = args.Muster,
-        Matrixreiche_Zone = args.resin,
+        Breite            = Breite,
+        Dicke             = Dicke,
+        Musterbreite      = Muster,
+        Matrixreiche_Zone = resin,
         n_layer           = args.n_layer,
-        voxelsize         = args.voxelsize,
+        voxelsize         = voxelsize,
         Vf_yarn           = args.Vf_yarn,
-        nesting           = args.nesting,
+        nesting           = nesting,
         nesting_shift     = args.nesting_shift,
     )
     nx, ny, nz = n
@@ -341,16 +422,16 @@ def main():
     for yi in range(np.max(yarn_index)+1):
         print(f"  yarn {yi}: {int(np.sum(yarn_index == yi)):,} voxels")
 
-    args.out.parent.mkdir(parents=True, exist_ok=True)
+    out.parent.mkdir(parents=True, exist_ok=True)
 
     # ── VTU (TexGen-compatible) ────────────────────────────────────────────────
-    write_vtu(args.out, n, L, yarn_index, yarn_tangent, orientation, volume_fraction)
-    print(f"Written → {args.out}")
+    write_vtu(out, n, L, yarn_index, yarn_tangent, orientation, volume_fraction)
+    print(f"Written → {out}")
 
     # ── XDMF/HDF5 (FFTjax standard) ───────────────────────────────────────────
     import h5py
-    dx_grid = tuple(Li / ni for Li, ni in zip(L, n))
-    xdmf_stem = str(args.out.with_suffix(""))
+    dx_grid   = tuple(Li / ni for Li, ni in zip(L, n))
+    xdmf_stem = str(out.with_suffix(""))
     with IncrementalWriter(xdmf_stem, grid_shape=n, grid_spacing=dx_grid) as w:
         w.write_increment(0, {
             "yarn_index":      yarn_index.reshape(n).astype(np.float32),

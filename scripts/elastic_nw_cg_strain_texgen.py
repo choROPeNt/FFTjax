@@ -40,7 +40,7 @@ from pathlib import Path
 
 from mat_models.elastic        import (LinearElasticIsotropic,
                                        TransverseIsotropicFibre,
-                                       assemble_C_field_oriented)
+                                       assemble_C_field_smooth)
 from mat_models.micromechanics import yarn_properties
 from operators.green       import build_freq_grid, build_green_operator
 from post.fields           import field_to_grid, von_mises, compute_displacement
@@ -105,15 +105,23 @@ def read_texgen_vtu(path: str):
     Nv           = nx * ny * nz
     phase_flat   = np.empty(Nv, dtype=int)
     tangent_flat = np.zeros((Nv, 3))
+    vf_flat      = np.zeros(Nv)            # VolumeFraction (binary fallback)
 
-    phase_flat[fft_idx]   = yarn_vtk        # -1 = matrix, ≥0 = yarn
-    tangent_flat[fft_idx] = tang_vtk        # unit fibre direction (zeros for matrix)
+    phase_flat[fft_idx]   = yarn_vtk
+    tangent_flat[fft_idx] = tang_vtk
 
-    # remap: 0 = matrix, 1 = yarn  (required by assemble_C_field_oriented)
+    # VolumeFraction: smooth phi if present (from generate_weave_vtu.py),
+    # otherwise fall back to binary (1 inside yarn, 0 in matrix).
+    if 'VolumeFraction' in arrays:
+        vf_raw = np.fromstring(arrays['VolumeFraction'].text or "", sep=' ')
+        vf_flat[fft_idx] = vf_raw
+    else:
+        vf_flat = np.where(phase_flat >= 0, 1.0, 0.0)
+
     phase_np     = np.where(phase_flat >= 0, 1, 0)
     orientations = tangent_flat.T.copy()    # (3, Nv)
 
-    return (nx, ny, nz), (Lx, Ly, Lz), phase_np, orientations, phase_flat
+    return (nx, ny, nz), (Lx, Ly, Lz), phase_np, orientations, phase_flat, vf_flat
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -127,7 +135,7 @@ jobname  = vtu_path.stem   # output files share the VTU filename
 
 # ── Load VTU ──────────────────────────────────────────────────────────────────
 
-n, L, phase_np, orientations_np, yarn_index_np = read_texgen_vtu(str(vtu_path))
+n, L, phase_np, orientations_np, yarn_index_np, vf_np = read_texgen_vtu(str(vtu_path))
 
 Nv  = int(np.prod(n))
 dx  = tuple(Li / ni for Li, ni in zip(L, n))
@@ -171,7 +179,7 @@ materials = [
 for m in materials:
     print(" ", m)
 
-C_field = assemble_C_field_oriented(materials, phase_jax, orientations)
+C_field = assemble_C_field_smooth(materials, orientations, jnp.array(vf_np))
 
 # ── Reference medium (Voigt average, transverse yarn constants) ───────────────
 

@@ -54,7 +54,7 @@ from pathlib import Path
 
 from mat_models.elastic        import (LinearElasticIsotropic,
                                        TransverseIsotropicFibre,
-                                       assemble_C_field_oriented,
+                                       assemble_C_field_smooth,
                                        strain_energy_amor_split,
                                        lame_from_C_field)
 from mat_models.micromechanics import yarn_properties
@@ -119,13 +119,20 @@ def read_texgen_vtu(path: str):
     Nv           = nx * ny * nz
     phase_flat   = np.empty(Nv, dtype=int)
     tangent_flat = np.zeros((Nv, 3))
+    vf_flat      = np.zeros(Nv)
     phase_flat[fft_idx]   = yarn_vtk
     tangent_flat[fft_idx] = tang_vtk
+
+    if 'VolumeFraction' in arrays:
+        vf_raw = np.fromstring(arrays['VolumeFraction'].text or "", sep=' ')
+        vf_flat[fft_idx] = vf_raw
+    else:
+        vf_flat = np.where(phase_flat >= 0, 1.0, 0.0)
 
     phase_np     = np.where(phase_flat >= 0, 1, 0)
     orientations = tangent_flat.T.copy()
 
-    return (nx, ny, nz), (Lx, Ly, Lz), phase_np, orientations, phase_flat
+    return (nx, ny, nz), (Lx, Ly, Lz), phase_np, orientations, phase_flat, vf_flat
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -156,12 +163,16 @@ if h5_path.suffix == ".h5":
         phase_np        = _load_ds("phase"      ).transpose(2,1,0).ravel().astype(int)
         yarn_index_np   = _load_ds("yarn_index" ).transpose(2,1,0).ravel().astype(int)
         orientations_np = _load_ds("orientation").transpose(2,1,0,3).reshape(-1,3).T
-    Nv_tmp    = int(np.prod(n))
+        Nv_tmp = int(np.prod(n))
+        if "volume_fraction" in grp:
+            vf_np = _load_ds("volume_fraction").transpose(2,1,0).ravel()
+        else:
+            vf_np = np.where(phase_np >= 1, 1.0, 0.0)
     d_init_np = np.zeros(Nv_tmp)
     H_init_np = np.zeros(Nv_tmp)
     print(f"Loaded preproc HDF5: {args.input}")
 else:
-    n, L, phase_np, orientations_np, yarn_index_np = read_texgen_vtu(str(args.input))
+    n, L, phase_np, orientations_np, yarn_index_np, vf_np = read_texgen_vtu(str(args.input))
     Nv_tmp    = int(np.prod(n))
     d_init_np = np.zeros(Nv_tmp)
     H_init_np = np.zeros(Nv_tmp)
@@ -207,8 +218,18 @@ materials = [
 for m in materials:
     print(" ", m)
 
-# undegraded stiffness field — kept fixed; only matrix is degraded at runtime
-C_field    = assemble_C_field_oriented(materials, phase_jax, orientations)
+# undegraded stiffness — smooth matrix↔yarn blend, void override after
+# vf_np contains smooth φ from SDF+tanh (or binary fallback for TexGen VTUs)
+vf_jax  = jnp.array(vf_np)
+C_field = assemble_C_field_smooth(materials[:2], orientations, vf_jax)
+
+# void/crack voxels (phase==2) override with near-zero stiffness
+void_mask5 = jnp.broadcast_to(jnp.array(phase_np == 2)[None,None,None,None,:], C_field.shape)
+C_void     = jnp.broadcast_to(
+    materials[2].stiffness_tensor()[..., None], C_field.shape
+)
+C_field = jnp.where(void_mask5, C_void, C_field)
+
 lam_vox, mu_vox = lame_from_C_field(C_field)   # undegraded Lamé per voxel
 
 # ── Reference medium ──────────────────────────────────────────────────────────
@@ -233,8 +254,14 @@ Gc_yarn  = 4 * Gc_mat  #  —\ yarn/void won't crack; low enough for good Helmho
 
 void_mask = jnp.array(phase_np == 2)   # pre-crack voxels (near-zero stiffness)
 
-# matrix → Gc_mat,  yarn + void → Gc_yarn (PFF inactive there)
-Gc_field = jnp.where(matrix_mask, Gc_mat, Gc_yarn)
+# Smooth Gc field — consistent with the smooth stiffness assembly.
+# phi_ind ∈ [0,1]: 0 = pure matrix, 1 = deep yarn centre.
+# For binary VTU inputs vf_jax is 0/1; for smooth inputs it is best_phi*Vf_yarn.
+# Clipping by Vf_yarn recovers phi_ind correctly in both cases.
+phi_ind  = jnp.clip(vf_jax / Vf_yarn, 0.0, 1.0)
+Gc_field = (1.0 - phi_ind) * Gc_mat + phi_ind * Gc_yarn
+# void/crack voxels always get Gc_yarn (never crack further)
+Gc_field = jnp.where(void_mask, Gc_yarn, Gc_field)
 
 toler_st_abs = 1e-2
 toler_st_rel = 1e-3
