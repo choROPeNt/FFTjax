@@ -228,8 +228,8 @@ G_glob  = build_green_operator(xi_flat, lam0, mu0)
 # ── PFF parameters ────────────────────────────────────────────────────────────
 
 l0       = 0.05          # mm  phase-field length scale — set to ~2-3× voxel size
-Gc_mat   = 5e-3          # MPa·mm  critical energy release rate of matrix
-Gc_yarn  = 1e6 * Gc_mat  # effectively infinite — yarn / void never crack further
+Gc_mat   = 0.16          # MPa·mm  interlaminar matrix fracture toughness
+Gc_yarn  = 1e3 * Gc_mat  # 1000× matrix — yarn/void won't crack; low enough for good Helmholtz conditioning
 
 void_mask = jnp.array(phase_np == 2)   # pre-crack voxels (near-zero stiffness)
 
@@ -443,7 +443,7 @@ with IncrementalWriter(
         step_time = time.perf_counter() - t_step_start
         print(
             f"  step {step:3d}  t={t:.4f}  "
-            f"sig11={float(state.stress_ave[0,0]):.2f} MPa  "
+            f"sig33={float(state.stress_ave[2,2]):.2f} MPa  "
             f"max(d)={float(jnp.max(d_field)):.4f}  "
             f"st={iter_st}  err_abs={err_abs:.1e}  "
             f"mech={int(iter_mech)}  helm={int(iter_helm)}  "

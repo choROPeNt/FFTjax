@@ -99,7 +99,9 @@ def main():
     parser.add_argument("vtu", type=Path,
                         help="TexGen voxel VTU file")
     parser.add_argument("--n_pad", type=int, default=4,
-                        help="Matrix voxels to append in Z (interlaminar zone, default 4)")
+                        help="Matrix voxels added to both Y sides — crack lives here (default 4)")
+    parser.add_argument("--n_pad_z", type=int, default=4,
+                        help="Matrix voxels added to both Z sides — prevents Z-boundary cracking (default 4)")
     parser.add_argument("--crack_y", type=float, default=1.0,
                         help="Starter-crack width as fraction of Ly, centred (default 1.0)")
 
@@ -112,50 +114,62 @@ def main():
     (nx, ny, nz), (dx, dy, dz), phase, orient, yarn_index = _read_vtu(str(args.vtu))
     print(f"  fabric grid : ({nx}, {ny}, {nz})")
 
-    # ── pad in Y with pure matrix (interlaminar resin zones) ─────────────────
-    # Padding on both Y sides creates two resin-rich zones that form one
-    # continuous interlaminar layer under periodic BC (Y=0 ≡ Y=Ly).
-    # The crack is initialised entirely within this padding — never in the fabric.
+    # ── pad Z with pure matrix (isolates Z-periodic fabric images) ───────────
+    # Prevents stress concentrations at yarn-matrix interfaces from cracking
+    # under PBC (z=0 ≡ z=Lz without this padding).
     #
-    #  Y:  [0 … n_pad) | [n_pad … n_pad+ny) | [n_pad+ny … n_pad+ny+n_pad)
-    #      [ resin pad ] [      fabric       ] [         resin pad          ]
-    #           ↑ d=1                                       ↑ d=1
-    #           crack front advances → +Y toward fabric centre
+    #  Z:  [0 … n_pz) | [n_pz … n_pz+nz) | [n_pz+nz … nz_new)
+    #      [ resin pad ] [     fabric      ] [    resin pad     ]
 
-    n_pad  = args.n_pad
-    ny_new = ny + 2 * n_pad
-    Nv_new = nx * ny_new * nz
+    n_pad   = args.n_pad
+    n_pad_z = args.n_pad_z
 
     phase_3d  = phase.reshape(nx, ny, nz)
     orient_3d = orient.reshape(3, nx, ny, nz)
     yarn_3d   = yarn_index.reshape(nx, ny, nz)
 
-    pad_shape  = (nx, n_pad, nz)
-    phase_pad  = np.zeros(pad_shape, dtype=int)
-    orient_pad = np.zeros((3, *pad_shape))
-    yarn_pad   = np.full(pad_shape, -1, dtype=int)
+    zpd       = (nx, ny, n_pad_z)
+    z_phase   = np.zeros(zpd, dtype=int)
+    z_orient  = np.zeros((3, *zpd))
+    z_yarn    = np.full(zpd, -1, dtype=int)
 
-    # concatenate along Y axis (axis=1)
-    phase_new  = np.concatenate([phase_pad,  phase_3d,  phase_pad],       axis=1).ravel()
-    yarn_new   = np.concatenate([yarn_pad,   yarn_3d,   yarn_pad],        axis=1).ravel()
-    orient_new = np.concatenate([orient_pad, orient_3d, orient_pad],      axis=2).reshape(3, -1)
+    phase_3d  = np.concatenate([z_phase,  phase_3d,  z_phase],  axis=2)
+    yarn_3d   = np.concatenate([z_yarn,   yarn_3d,   z_yarn],   axis=2)
+    orient_3d = np.concatenate([z_orient, orient_3d, z_orient], axis=3)
+    nz_new    = nz + 2 * n_pad_z
 
-    Lx    = nx * dx
+    # ── pad Y with pure matrix (interlaminar resin zones — crack lives here) ──
+    # Under periodic BC the two Y-edge strips merge into one interlaminar
+    # crack zone at Y=0/Ly; crack front advances toward Y-centre.
+    #
+    #  Y:  [0 … n_pad) | [n_pad … n_pad+ny) | [n_pad+ny … ny_new)
+    #      [ resin pad ] [      fabric       ] [    resin pad      ]
+
+    ny_new = ny + 2 * n_pad
+    Nv_new = nx * ny_new * nz_new
+
+    ypd       = (nx, n_pad, nz_new)
+    y_phase   = np.zeros(ypd, dtype=int)
+    y_orient  = np.zeros((3, *ypd))
+    y_yarn    = np.full(ypd, -1, dtype=int)
+
+    phase_new  = np.concatenate([y_phase,  phase_3d,  y_phase],  axis=1).ravel()
+    yarn_new   = np.concatenate([y_yarn,   yarn_3d,   y_yarn],   axis=1).ravel()
+    orient_new = np.concatenate([y_orient, orient_3d, y_orient], axis=2).reshape(3, -1)
+
+    Lx    = nx    * dx
     Ly    = ny_new * dy
-    Lz    = nz * dz
-    n_new = (nx, ny_new, nz)
+    Lz    = nz_new * dz
+    n_new = (nx, ny_new, nz_new)
     L_new = (Lx, Ly, Lz)
     print(f"  padded grid : {n_new}   L = ({Lx:.4g}, {Ly:.4g}, {Lz:.4g}) mm")
 
-    # ── starter crack — full X length, mid-Z plane, both Y padding zones ─────
-    # Crack lives at z = nz//2 (mid-thickness of the fabric/padding stack),
-    # spanning the entire X length and both Y padding strips.
-    # Under PBC the two strips merge into one interlaminar crack at Y=0/Ly.
-    z_crack = nz // 2
+    # ── starter crack — full X, both Y pads, mid-Z of padded domain ──────────
+    z_crack = nz_new // 2   # mid-thickness including Z-pads
 
-    crack_mask_3d = np.zeros((nx, ny_new, nz), dtype=bool)
-    crack_mask_3d[:, :n_pad,              z_crack] = True   # low-Y pad
-    crack_mask_3d[:, n_pad + ny:,         z_crack] = True   # high-Y pad
+    crack_mask_3d = np.zeros((nx, ny_new, nz_new), dtype=bool)
+    crack_mask_3d[:, :n_pad,       z_crack] = True   # low-Y pad
+    crack_mask_3d[:, n_pad + ny:,  z_crack] = True   # high-Y pad
     crack_flat = crack_mask_3d.ravel()
 
     # crack voxels → phase 2 (void/crack), near-zero stiffness in PFF script
@@ -167,7 +181,7 @@ def main():
     H_init = np.zeros(Nv_new)
 
     n_crack = int(crack_flat.sum())
-    print(f"  crack plane : z={z_crack}/{nz}  x=[0,{nx})  "
+    print(f"  crack plane : z={z_crack}/{nz_new}  x=[0,{nx})  "
           f"y=[0,{n_pad}) + [{n_pad+ny},{ny_new})  "
           f"({n_crack} voxels,  frac={n_crack/Nv_new:.3f})")
 
