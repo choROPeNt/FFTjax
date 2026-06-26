@@ -99,9 +99,11 @@ def main():
     parser.add_argument("vtu", type=Path,
                         help="TexGen voxel VTU file")
     parser.add_argument("--n_pad", type=int, default=4,
-                        help="Matrix voxels added to both Y sides — crack lives here (default 4)")
-    parser.add_argument("--n_pad_z", type=int, default=4,
-                        help="Matrix voxels added to both Z sides — prevents Z-boundary cracking (default 4)")
+                        help="Matrix voxels added to both Y sides — resin zone (default 4)")
+    parser.add_argument("--n_pad_z", type=int, default=8,
+                        help="Matrix voxels added to both Z sides — prevents Z-boundary cracking (default 8)")
+    parser.add_argument("--crack_ext", type=int, default=0,
+                        help="Extra voxels the void crack extends into the fabric beyond the Y-pad (default 0)")
     parser.add_argument("--crack_y", type=float, default=1.0,
                         help="Starter-crack width as fraction of Ly, centred (default 1.0)")
 
@@ -164,26 +166,35 @@ def main():
     L_new = (Lx, Ly, Lz)
     print(f"  padded grid : {n_new}   L = ({Lx:.4g}, {Ly:.4g}, {Lz:.4g}) mm")
 
-    # ── starter crack — full X, both Y pads, mid-Z of padded domain ──────────
-    z_crack = nz_new // 2   # mid-thickness including Z-pads
+    # ── starter crack — full X, both Y pads + extension, mid-Z ──────────────
+    # The crack occupies the Y-resin-pad AND an additional crack_ext voxels
+    # into the fabric matrix, giving a longer crack arm and higher K_I at tip.
+    #
+    #  Y:  [0 … n_pad+crack_ext) | intact fabric | (ny_new-n_pad-crack_ext … ny_new)
+    #      [  void/crack region  ]               [    void/crack region              ]
+    #                             ↑ crack tip                         ↑ crack tip
+
+    z_crack   = nz_new // 2   # mid-thickness of padded domain
+    crack_ext = args.crack_ext
+    arm       = n_pad + crack_ext   # total crack arm length in Y voxels
 
     crack_mask_3d = np.zeros((nx, ny_new, nz_new), dtype=bool)
-    crack_mask_3d[:, :n_pad,       z_crack] = True   # low-Y pad
-    crack_mask_3d[:, n_pad + ny:,  z_crack] = True   # high-Y pad
+    crack_mask_3d[:, :arm,            z_crack] = True   # low-Y arm
+    crack_mask_3d[:, ny_new - arm:,   z_crack] = True   # high-Y arm
     crack_flat = crack_mask_3d.ravel()
 
     # crack voxels → phase 2 (void/crack), near-zero stiffness in PFF script
     phase_new[crack_flat] = 2
     yarn_new[crack_flat]  = -2   # distinct from matrix (-1) and yarn (>=0)
 
-    # zero damage / history — PFF evolves from the crack tip, not inside it
+    # zero damage / history — PFF evolves from the crack tip naturally
     d_init = np.zeros(Nv_new)
     H_init = np.zeros(Nv_new)
 
     n_crack = int(crack_flat.sum())
     print(f"  crack plane : z={z_crack}/{nz_new}  x=[0,{nx})  "
-          f"y=[0,{n_pad}) + [{n_pad+ny},{ny_new})  "
-          f"({n_crack} voxels,  frac={n_crack/Nv_new:.3f})")
+          f"y=[0,{arm}) + [{ny_new-arm},{ny_new})  arm={arm} voxels  "
+          f"({n_crack} total,  frac={n_crack/Nv_new:.3f})")
 
     # ── save XDMF/HDF5 ────────────────────────────────────────────────────────
     args.out.mkdir(parents=True, exist_ok=True)
