@@ -116,7 +116,7 @@ def read_texgen_vtu(path: str):
 
 # ── Load VTU ──────────────────────────────────────────────────────────────────
 
-vtu_path = "data/test_mn.vtu"
+vtu_path = "data/test_mn_high-res.vtu"
 n, L, phase_np, orientations_np, yarn_index_np = read_texgen_vtu(vtu_path)
 
 Nv  = int(np.prod(n))
