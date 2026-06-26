@@ -116,7 +116,7 @@ def read_texgen_vtu(path: str):
 
 # ── Load VTU ──────────────────────────────────────────────────────────────────
 
-vtu_path = "data/160_nn_2.vtu"
+vtu_path = "data/test_mn.vtu"
 n, L, phase_np, orientations_np, yarn_index_np = read_texgen_vtu(vtu_path)
 
 Nv  = int(np.prod(n))
@@ -139,7 +139,7 @@ E_m,   nu_m   = 3.5e3, 0.35    # epoxy matrix
 E_fL,  E_fT   = 230e3, 15e3    # carbon fibre: longitudinal / transverse
 G_fLT          = 15e3           # fibre long.-trans. shear modulus
 nu_fLT, nu_fTT = 0.20, 0.30    # fibre Poisson ratios
-Vf_yarn        = 0.72           # fibre volume fraction within a yarn/tow
+Vf_yarn        = 0.79           # fibre volume fraction within a yarn/tow
 
 E_L, E_T, G_LT, nu_LT, nu_TT = yarn_properties(
     Vf_yarn, E_fL, E_fT, G_fLT, nu_fLT, nu_fTT, E_m, nu_m
@@ -319,6 +319,7 @@ with IncrementalWriter(
 
         w.write_increment(step, {
             "phase":        phase_vis,
+            "yarn_index":   yarn_grid,
             "orientation":  orient_grid,
             "displacement": u_grid.astype(np.float64),
             "strain":       to_voigt(eps_grid).astype(np.float64),
