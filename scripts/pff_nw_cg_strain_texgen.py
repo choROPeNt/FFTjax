@@ -227,9 +227,9 @@ G_glob  = build_green_operator(xi_flat, lam0, mu0)
 
 # ── PFF parameters ────────────────────────────────────────────────────────────
 
-l0       = 0.05          # mm  phase-field length scale — set to ~2-3× voxel size
+l0 = 4.0 * max(dx)   # = 3 × 0.1038 ≈ 0.31 mm        # mm  phase-field length scale — set to ~2-3× voxel size
 Gc_mat   = 0.16          # MPa·mm  interlaminar matrix fracture toughness
-Gc_yarn  = 1e2 * Gc_mat  # 1000× matrix — yarn/void won't crack; low enough for good Helmholtz conditioning
+Gc_yarn  = 4 * Gc_mat  #  —\ yarn/void won't crack; low enough for good Helmholtz conditioning
 
 void_mask = jnp.array(phase_np == 2)   # pre-crack voxels (near-zero stiffness)
 
@@ -243,14 +243,14 @@ toler_helm   = 1e-3
 maxiter_helm = 500
 eta          = 0.0       # viscosity — set > 0 if snap-through occurs
 
-print(f"PFF      : l₀={l0} mm  Gc_mat={Gc_mat} MPa·mm  Gc_yarn={Gc_yarn:.1e}")
+print(f"PFF      : l₀={l0:.3f} mm  Gc_mat={Gc_mat:.3f} MPa·mm  Gc_yarn={Gc_yarn:.1e}")
 
 # ── Loading ───────────────────────────────────────────────────────────────────
 
 eps_goal = jnp.array([
     [0.0, 0.0, 0.0],
     [0.0,    0.0, 0.0],
-    [0.0,    0.0, 1.0e-2],
+    [0.0,    0.0, 3.0e-2],
 ])
 
 settings = SolverSettings(
@@ -268,7 +268,7 @@ settings.add_load_step(
     control=jnp.zeros((3, 3)),
     strain_ave_goal=eps_goal,
     stress_ave_goal=jnp.zeros((3, 3)),
-    timer=(0.05, 1.0, 0.001, 0.01),
+    timer=(0.05, 1.0, 0.0001, 0.1),
 )
 
 dt_init, t_end, dt_min, dt_max = settings.timer[0]
