@@ -100,7 +100,7 @@ def main():
                         help="TexGen voxel VTU file")
     parser.add_argument("--n_pad", type=int, default=4,
                         help="Matrix voxels added to both Y sides — resin zone (default 4)")
-    parser.add_argument("--n_pad_z", type=int, default=8,
+    parser.add_argument("--n_pad_z", type=int, default=0,
                         help="Matrix voxels added to both Z sides — prevents Z-boundary cracking (default 8)")
     parser.add_argument("--crack_ext", type=int, default=0,
                         help="Extra voxels the void crack extends into the fabric beyond the Y-pad (default 0)")
