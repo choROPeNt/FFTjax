@@ -45,7 +45,7 @@ import numpy as np
 import time
 
 from mat_models.elastic    import (LinearElasticIsotropic, assemble_C_field,
-                                   strain_energy_amor_split, lame_from_C_field)
+                                   strain_energy_amor_split,strain_energy_miehe_split, lame_from_C_field)
 from operators.green       import build_freq_grid, build_green_operator
 from post.fields           import field_to_grid, von_mises, compute_displacement
 from post.io               import IncrementalWriter, to_voigt
@@ -122,7 +122,7 @@ settings = SolverSettings(
     toler_nw=1e-4,
     maxiter_cg=500,
     maxiter_nw=300,
-    jobname="benchmark_pff_shear_amor",
+    jobname="benchmark_pff_shear_miehe",
     output="output",
 )
 settings.add_load_step(
@@ -243,8 +243,8 @@ with IncrementalWriter(
                     maxiter=settings.maxiter_cg,
                 )
 
-                # 3. crack driving force from undegraded Amor vol/dev split
-                psi_pos, _ = strain_energy_amor_split(eps_i, lam_vox, mu_vox)
+                # 3. crack driving force from undegraded Miehe spectral split
+                psi_pos, _ = strain_energy_miehe_split(eps_i, lam_vox, mu_vox)
 
                 # 4. update history variable (irreversibility)
                 H_st = update_history(H_st, psi_pos)
