@@ -30,11 +30,13 @@ os.environ["JAX_ENABLE_X64"] = "1"
 import sys
 sys.path.insert(0, "src")
 
+import argparse
 import jax
 import jax.numpy as jnp
 import numpy as np
 import time
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
 from mat_models.elastic        import (LinearElasticIsotropic,
                                        TransverseIsotropicFibre,
@@ -114,10 +116,18 @@ def read_texgen_vtu(path: str):
     return (nx, ny, nz), (Lx, Ly, Lz), phase_np, orientations, phase_flat
 
 
+# ── CLI ───────────────────────────────────────────────────────────────────────
+
+parser = argparse.ArgumentParser(description="Elastic FFT solver for TexGen VTU")
+parser.add_argument("vtu", type=Path, help="Path to TexGen voxel VTU file")
+args = parser.parse_args()
+
+vtu_path = args.vtu
+jobname  = vtu_path.stem   # output files share the VTU filename
+
 # ── Load VTU ──────────────────────────────────────────────────────────────────
 
-vtu_path = "data/test_mn_high-res.vtu"
-n, L, phase_np, orientations_np, yarn_index_np = read_texgen_vtu(vtu_path)
+n, L, phase_np, orientations_np, yarn_index_np = read_texgen_vtu(str(vtu_path))
 
 Nv  = int(np.prod(n))
 dx  = tuple(Li / ni for Li, ni in zip(L, n))
@@ -196,7 +206,7 @@ settings = SolverSettings(
     toler_nw=1e-7,
     maxiter_cg=1000,
     maxiter_nw=6,
-    jobname="texgen_elastic",
+    jobname=jobname,
     output="output",
 )
 

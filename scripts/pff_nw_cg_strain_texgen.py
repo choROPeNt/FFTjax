@@ -25,14 +25,19 @@ Staggered scheme per increment
 
 Usage
 -----
-    python scripts/pff_nw_cg_strain_texgen.py
+    # standard (VTU, no pre-crack):
+    python scripts/pff_nw_cg_strain_texgen.py data/myweave.vtu
+
+    # delamination (npz from preproc_delamination.py, with d_init / H_init):
+    python scripts/pff_nw_cg_strain_texgen.py output/myweave_delam_preproc.npz
 
 Output
 ------
-    output/texgen_pff.h5
-    output/texgen_pff.xdmf
+    output/<stem>.h5
+    output/<stem>.xdmf
 """
 
+import argparse
 import os
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 os.environ["JAX_ENABLE_X64"] = "1"
@@ -45,6 +50,7 @@ import jax.numpy as jnp
 import numpy as np
 import time
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
 from mat_models.elastic        import (LinearElasticIsotropic,
                                        TransverseIsotropicFibre,
@@ -122,10 +128,43 @@ def read_texgen_vtu(path: str):
     return (nx, ny, nz), (Lx, Ly, Lz), phase_np, orientations, phase_flat
 
 
-# ── Load VTU ──────────────────────────────────────────────────────────────────
+# ── CLI ───────────────────────────────────────────────────────────────────────
 
-vtu_path = "data/160_nn_2.vtu"
-n, L, phase_np, orientations_np, yarn_index_np = read_texgen_vtu(vtu_path)
+parser = argparse.ArgumentParser(description="PFF solver for TexGen woven composite")
+parser.add_argument("input", type=Path,
+                    help=".vtu (TexGen) or .npz (preproc_delamination output)")
+args = parser.parse_args()
+
+jobname = args.input.stem
+
+# ── Load geometry + optional pre-crack ────────────────────────────────────────
+
+h5_path = args.input.with_suffix(".h5") if args.input.suffix == ".xdmf" else args.input
+
+if h5_path.suffix == ".h5":
+    import h5py
+    from typing import cast as _cast
+    with h5py.File(h5_path, "r") as f:
+        n   = tuple(int(v)   for v in np.array(f.attrs["n"]))
+        L   = tuple(float(v) for v in np.array(f.attrs["L"]))
+        grp = _cast(h5py.Group, f["increment_000000"])
+        # arrays stored ZYX in HDF5 → transpose back to XYZ then ravel C-order
+        def _load_ds(key: str) -> np.ndarray:
+            ds = grp[key]
+            assert isinstance(ds, h5py.Dataset)
+            return np.array(ds)
+        phase_np        = _load_ds("phase"      ).transpose(2,1,0).ravel().astype(int)
+        yarn_index_np   = _load_ds("yarn_index" ).transpose(2,1,0).ravel().astype(int)
+        orientations_np = _load_ds("orientation").transpose(2,1,0,3).reshape(-1,3).T
+    Nv_tmp    = int(np.prod(n))
+    d_init_np = np.zeros(Nv_tmp)
+    H_init_np = np.zeros(Nv_tmp)
+    print(f"Loaded preproc HDF5: {args.input}")
+else:
+    n, L, phase_np, orientations_np, yarn_index_np = read_texgen_vtu(str(args.input))
+    Nv_tmp    = int(np.prod(n))
+    d_init_np = np.zeros(Nv_tmp)
+    H_init_np = np.zeros(Nv_tmp)
 
 Nv  = int(np.prod(n))
 dx  = tuple(Li / ni for Li, ni in zip(L, n))
@@ -138,7 +177,7 @@ orientations = jnp.array(orientations_np)
 # boolean mask — True where voxel is matrix
 matrix_mask = jnp.array(phase_np == 0)   # (Nv,)
 
-phi_yarn = float(np.mean(phase_np))
+phi_yarn = float(np.mean(phase_np == 1))
 print(f"Yarn vol. fraction: {phi_yarn:.3f}")
 
 # ── Materials ─────────────────────────────────────────────────────────────────
@@ -158,11 +197,12 @@ print(f"Yarn (Vf={Vf_yarn:.2f}):  "
       f"G_LT={G_LT/1e3:.2f}  nu_LT={nu_LT:.3f}  nu_TT={nu_TT:.3f}  GPa / —")
 
 materials = [
-    LinearElasticIsotropic(E=E_m, nu=nu_m, name="epoxy matrix"),
+    LinearElasticIsotropic(E=E_m,  nu=nu_m, name="epoxy matrix"),
     TransverseIsotropicFibre(
         E_L=E_L, E_T=E_T, G_LT=G_LT, nu_LT=nu_LT, nu_TT=nu_TT,
         name="yarn",
     ),
+    LinearElasticIsotropic(E=1e-6, nu=nu_m, name="void/crack"),  # phase 2
 ]
 for m in materials:
     print(" ", m)
@@ -189,16 +229,18 @@ G_glob  = build_green_operator(xi_flat, lam0, mu0)
 
 l0       = 0.05          # mm  phase-field length scale — set to ~2-3× voxel size
 Gc_mat   = 5e-3          # MPa·mm  critical energy release rate of matrix
-Gc_yarn  = 1e6 * Gc_mat  # effectively infinite — yarn never cracks
+Gc_yarn  = 1e6 * Gc_mat  # effectively infinite — yarn / void never crack further
 
-# spatially varying Gc: matrix gets Gc_mat, yarn gets Gc_yarn
+void_mask = jnp.array(phase_np == 2)   # pre-crack voxels (near-zero stiffness)
+
+# matrix → Gc_mat,  yarn + void → Gc_yarn (PFF inactive there)
 Gc_field = jnp.where(matrix_mask, Gc_mat, Gc_yarn)
 
 toler_st_abs = 1e-2
 toler_st_rel = 1e-3
 maxiter_st   = 200
 toler_helm   = 1e-3
-maxiter_helm = 300
+maxiter_helm = 500
 eta          = 0.0       # viscosity — set > 0 if snap-through occurs
 
 print(f"PFF      : l₀={l0} mm  Gc_mat={Gc_mat} MPa·mm  Gc_yarn={Gc_yarn:.1e}")
@@ -206,9 +248,9 @@ print(f"PFF      : l₀={l0} mm  Gc_mat={Gc_mat} MPa·mm  Gc_yarn={Gc_yarn:.1e}"
 # ── Loading ───────────────────────────────────────────────────────────────────
 
 eps_goal = jnp.array([
-    [1.0e-3, 0.0, 0.0],
+    [0.0, 0.0, 0.0],
     [0.0,    0.0, 0.0],
-    [0.0,    0.0, 0.0],
+    [0.0,    0.0, 5.0e-2],
 ])
 
 settings = SolverSettings(
@@ -219,8 +261,8 @@ settings = SolverSettings(
     toler_nw=1e-7,
     maxiter_cg=1000,
     maxiter_nw=6,
-    jobname="texgen_pff",
-    output="output",
+    jobname=jobname,
+    output="output/simulation",
 )
 settings.add_load_step(
     control=jnp.zeros((3, 3)),
@@ -259,8 +301,8 @@ state = SolveState(
     pnewdt=1.0,
 )
 
-d_field = jnp.zeros(Nv)
-H_field = jnp.zeros(Nv)
+d_field = jnp.array(d_init_np)
+H_field = jnp.array(H_init_np)
 
 # ── Adaptive time-stepper ─────────────────────────────────────────────────────
 
