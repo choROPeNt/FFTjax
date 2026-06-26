@@ -36,9 +36,10 @@ import numpy as np
 import time
 import xml.etree.ElementTree as ET
 
-from mat_models.elastic    import (LinearElasticIsotropic,
-                                   TransverseIsotropicFibre,
-                                   assemble_C_field_oriented)
+from mat_models.elastic        import (LinearElasticIsotropic,
+                                       TransverseIsotropicFibre,
+                                       assemble_C_field_oriented)
+from mat_models.micromechanics import yarn_properties
 from operators.green       import build_freq_grid, build_green_operator
 from post.fields           import field_to_grid, von_mises, compute_displacement
 from post.io               import IncrementalWriter, to_voigt
@@ -110,13 +111,13 @@ def read_texgen_vtu(path: str):
     phase_np     = np.where(phase_flat >= 0, 1, 0)
     orientations = tangent_flat.T.copy()    # (3, Nv)
 
-    return (nx, ny, nz), (Lx, Ly, Lz), phase_np, orientations
+    return (nx, ny, nz), (Lx, Ly, Lz), phase_np, orientations, phase_flat
 
 
 # ── Load VTU ──────────────────────────────────────────────────────────────────
 
 vtu_path = "data/160_nn_2.vtu"
-n, L, phase_np, orientations_np = read_texgen_vtu(vtu_path)
+n, L, phase_np, orientations_np, yarn_index_np = read_texgen_vtu(vtu_path)
 
 Nv  = int(np.prod(n))
 dx  = tuple(Li / ni for Li, ni in zip(L, n))
@@ -132,14 +133,25 @@ phi_yarn = float(np.mean(phase_np))
 print(f"Yarn vol. fraction: {phi_yarn:.3f}")
 
 # ── Materials ─────────────────────────────────────────────────────────────────
-# Adjust constants to match your actual fibre/matrix system (units: MPa).
+# Constituent properties (MPa).  Adjust to your actual fibre/matrix system.
+
+E_m,   nu_m   = 3.5e3, 0.35    # epoxy matrix
+E_fL,  E_fT   = 230e3, 15e3    # carbon fibre: longitudinal / transverse
+G_fLT          = 15e3           # fibre long.-trans. shear modulus
+nu_fLT, nu_fTT = 0.20, 0.30    # fibre Poisson ratios
+Vf_yarn        = 0.72           # fibre volume fraction within a yarn/tow
+
+E_L, E_T, G_LT, nu_LT, nu_TT = yarn_properties(
+    Vf_yarn, E_fL, E_fT, G_fLT, nu_fLT, nu_fTT, E_m, nu_m
+)
+print(f"Yarn (Vf={Vf_yarn:.2f}):  "
+      f"E_L={E_L/1e3:.1f}  E_T={E_T/1e3:.2f}  "
+      f"G_LT={G_LT/1e3:.2f}  nu_LT={nu_LT:.3f}  nu_TT={nu_TT:.3f}  GPa / —")
 
 materials = [
-    LinearElasticIsotropic(E=3.5e3, nu=0.35, 
-                           name="epoxy matrix"
-                           ),
+    LinearElasticIsotropic(E=E_m, nu=nu_m, name="epoxy matrix"),
     TransverseIsotropicFibre(
-        E_L=230e3, E_T=15e3, G_LT=15e3, nu_LT=0.20, nu_TT=0.30,
+        E_L=E_L, E_T=E_T, G_LT=G_LT, nu_LT=nu_LT, nu_TT=nu_TT,
         name="yarn",
     ),
 ]
@@ -187,6 +199,7 @@ settings = SolverSettings(
     jobname="texgen_elastic",
     output="output",
 )
+
 settings.add_load_step(
     control=jnp.zeros((3, 3)),
     strain_ave_goal=eps_goal,
@@ -238,6 +251,7 @@ t    = state.time
 step = state.kinc
 
 phase_vis   = phase_np.reshape(n).astype(np.float32)
+yarn_grid   = yarn_index_np.reshape(n).astype(np.float32)   # -1=matrix, 0..N=yarn
 orient_grid = orientations_np.T.reshape(*n, 3).astype(np.float32)
 zero_grid   = np.zeros((*n, 6), dtype=np.float64)
 zero_scal   = np.zeros(n,       dtype=np.float64)
@@ -249,6 +263,7 @@ with IncrementalWriter(
 
     w.write_increment(0, {
         "phase":        phase_vis,
+        "yarn_index":   yarn_grid,
         "orientation":  orient_grid,
         "displacement": zero_u,
         "strain":       zero_grid,
