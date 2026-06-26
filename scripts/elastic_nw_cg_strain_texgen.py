@@ -187,7 +187,7 @@ mu0  = phi_yarn * mu_yarn  + (1 - phi_yarn) * mat.mu
 print(f"Reference: lam0={lam0/1e3:.2f} GPa  mu0={mu0/1e3:.2f} GPa")
 
 xi_flat = build_freq_grid(n, L)
-G_glob  = build_green_operator(xi_flat, lam0, mu0)
+G_glob  = build_green_operator(xi_flat, lam0, mu0, scheme='rotated', dx=dx)
 
 # ── Loading ───────────────────────────────────────────────────────────────────
 # Uniaxial macroscopic strain in X1 direction; edit eps_goal as needed.
