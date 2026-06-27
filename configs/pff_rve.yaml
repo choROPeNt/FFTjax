@@ -1,0 +1,74 @@
+# PFF simulation config — square-packed circular-fibre RVE, matrix cracking
+# Input: preprocessed XDMF from generate_rve.py / configs/preproc_rve.yaml
+
+input:   output/preprocessed/rve_phi0.6.xdmf
+jobname: "{input.stem}"
+output:  output/simulation
+
+# Solid circular fibres → binary phi (0/1); Vf_yarn=1.0 so phi_ind = vf/1.0 = vf
+Vf_yarn: 1.0
+
+# ── Materials ─────────────────────────────────────────────────────────────────
+
+materials:
+  matrix:
+    type: LinearElasticIsotropic
+    E:    3500.0    # MPa
+    nu:   0.35
+    name: epoxy matrix
+
+  yarn:
+    type:   TransverseIsotropicFibre
+    E_L:    230000.0   # MPa  fibre longitudinal (fibres run in Z)
+    E_T:    15000.0    # MPa  fibre transverse
+    G_LT:   15000.0
+    nu_LT:  0.20
+    nu_TT:  0.30
+    name:   carbon fibre
+
+  # no void/crack phase for the pristine RVE — omit or set Gc_yarn_factor high
+
+# ── Phase-field parameters ────────────────────────────────────────────────────
+
+pff:
+  l0:              0.30     # mm  ≥ 3 × voxelsize (voxelsize ≈ 0.1 µm → 0.0001 mm)
+  Gc_mat:          0.008     # MPa·mm  matrix fracture toughness
+  Gc_yarn_factor:  2     # fibre never cracks
+  eta:             1.0e-6   # viscous regularisation (Schneider & Kästner 2025)
+  dthres:          0.95     # hybrid irreversibility threshold (Steinke & Kaliske)
+  ngmres_depth:    5        # NGMRES staggered accelerator depth
+
+  toler_st_abs:    1.0e-2
+  toler_st_rel:    1.0e-3
+  maxiter_st:      200
+  toler_helm:      1.0e-3
+  maxiter_helm:    300
+
+# ── Solver ────────────────────────────────────────────────────────────────────
+
+solver:
+  toler_lin:    1.0e-4
+  toler_nw:     1.0e-7
+  maxiter_cg:   1000
+  maxiter_nw:   6
+  scheme:       rotated
+
+# ── Loading — transverse tension (perpendicular to fibre axis) ────────────────
+
+loading:
+  eps_goal:
+    - [1.0e-2, 0.0,   0.0]
+    - [0.0,    0.0,   0.0]
+    - [0.0,    0.0,   0.0]
+
+# ── Time stepper ─────────────────────────────────────────────────────────────
+
+timestepper:
+  dt_init:      0.005
+  t_end:        1.0
+  dt_min:       0.0001
+  dt_max:       0.01
+  max_steps:    200
+  factor_inc:   1.5
+  factor_dec:   0.5
+  max_cutbacks: 5

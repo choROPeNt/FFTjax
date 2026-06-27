@@ -1,0 +1,14 @@
+# Preprocessing config — square-packed circular-fibre RVE
+# {geometry.type} → "square_rve"  (used in output path)
+
+geometry:
+  type:      square_rve
+  phi:       0.6          # target fibre volume fraction
+  r_fib:     3.5          # fibre radius  µm
+  vox:       0.1          # voxel size    µm  (isotropic)
+  nz:        10           # voxels through thickness
+  fibre_dir: [0.0, 0.0, 1.0]   # fibre axis in global frame
+  Vf_yarn:   1.0          # fibre packing within tow (1.0 = solid fibre)
+
+output:  output/preprocessed
+jobname: "rve_phi{geometry.phi}"
