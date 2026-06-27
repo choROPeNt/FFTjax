@@ -35,7 +35,7 @@ pff:
   Gc_mat:          0.008     # MPa·mm  matrix fracture toughness
   Gc_yarn_factor:  2     # fibre never cracks
   eta:             1.0e-6   # viscous regularisation (Schneider & Kästner 2025)
-  dthres:          0.95     # hybrid irreversibility threshold (Steinke & Kaliske)
+
   ngmres_depth:    5        # NGMRES staggered accelerator depth
 
   toler_st_abs:    1.0e-2

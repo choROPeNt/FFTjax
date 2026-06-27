@@ -159,7 +159,7 @@ pff      = cfg["pff"]
 l0       = float(pff["l0"])
 Gc_mat   = float(pff["Gc_mat"])
 Gc_yarn  = Gc_mat * float(pff.get("Gc_yarn_factor", 1000))
-dthres   = float(pff.get("dthres", 0.95))
+
 eta      = float(pff.get("eta", 1e-6))
 
 toler_st_abs = float(pff.get("toler_st_abs", 1e-2))
@@ -174,7 +174,7 @@ Gc_field = (1.0 - phi_ind) * Gc_mat + phi_ind * Gc_yarn
 Gc_field = jnp.where(void_mask, Gc_yarn, Gc_field)
 
 print(f"PFF     : l₀={l0}  Gc_mat={Gc_mat}  Gc_yarn={Gc_yarn:.2e}"
-      f"  dthres={dthres}  η={eta:.0e}  NGMRES={ngmres_depth}")
+      f"  η={eta:.0e}  NGMRES={ngmres_depth}")
 
 # ── Loading & settings ────────────────────────────────────────────────────────
 
@@ -273,9 +273,7 @@ with IncrementalWriter(f"{output}/{jobname}", grid_shape=n, grid_spacing=dx) as 
                 d_prev_st = d_st
 
                 # 1. degrade matrix stiffness
-                g     = jnp.where(matrix_mask,
-                                  degradation(jnp.where(d_st > dthres, d_st, 0.0)),
-                                  1.0)
+                g     = jnp.where(matrix_mask, degradation(d_st), 1.0)
                 C_eff = g[None, None, None, None, :] * C_field
 
                 # 2. mechanical solve
