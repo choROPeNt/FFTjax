@@ -1,304 +1,333 @@
 """
-Active learning over a discrete 4-D latent space using GPJax (Matérn-5/2).
+Active learning over the patches_fft latent space.
 
-Two ways to supply candidates
-------------------------------
-A) Grid (YAML only)
-   Define ``parameters`` in the config — the Cartesian product is used.
+Full automated loop
+-------------------
+1. Load index.json → all 2250 latent codes (mu_mean, 4-D).
+2. If fewer than n_init observations exist: use farthest-point sampling
+   to select n_init diverse patches and run their PFF simulations.
+3. Fit an exact GP (GPJax, Matérn-5/2) on (z, peak_σ) pairs.
+4. Predict posterior variance at all unobserved candidates.
+5. Select the candidate with maximum variance (uncertainty sampling).
+6. Find the nearest actual patch file in the index.
+7. Run that simulation, extract peak stress, add to observations.
+8. Save updated observations back to the YAML config.
+9. Repeat from step 3.
 
-B) File  ← preferred when you have a real VAE/encoder latent space
-   Set ``candidates_file`` in the config pointing to:
-     • .npy  →  (N, 4) float array  of z-vectors
-     • .npz  →  keys  z (N,4)  and optionally  recon_loss (N,)
-   Set ``max_recon_loss`` to discard poorly-reconstructed codes before the GP.
-   The GP then selects the next z to simulate from the ones that actually
-   decode well — fixing the "reconstruction not best" issue.
-
-Workflow
---------
-1. Load or build candidate set.
-2. (Optional) filter by reconstruction quality.
-3. Load existing (X, y) observations from the YAML config.
-4. Fit exact GP (GPJax, Matérn-5/2) on observations.
-5. Posterior variance at every unobserved candidate.
-6. Return the max-variance candidate = next z to simulate.
+QoI = peak spatially-averaged stress component (default σ₁₁, Voigt index 0).
+Simulations are run by calling pff_nw_cg_strain.py with --input <patch.npz>.
 
 Usage
 -----
-    python scripts/active_learning.py configs/latent_space.yaml
+    # one full iteration (initial selection if needed, then GPR step)
+    python scripts/active_learning.py configs/latent_space_patches.yaml
+
+    # run N iterations in sequence
+    python scripts/active_learning.py configs/latent_space_patches.yaml --iters 5
 
 Dependencies
 ------------
-    pip install gpjax optax jax jaxlib pyyaml numpy
+    pip install gpjax optax jax jaxlib pyyaml numpy h5py
 """
 
 import argparse
+import json
+import os
+os.environ["JAX_ENABLE_X64"] = "1"   # must be set before importing jax
+import subprocess
 import sys
-from itertools import product
 from pathlib import Path
 
-import jax
-import jax.numpy as jnp
+import h5py
 import numpy as np
-import optax
+import yaml
 
 sys.path.insert(0, "src")
 from utils.config import load_config
 
-# ── GPJax imports ─────────────────────────────────────────────────────────────
+# ── GPJax ────────────────────────────────────────────────────────────────────
+
 try:
     import gpjax as gpx
+    import jax
+    import jax.numpy as jnp
+    import optax
 except ImportError:
-    raise SystemExit("gpjax not found.  Install with: pip install gpjax")
+    raise SystemExit("gpjax / jax not found.  pip install gpjax optax")
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Step 1: load patch index ──────────────────────────────────────────────────
 
-def _make_candidates(parameters: list[dict]) -> tuple[np.ndarray, list[str]]:
-    """Cartesian product of discrete parameter values (grid mode)."""
-    names  = [p["name"] for p in parameters]
-    values = [p["values"] for p in parameters]
-    grid   = list(product(*values))
-    return np.array(grid, dtype=float), names
+def load_patch_index(index_path: Path) -> tuple[list[dict], np.ndarray]:
+    """Returns patches list and (N, 4) latent-code matrix."""
+    with open(index_path) as f:
+        idx = json.load(f)
+    patches = idx["patches"]
+    Z = np.array([p["mu_mean"] for p in patches], dtype=float)
+    return patches, Z
 
 
-def _load_candidates(
-    cfg: dict,
-) -> tuple[np.ndarray, list[str], np.ndarray | None]:
+# ── Step 2: initial design ────────────────────────────────────────────────────
+
+def farthest_point_sample(Z: np.ndarray, n: int) -> np.ndarray:
     """
-    Load candidates from a file (file mode) or build from Cartesian product.
-
-    File mode  — set ``candidates_file`` in the YAML:
-        .npy   → (N, 4) array                  (no reconstruction loss)
-        .npz   → keys z (N,4), recon_loss (N,) (optional quality filter)
-
-    Returns
-    -------
-    X_all      : (N, d)  raw candidate z-vectors
-    names      : list of dimension labels
-    recon_loss : (N,) float or None
+    Greedy farthest-point sampling.
+    Each new point maximises its minimum distance to the already-selected set.
+    Returns (n,) index array into Z.
     """
-    path = cfg.get("candidates_file")
-    if path:
-        p = Path(path)
-        if not p.exists():
-            raise FileNotFoundError(f"candidates_file not found: {p}")
+    lo, hi = Z.min(0), Z.max(0)
+    Zn = (Z - lo) / np.where(hi > lo, hi - lo, 1.0)   # normalise to [0,1]
 
-        recon_loss = None
-        if p.suffix == ".npz":
-            data = np.load(p)
-            X_all = data["z"].astype(float)
-            if "recon_loss" in data:
-                recon_loss = data["recon_loss"].astype(float)
-        else:
-            X_all = np.load(p).astype(float)
+    sel       = []
+    centroid  = Zn.mean(0)
+    first     = int(np.argmin(np.linalg.norm(Zn - centroid, axis=1)))
+    sel.append(first)
+    min_dists = np.linalg.norm(Zn - Zn[first], axis=1)
 
-        d     = X_all.shape[1]
-        names = cfg.get("dim_names") or [f"z{i}" for i in range(d)]
-        return X_all, names, recon_loss
+    for _ in range(n - 1):
+        nxt = int(np.argmax(min_dists))
+        sel.append(nxt)
+        d = np.linalg.norm(Zn - Zn[nxt], axis=1)
+        min_dists = np.minimum(min_dists, d)
 
-    # fallback: Cartesian grid from ``parameters``
-    X_all, names = _make_candidates(cfg["parameters"])
-    return X_all, names, None
+    return np.array(sel)
 
+
+# ── Step 2b: run simulation ───────────────────────────────────────────────────
+
+def run_simulation(
+    patch_file: Path,
+    sim_config:  Path,
+) -> Path:
+    """
+    Call pff_nw_cg_strain.py with --input <patch_file>.
+    Returns the expected output HDF5 path.
+    """
+    print(f"  Running simulation: {patch_file.name} …")
+    subprocess.run(
+        [sys.executable,
+         "scripts/simulation/pff_nw_cg_strain.py",
+         str(sim_config),
+         "--input", str(patch_file)],
+        check=True,
+    )
+    cfg = load_config(sim_config)
+    jobname = patch_file.stem       # matches --input override in the script
+    return Path(cfg["output"]) / f"{jobname}.h5"
+
+
+# ── Step 2c: extract peak stress ──────────────────────────────────────────────
+
+def extract_peak_stress(h5_path: Path, component: int = 0) -> float:
+    """
+    Read all increments from the simulation HDF5 and return the maximum
+    spatially-averaged stress component.
+
+    Voigt index:  0=σ₁₁  1=σ₂₂  2=σ₃₃  3=σ₁₂  4=σ₁₃  5=σ₂₃
+    Arrays stored in ZYX order in HDF5 with shape (*spatial, 6).
+    """
+    peak = 0.0
+    with h5py.File(h5_path, "r") as f:
+        groups = sorted(k for k in f.keys() if k.startswith("increment_"))
+        for g in groups:
+            grp = f[g]
+            assert isinstance(grp, h5py.Group)
+            if "stress" not in grp:
+                continue
+            ds = grp["stress"]
+            assert isinstance(ds, h5py.Dataset)
+            arr = np.array(ds)           # shape (*spatial, 6), ZYX order
+            mean_s = float(np.mean(arr[..., component]))
+            peak = max(peak, abs(mean_s))
+    return peak
+
+
+# ── Step 3–4: GP ─────────────────────────────────────────────────────────────
 
 def _normalize(X: np.ndarray, lo: np.ndarray, hi: np.ndarray) -> np.ndarray:
-    """Scale each column to [0, 1] using the per-parameter min/max."""
     return (X - lo) / np.where(hi > lo, hi - lo, 1.0)
 
 
-def _obs_to_arrays(
-    observations: list[dict],
-    names: list[str],
-) -> tuple[np.ndarray, np.ndarray]:
-    """Extract (X_obs, y_obs) from the observation list in the YAML."""
-    X_rows, y_vals = [], []
-    for obs in observations:
-        row = [float(obs["params"][n]) for n in names]
-        X_rows.append(row)
-        y_vals.append(float(obs["output"]))
-    return np.array(X_rows), np.array(y_vals).reshape(-1, 1)
-
-
-def _nearest_observed(
-    candidate: np.ndarray,
-    X_obs: np.ndarray,
-) -> float:
-    """Euclidean distance from a candidate to the nearest observation."""
-    return float(np.min(np.linalg.norm(X_obs - candidate, axis=1)))
-
-
-# ── GP model ──────────────────────────────────────────────────────────────────
-
-def fit_gp(
-    X_train: np.ndarray,
-    y_train: np.ndarray,
+def fit_and_predict(
+    X_obs:  np.ndarray,    # (n, 4) normalised
+    y_obs:  np.ndarray,    # (n, 1)
+    X_cand: np.ndarray,    # (M, 4) normalised
     n_iters: int = 500,
-    lr: float = 0.01,
-    key: jax.Array | None = None,
-):
-    """
-    Fit an exact GP with Matérn-5/2 kernel and Gaussian likelihood via GPJax.
+    lr:      float = 0.01,
+) -> np.ndarray:
+    """Fit Matérn-5/2 GP and return posterior variance at candidates."""
+    key = jax.random.PRNGKey(0)
+    X   = jnp.array(X_obs)
+    y   = jnp.array(y_obs)
+    D   = gpx.Dataset(X=X, y=y)
 
-    Parameters
-    ----------
-    X_train : (n, d)  normalised training inputs
-    y_train : (n, 1)  scalar targets
-    n_iters : optimisation steps
-    lr      : Adam learning rate
-
-    Returns
-    -------
-    posterior : optimised GPJax posterior
-    D         : gpx.Dataset
-    """
-    if key is None:
-        key = jax.random.PRNGKey(0)
-
-    X = jnp.array(X_train)
-    y = jnp.array(y_train)
-
-    D = gpx.Dataset(X=X, y=y)
-
-    kernel    = gpx.kernels.Matern52(
-        active_dims=list(range(X.shape[1])),
-    )
+    kernel    = gpx.kernels.Matern52(active_dims=list(range(X.shape[1])))
     meanf     = gpx.mean_functions.Constant()
-    prior     = gpx.Prior(mean_function=meanf, kernel=kernel)
+    # API differs between GPJax versions — try both module paths
+    try:
+        prior = gpx.gps.Prior(mean_function=meanf, kernel=kernel)
+    except AttributeError:
+        prior = gpx.Prior(mean_function=meanf, kernel=kernel)      # type: ignore[attr-defined]
     likelihood = gpx.likelihoods.Gaussian(num_datapoints=D.n)
     posterior  = prior * likelihood
 
-    opt_posterior, _ = gpx.fit(
-        model     = posterior,
-        objective = gpx.objectives.ConjugateMLL(negative=True),
-        train_data= D,
-        optim     = optax.adam(lr),
-        num_iters = n_iters,
-        key       = key,
-        safe      = True,
+    opt_post, _ = gpx.fit(
+        model      = posterior,
+        objective  = gpx.objectives.ConjugateMLL(negative=True),
+        train_data = D,
+        optim      = optax.adam(lr),
+        num_iters  = n_iters,
+        key        = key,
+        safe       = True,
     )
+    pred = opt_post.predict(jnp.array(X_cand), train_data=D)  # type: ignore[union-attr]
+    return np.array(pred.variance())  # type: ignore[union-attr]
 
-    return opt_posterior, D
+
+# ── Step 5: nearest patch ─────────────────────────────────────────────────────
+
+def nearest_patch(z: np.ndarray, patches: list[dict], Z: np.ndarray) -> dict:
+    idx = int(np.argmin(np.linalg.norm(Z - z, axis=1)))
+    return patches[idx]
 
 
-def predict_variance(
-    posterior,
-    D,
-    X_star: np.ndarray,
-) -> np.ndarray:
-    """
-    Posterior predictive variance at candidate points X_star.
+# ── Persistence ───────────────────────────────────────────────────────────────
 
-    Returns
-    -------
-    var : (N,) float
-    """
-    X_s   = jnp.array(X_star)
-    pred  = posterior.predict(X_s, train_data=D)
-    return np.array(pred.variance())
+def save_observations(config_path: Path, obs: list[dict]) -> None:
+    """Overwrite the observations list in the YAML config file."""
+    with open(config_path) as f:
+        raw = yaml.safe_load(f)
+    raw["observations"] = obs
+    with open(config_path, "w") as f:
+        yaml.dump(raw, f, default_flow_style=False, sort_keys=False)
+    print(f"  Saved {len(obs)} observations → {config_path}")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Active learning: select next latent-space point via GP uncertainty"
-    )
-    parser.add_argument("config", type=Path, help="YAML latent-space config")
-    parser.add_argument("--n_iters", type=int, default=500,
-                        help="GP hyperparameter optimisation steps (default 500)")
-    parser.add_argument("--lr",      type=float, default=0.01,
-                        help="Adam learning rate (default 0.01)")
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Active learning — patches_fft GPR loop")
+    parser.add_argument("config", type=Path, help="YAML config (latent_space_patches.yaml)")
+    parser.add_argument("--iters",      type=int,   default=1,    help="GP iterations to run (default 1)")
+    parser.add_argument("--n_init",     type=int,   default=None, help="Override n_init from config")
+    parser.add_argument("--gp_iters",   type=int,   default=500)
+    parser.add_argument("--lr",         type=float, default=0.01)
     args = parser.parse_args()
 
-    cfg = load_config(args.config)
+    cfg        = load_config(args.config)
+    index_path = Path(cfg.get("index_file",  "data/patches_fft/index.json"))
+    sim_config = Path(cfg.get("sim_config",  "configs/pff_prototype.yaml"))
+    patch_dir  = Path(cfg.get("patch_dir",   "data/patches_fft"))
+    component  = int(cfg.get("stress_component", 0))
+    n_init     = args.n_init or int(cfg.get("n_init", 10))
+    names      = cfg.get("dim_names", ["z0", "z1", "z2", "z3"])
 
-    # ── load / build candidates ───────────────────────────────────────────────
-    X_all, names, recon_loss = _load_candidates(cfg)
-    mode = "file" if cfg.get("candidates_file") else "grid"
-    print(f"Candidates   : {len(X_all):,}  (mode={mode},  d={len(names)})")
-    print(f"  dims : {names}")
+    # ── Step 1: load index ────────────────────────────────────────────────────
+    print("=" * 60)
+    print(f"Step 1  Load patch index: {index_path}")
+    patches, Z_all = load_patch_index(index_path)
+    print(f"        {len(patches)} patches  |  latent dim = {Z_all.shape[1]}")
 
-    # ── reconstruction quality filter (file mode only) ────────────────────────
-    if recon_loss is not None:
-        thr = float(cfg.get("max_recon_loss", np.inf))
-        quality_mask = recon_loss <= thr
-        n_before = len(X_all)
-        X_all      = X_all[quality_mask]
-        recon_loss = recon_loss[quality_mask]
-        print(f"  recon filter (≤ {thr:.4g}): {quality_mask.sum():,} / {n_before:,} kept")
+    # normalisation bounds fixed from the full index
+    lo, hi = Z_all.min(0), Z_all.max(0)
 
-    # ── observations ──────────────────────────────────────────────────────────
-    obs = cfg.get("observations", [])
-    if not obs:
-        raise SystemExit("No observations found in config. "
-                         "Add at least one entry under 'observations:'.")
+    for iteration in range(1, args.iters + 1):
+        print(f"\n{'=' * 60}")
+        print(f"Iteration {iteration}/{args.iters}")
 
-    X_obs_raw, y_obs = _obs_to_arrays(obs, names)
-    print(f"\nObservations : {len(obs)}")
-    for i, o in enumerate(obs):
-        print(f"  [{i}]  z={list(o['params'].values())}  output={o['output']:.4g}")
+        obs = list(cfg.get("observations", []) or [])
 
-    # ── normalise ─────────────────────────────────────────────────────────────
-    lo = X_all.min(axis=0)
-    hi = X_all.max(axis=0)
-    X_all_n = _normalize(X_all,     lo, hi)
-    X_obs_n = _normalize(X_obs_raw, lo, hi)
+        # ── Step 2: initial design ────────────────────────────────────────────
+        if len(obs) < n_init:
+            n_needed = n_init - len(obs)
+            print(f"\nStep 2  Initial design — need {n_needed} more simulations")
 
-    # ── remove already observed points ────────────────────────────────────────
-    obs_set = set(map(tuple, np.round(X_obs_raw, 8).tolist()))
-    mask    = np.array([tuple(np.round(row, 8)) not in obs_set
-                        for row in X_all.tolist()])
-    X_cand_n    = X_all_n[mask]
-    X_cand_raw  = X_all[mask]
-    recon_cand  = recon_loss[mask] if recon_loss is not None else None
-    print(f"Unobserved candidates : {mask.sum():,}")
+            # identify already-observed patches by nearest neighbour
+            obs_z = np.array([[o["params"][k] for k in names] for o in obs]) if obs else np.zeros((0, 4))
+            obs_files = set()
+            if len(obs_z) > 0:
+                for z in obs_z:
+                    p = nearest_patch(z, patches, Z_all)
+                    obs_files.add(p["file"])
 
-    if mask.sum() == 0:
-        print("All candidates have been observed. No next point to suggest.")
-        return
+            sel_idx = farthest_point_sample(Z_all, n_init + len(obs))
+            new_patches = [patches[i] for i in sel_idx
+                           if patches[i]["file"] not in obs_files][:n_needed]
 
-    # ── fit GP ────────────────────────────────────────────────────────────────
-    print(f"\nFitting GP (Matérn-5/2, {args.n_iters} iters) …")
-    posterior, D = fit_gp(X_obs_n, y_obs, n_iters=args.n_iters, lr=args.lr)
-    print("GP fit complete.")
+            for p in new_patches:
+                patch_file = patch_dir / p["file"]
+                print(f"\n  ▶ {p['file']}  phi={p['phi']:.4f}")
 
-    # ── predict variance at candidates ────────────────────────────────────────
-    var = predict_variance(posterior, D, X_cand_n)
+                # run simulation
+                h5 = run_simulation(patch_file, sim_config)
 
-    # ── select next point = maximum variance (uncertainty sampling) ───────────
-    best_idx = int(np.argmax(var))
-    next_raw = X_cand_raw[best_idx]
-    next_var = var[best_idx]
-    dist     = _nearest_observed(X_cand_n[best_idx], X_obs_n)
+                # extract QoI
+                sigma_peak = extract_peak_stress(h5, component=component)
+                print(f"    peak σ (component {component}) = {sigma_peak:.4f} MPa")
 
-    next_recon = f"  recon_loss = {recon_cand[best_idx]:.4e}" if recon_cand is not None else ""
-    print(f"\n{'─'*60}")
-    print(f"  Next candidate  σ²={next_var:.4e}  dist_obs={dist:.3f}{next_recon}")
-    print(f"{'─'*60}")
-    for n, v in zip(names, next_raw):
-        print(f"  {n:20s}  {v:.6g}")
-    print(f"{'─'*60}")
+                # add observation
+                obs.append({
+                    "params":  {k: float(v) for k, v in zip(names, p["mu_mean"])},
+                    "output":  float(sigma_peak),
+                    "file":    p["file"],
+                })
+                cfg["observations"] = obs
+                save_observations(args.config, obs)
 
-    # ── top-5 candidates ──────────────────────────────────────────────────────
-    top5     = np.argsort(var)[::-1][:5]
-    has_recon = recon_cand is not None
-    hdr_recon = f"  {'recon':>10}" if has_recon else ""
-    print(f"\nTop-5 by variance:")
-    print(f"  {'rank':>4}  {'σ²':>12}  {'dist_obs':>10}{hdr_recon}  parameters")
-    for rank, idx in enumerate(top5, 1):
-        row   = X_cand_raw[idx]
-        d     = _nearest_observed(X_cand_n[idx], X_obs_n)
-        param = "  ".join(f"{n}={v:.4g}" for n, v in zip(names, row))
-        rc    = f"  {recon_cand[idx]:>10.4e}" if has_recon else ""
-        print(f"  {rank:>4}  {var[idx]:>12.4e}  {d:>10.3f}{rc}  {param}")
+        # ── Step 3: GP fitting ────────────────────────────────────────────────
+        print(f"\nStep 3  Fit GP on {len(obs)} observations …")
+        X_obs = np.array([[o["params"][k] for k in names] for o in obs])
+        y_obs = np.array([[o["output"]] for o in obs])
+        X_obs_n = _normalize(X_obs, lo, hi)
 
-    # ── YAML snippet for next observation ─────────────────────────────────────
-    print(f"\nAdd to '{args.config}' after running the simulation:")
-    print(f"  - params:")
-    for n, v in zip(names, next_raw):
-        print(f"      {n}: {v:.6g}")
-    print(f"    output: <result>   # fill in after simulation")
+        # candidates = all patches not yet observed
+        obs_files = {o.get("file", "") for o in obs}
+        cand_mask = [p["file"] not in obs_files for p in patches]
+        X_cand    = Z_all[cand_mask]
+        X_cand_n  = _normalize(X_cand, lo, hi)
+        cand_patches = [p for p, m in zip(patches, cand_mask) if m]
+        print(f"        {sum(cand_mask)} unobserved candidates remaining")
+
+        if len(X_cand) == 0:
+            print("All patches observed — done.")
+            break
+
+        # ── Step 4: predict variance ──────────────────────────────────────────
+        print(f"Step 4  GP uncertainty (Matérn-5/2, {args.gp_iters} iters) …")
+        var = fit_and_predict(X_obs_n, y_obs, X_cand_n,
+                              n_iters=args.gp_iters, lr=args.lr)
+
+        # ── Step 5: select next ───────────────────────────────────────────────
+        best = int(np.argmax(var))
+        next_p = cand_patches[best]
+        print(f"\nStep 5  Next patch  σ²={var[best]:.4e}")
+        print(f"        file    : {next_p['file']}")
+        print(f"        phi     : {next_p['phi']:.4f}")
+        print(f"        mu_mean : {next_p['mu_mean']}")
+
+        # top-5
+        top5 = np.argsort(var)[::-1][:5]
+        print(f"\n  Top-5 by variance:")
+        for rank, i in enumerate(top5, 1):
+            p = cand_patches[i]
+            print(f"  {rank}. σ²={var[i]:.4e}  {p['file']}  phi={p['phi']:.4f}")
+
+        # ── Step 6: run next simulation ───────────────────────────────────────
+        print(f"\nStep 6  Run simulation …")
+        patch_file = patch_dir / next_p["file"]
+        h5 = run_simulation(patch_file, sim_config)
+        sigma_peak = extract_peak_stress(h5, component=component)
+        print(f"        peak σ = {sigma_peak:.4f} MPa")
+
+        obs.append({
+            "params": {k: float(v) for k, v in zip(names, next_p["mu_mean"])},
+            "output": float(sigma_peak),
+            "file":   next_p["file"],
+        })
+        cfg["observations"] = obs
+        save_observations(args.config, obs)
+
+    print(f"\nDone — {len(cfg.get('observations', []))} total observations.")
 
 
 if __name__ == "__main__":

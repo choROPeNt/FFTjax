@@ -56,9 +56,14 @@ parser = argparse.ArgumentParser(
     description="PFF benchmark solver (Miehe split) — config-driven via YAML"
 )
 parser.add_argument("config", type=Path, help="Path to YAML configuration file")
+parser.add_argument("--input", type=Path, default=None,
+                    help="Override input file (used by active_learning.py for batch runs)")
 args = parser.parse_args()
 
 cfg = load_config(args.config)
+if args.input is not None:          # batch override — re-derive jobname from file stem
+    cfg["input"]   = str(args.input)
+    cfg["jobname"] = args.input.stem
 print(f"Config  : {args.config}")
 print(f"Input   : {cfg['input']}")
 print(f"Output  : {cfg['output']}/{cfg['jobname']}")
@@ -70,6 +75,17 @@ n, L, phase_np, orientations_np, _, vf_np, d_init_np, H_init_np = \
 
 Nv   = int(np.prod(n))
 dx   = tuple(Li / ni for Li, ni in zip(L, n))
+# ── Fill fiber orientations when not stored in the file ───────────────────────
+_fiber_phase_cfg = int(cfg.get("fiber_phase", 1))
+if not np.any(orientations_np != 0) and "fibre_dir" in cfg:
+    d = np.array(cfg["fibre_dir"], dtype=float)
+    d /= np.linalg.norm(d)
+    fiber_vox = phase_np == _fiber_phase_cfg
+    orientations_np = orientations_np.copy()
+    orientations_np[:, fiber_vox] = d[:, None]
+    print(f"  Orientations set to {d} for phase {_fiber_phase_cfg} "
+          f"({int(fiber_vox.sum())} voxels)")
+
 phi_ = float(np.mean(phase_np == 1))
 
 print(f"Device  : {jax.devices()[0].device_kind}")
@@ -120,22 +136,40 @@ for m in [mat_matrix, mat_yarn]:
 
 # ── Stiffness field ───────────────────────────────────────────────────────────
 
-Vf_yarn = float(cfg.get("Vf_yarn", 1.0))
-vf_jax  = jnp.array(vf_np)
-C_field = assemble_C_field_smooth([mat_matrix, mat_yarn], orientations, vf_jax)
+has_phase2      = bool(np.any(phase_np == 2))
+phase2_mask     = jnp.array(phase_np == 2)
+interphase_mask = jnp.zeros(Nv, dtype=bool)   # overridden below if interphase present
+Vf_yarn     = float(cfg.get("Vf_yarn", 1.0))
+vf_jax      = jnp.array(vf_np)
 
-# void/crack override — only applied when phase-2 voxels exist in the data
-has_void = bool(np.any(phase_np == 2))
-if has_void:
-    void_spec = mat_cfg.get("void", {
-        "type": "LinearElasticIsotropic",
-        "E": 1e-6, "nu": float(mat_cfg["matrix"]["nu"]), "name": "void/crack",
-    })
-    mat_void   = _build_material(void_spec)
+if has_phase2 and "interphase" in mat_cfg:
+    # ── 3-phase: materials listed in phase-index order ────────────────────────
+    # fiber_phase in config tells us which phase index is the undamageable fibre.
+    # Materials list must be [phase0_mat, phase1_mat, phase2_mat].
+    fiber_phase = int(cfg.get("fiber_phase", 1))   # default: old behaviour phase1=fiber
+    from mat_models.elastic import assemble_C_field_oriented
+    mat_interphase = _build_material(mat_cfg["interphase"])
+    print(" ", mat_interphase)
+    # build list in phase-index order
+    if fiber_phase == 2:
+        materials_3 = [mat_matrix, mat_interphase, mat_yarn]   # 0=mat 1=inter 2=yarn
+    else:
+        materials_3 = [mat_matrix, mat_yarn, mat_interphase]   # 0=mat 1=yarn 2=inter
+    C_field = assemble_C_field_oriented(materials_3, phase_jax, orientations)
+    print(f"  (3-phase assembly, fiber_phase={fiber_phase})")
+
+elif has_phase2 and "void" in mat_cfg:
+    # ── void/crack override ───────────────────────────────────────────────────
+    C_field = assemble_C_field_smooth([mat_matrix, mat_yarn], orientations, vf_jax)
+    mat_void   = _build_material(mat_cfg["void"])
     print(" ", mat_void)
-    void_mask5 = jnp.broadcast_to(void_mask[None,None,None,None,:], C_field.shape)
+    void_mask5 = jnp.broadcast_to(phase2_mask[None,None,None,None,:], C_field.shape)
     C_void5    = jnp.broadcast_to(mat_void.stiffness_tensor()[..., None], C_field.shape)
     C_field    = jnp.where(void_mask5, C_void5, C_field)
+
+else:
+    # ── 2-phase smooth blend ──────────────────────────────────────────────────
+    C_field = assemble_C_field_smooth([mat_matrix, mat_yarn], orientations, vf_jax)
 
 lam_vox, mu_vox = lame_from_C_field(C_field)
 
@@ -175,10 +209,19 @@ toler_st_rel = float(pff.get("toler_st_rel", 1e-3))
 maxiter_st   = int(pff.get("maxiter_st", 200))
 toler_helm   = float(pff.get("toler_helm", 1e-3))
 maxiter_helm = int(pff.get("maxiter_helm", 300))
-phi_ind  = jnp.clip(vf_jax / Vf_yarn, 0.0, 1.0)
-Gc_field = (1.0 - phi_ind) * Gc_mat + phi_ind * Gc_yarn
-if has_void:
-    Gc_field = jnp.where(void_mask, Gc_yarn, Gc_field)
+if has_phase2 and "interphase" in mat_cfg:
+    Gc_interphase   = float(pff.get("Gc_interphase", Gc_mat * 0.5))
+    fiber_mask_jax  = jnp.array(phase_np == fiber_phase)
+    inter_phase_idx = 1 if fiber_phase == 2 else 2
+    interphase_mask = jnp.array(phase_np == inter_phase_idx)
+    Gc_field = jnp.where(fiber_mask_jax,  Gc_yarn,
+               jnp.where(interphase_mask, Gc_interphase, Gc_mat))
+    print(f"  Gc_interphase = {Gc_interphase:.3e}  MPa·mm")
+else:
+    phi_ind  = jnp.clip(vf_jax / Vf_yarn, 0.0, 1.0)
+    Gc_field = (1.0 - phi_ind) * Gc_mat + phi_ind * Gc_yarn
+    if has_phase2 and "void" in mat_cfg:
+        Gc_field = jnp.where(phase2_mask, Gc_yarn, Gc_field)
 
 print(f"PFF     : l₀={l0}  Gc_mat={Gc_mat}  Gc_yarn={Gc_yarn:.2e}"
       f"  η={eta:.0e}")
@@ -291,7 +334,10 @@ with IncrementalWriter(f"{output}/{jobname}", grid_shape=n, grid_spacing=dx) as 
 
                 # 3. crack driving force — Miehe spectral split, matrix only
                 psi_pos, _ = strain_energy_amor_split(eps_i, lam_vox, mu_vox)
-                psi_pos    = jnp.where(matrix_mask, psi_pos, 0.0)
+                # damage zone: matrix always; interphase too if present
+                damage_zone = (matrix_mask | interphase_mask) if (
+                    has_phase2 and "interphase" in mat_cfg) else matrix_mask
+                psi_pos    = jnp.where(damage_zone, psi_pos, 0.0)
 
                 # 4. history
                 H_st = update_history(H_st, psi_pos)

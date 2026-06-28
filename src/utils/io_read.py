@@ -226,12 +226,21 @@ def read_simulation_input(
 
     if suffix == ".npz":
         data  = read_npz(path)
-        n     = tuple(int(v) for v in data["n"])
-        L     = tuple(float(v) for v in data["L"])
+        n_raw = tuple(int(v) for v in data["n"])
+        L_raw = tuple(float(v) for v in data["L"])
+        # promote 2-D grids to 3-D (nz = 1)
+        n = n_raw if len(n_raw) == 3 else (*n_raw, 1)
+        L = L_raw if len(L_raw) == 3 else (*L_raw, min(L_raw) / n_raw[0])
         phase = data["phase"].ravel().astype(int)
         ori_def, yi_def, vf_def, d_def, H_def = _defaults(n, phase)
-        _ori = data.get("orientations")
-        orientations = _ori if _ori is not None else ori_def
+        # accept both "orientations" (3, Nv) and "orientation" (*spatial, 3)
+        _ori = data.get("orientations") or data.get("orientation")
+        if _ori is not None:
+            arr = np.asarray(_ori)
+            # (*, 3) spatial grid → (3, Nv)
+            orientations = arr.reshape(-1, 3).T.copy() if arr.shape[-1] == 3 else arr
+        else:
+            orientations = ori_def
         _yi  = data.get("yarn_index")
         yarn_index   = _yi.ravel().astype(int) if _yi is not None else yi_def
         _vf  = data.get("volume_fraction")

@@ -1,0 +1,19 @@
+index_file: data/patches_fft/index.json
+patch_dir: data/patches_fft
+sim_config: configs/pff_prototype.yaml
+dim_names:
+- z0
+- z1
+- z2
+- z3
+n_init: 1
+stress_component: 0
+target: peak_sigma_11
+observations:
+- params:
+    z0: 0.006437940523028374
+    z1: -0.027943119406700134
+    z2: -0.0032990891486406326
+    z3: -0.022368742153048515
+  output: 11.505774180158285
+  file: patch_0438_phi0.7314.npz
