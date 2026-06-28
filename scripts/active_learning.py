@@ -98,22 +98,24 @@ def farthest_point_sample(Z: np.ndarray, n: int) -> np.ndarray:
 def run_simulation(
     patch_file: Path,
     sim_config:  Path,
+    output_dir:  Path,
 ) -> Path:
     """
-    Call pff_nw_cg_strain.py with --input <patch_file>.
+    Call pff_nw_cg_strain.py with --input and --output overrides.
     Returns the expected output HDF5 path.
     """
-    print(f"  Running simulation: {patch_file.name} …")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"  Running simulation: {patch_file.name} → {output_dir}")
     subprocess.run(
         [sys.executable,
          "scripts/simulation/pff_nw_cg_strain.py",
          str(sim_config),
-         "--input", str(patch_file)],
+         "--input",  str(patch_file),
+         "--output", str(output_dir)],
         check=True,
     )
-    cfg = load_config(sim_config)
-    jobname = patch_file.stem       # matches --input override in the script
-    return Path(cfg["output"]) / f"{jobname}.h5"
+    jobname = patch_file.stem
+    return output_dir / f"{jobname}.h5"
 
 
 # ── Step 2c: extract peak stress ──────────────────────────────────────────────
@@ -229,7 +231,8 @@ def main() -> None:
     print(f"        {len(patches)} patches  |  latent dim = {Z_all.shape[1]}")
 
     # normalisation bounds fixed from the full index
-    lo, hi = Z_all.min(0), Z_all.max(0)
+    lo, hi   = Z_all.min(0), Z_all.max(0)
+    base_out = Path(cfg.get("active_output", "output/active_learning"))
 
     for iteration in range(1, args.iters + 1):
         print(f"\n{'=' * 60}")
@@ -259,7 +262,7 @@ def main() -> None:
                 print(f"\n  ▶ {p['file']}  phi={p['phi']:.4f}")
 
                 # run simulation
-                h5 = run_simulation(patch_file, sim_config)
+                h5 = run_simulation(patch_file, sim_config, base_out / "initial")
 
                 # extract QoI
                 sigma_peak = extract_peak_stress(h5, component=component)
@@ -315,7 +318,7 @@ def main() -> None:
         # ── Step 6: run next simulation ───────────────────────────────────────
         print(f"\nStep 6  Run simulation …")
         patch_file = patch_dir / next_p["file"]
-        h5 = run_simulation(patch_file, sim_config)
+        h5 = run_simulation(patch_file, sim_config, base_out / f"iter_{iteration:02d}")
         sigma_peak = extract_peak_stress(h5, component=component)
         print(f"        peak σ = {sigma_peak:.4f} MPa")
 

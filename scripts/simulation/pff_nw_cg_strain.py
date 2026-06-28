@@ -58,12 +58,16 @@ parser = argparse.ArgumentParser(
 parser.add_argument("config", type=Path, help="Path to YAML configuration file")
 parser.add_argument("--input", type=Path, default=None,
                     help="Override input file (used by active_learning.py for batch runs)")
+parser.add_argument("--output", type=Path, default=None,
+                    help="Override output directory (used by active_learning.py)")
 args = parser.parse_args()
 
 cfg = load_config(args.config)
-if args.input is not None:          # batch override — re-derive jobname from file stem
+if args.input is not None:
     cfg["input"]   = str(args.input)
     cfg["jobname"] = args.input.stem
+if args.output is not None:
+    cfg["output"] = str(args.output)
 print(f"Config  : {args.config}")
 print(f"Input   : {cfg['input']}")
 print(f"Output  : {cfg['output']}/{cfg['jobname']}")
