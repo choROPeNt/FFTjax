@@ -3,8 +3,7 @@ Phase-field fracture (AT2) for a fibre composite RVE — config-driven via YAML.
 
 Uses the benchmark solver settings from Schneider & Kästner (2025):
   - Willot rotated Green's operator
-  - Miehe spectral split for crack driving force ψ⁺
-  - NGMRES acceleration of the staggered fixed-point
+  - Amor volumetric-deviatoric split for crack driving force ψ⁺
   - Viscous regularisation η
 
 String values in the YAML support {variable} interpolation.
@@ -38,13 +37,12 @@ from utils.io_read             import read_simulation_input
 from mat_models.elastic        import (LinearElasticIsotropic,
                                        TransverseIsotropicFibre,
                                        assemble_C_field_smooth,
-                                       strain_energy_miehe_split,
+                                       strain_energy_amor_split,
                                        lame_from_C_field)
 from mat_models.micromechanics import yarn_properties
 from operators.green           import build_freq_grid, build_green_operator
 from post.fields               import field_to_grid, von_mises, compute_displacement
 from post.io                   import IncrementalWriter, to_voigt
-from solvers.anderson          import NGMRESAccelerator
 from solvers.elastic_nw_cg    import solve_elastic
 from solvers.pff_damage        import (degradation, update_history,
                                        solve_helmholtz_cg_het)
@@ -55,7 +53,7 @@ jax.config.update("jax_enable_x64", True)
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 parser = argparse.ArgumentParser(
-    description="PFF benchmark solver (NGMRES + Miehe split) — config-driven via YAML"
+    description="PFF benchmark solver (Miehe split) — config-driven via YAML"
 )
 parser.add_argument("config", type=Path, help="Path to YAML configuration file")
 args = parser.parse_args()
@@ -104,34 +102,40 @@ def _build_material(spec: dict):
         )
     if t == "LinearElasticIsotropic":
         return LinearElasticIsotropic(
-            **{k: float(v) if k != "name" else v for k, v in kw.items()}
+            name=str(kw.get("name", t)),
+            **{k: float(v) for k, v in kw.items() if k != "name"},
         )
     if t == "TransverseIsotropicFibre":
         return TransverseIsotropicFibre(
-            **{k: float(v) if k != "name" else v for k, v in kw.items()}
+            name=str(kw.get("name", t)),
+            **{k: float(v) for k, v in kw.items() if k != "name"},
         )
     raise ValueError(f"Unknown material type: {t}")
 
 mat_cfg    = cfg["materials"]
 mat_matrix = _build_material(mat_cfg["matrix"])
 mat_yarn   = _build_material(mat_cfg["yarn"])
-mat_void   = _build_material(mat_cfg.get("void", {
-    "type": "LinearElasticIsotropic",
-    "E": 1e-6, "nu": mat_matrix.nu, "name": "void/crack",
-}))
-materials = [mat_matrix, mat_yarn, mat_void]
-for m in materials:
+for m in [mat_matrix, mat_yarn]:
     print(" ", m)
 
 # ── Stiffness field ───────────────────────────────────────────────────────────
 
 Vf_yarn = float(cfg.get("Vf_yarn", 1.0))
 vf_jax  = jnp.array(vf_np)
-C_field = assemble_C_field_smooth(materials[:2], orientations, vf_jax)
+C_field = assemble_C_field_smooth([mat_matrix, mat_yarn], orientations, vf_jax)
 
-void_mask5 = jnp.broadcast_to(void_mask[None,None,None,None,:], C_field.shape)
-C_void5    = jnp.broadcast_to(mat_void.stiffness_tensor()[..., None], C_field.shape)
-C_field    = jnp.where(void_mask5, C_void5, C_field)
+# void/crack override — only applied when phase-2 voxels exist in the data
+has_void = bool(np.any(phase_np == 2))
+if has_void:
+    void_spec = mat_cfg.get("void", {
+        "type": "LinearElasticIsotropic",
+        "E": 1e-6, "nu": float(mat_cfg["matrix"]["nu"]), "name": "void/crack",
+    })
+    mat_void   = _build_material(void_spec)
+    print(" ", mat_void)
+    void_mask5 = jnp.broadcast_to(void_mask[None,None,None,None,:], C_field.shape)
+    C_void5    = jnp.broadcast_to(mat_void.stiffness_tensor()[..., None], C_field.shape)
+    C_field    = jnp.where(void_mask5, C_void5, C_field)
 
 lam_vox, mu_vox = lame_from_C_field(C_field)
 
@@ -140,7 +144,11 @@ lam_vox, mu_vox = lame_from_C_field(C_field)
 def _lame(E, nu):
     return E * nu / ((1+nu)*(1-2*nu)), E / (2*(1+nu))
 
+assert isinstance(mat_yarn, TransverseIsotropicFibre), \
+    "yarn material must be TransverseIsotropicFibre to access E_T / nu_TT"
 lam_yarn_r, mu_yarn_r = _lame(mat_yarn.E_T, mat_yarn.nu_TT)
+assert isinstance(mat_matrix, LinearElasticIsotropic), \
+    "matrix material must be LinearElasticIsotropic to access E / nu"
 lam_mat_r,  mu_mat_r  = _lame(mat_matrix.E, mat_matrix.nu)
 lam0 = phi_ * lam_yarn_r + (1-phi_) * lam_mat_r
 mu0  = phi_ * mu_yarn_r  + (1-phi_) * mu_mat_r
@@ -167,14 +175,13 @@ toler_st_rel = float(pff.get("toler_st_rel", 1e-3))
 maxiter_st   = int(pff.get("maxiter_st", 200))
 toler_helm   = float(pff.get("toler_helm", 1e-3))
 maxiter_helm = int(pff.get("maxiter_helm", 300))
-ngmres_depth = int(pff.get("ngmres_depth", 5))
-
 phi_ind  = jnp.clip(vf_jax / Vf_yarn, 0.0, 1.0)
 Gc_field = (1.0 - phi_ind) * Gc_mat + phi_ind * Gc_yarn
-Gc_field = jnp.where(void_mask, Gc_yarn, Gc_field)
+if has_void:
+    Gc_field = jnp.where(void_mask, Gc_yarn, Gc_field)
 
 print(f"PFF     : l₀={l0}  Gc_mat={Gc_mat}  Gc_yarn={Gc_yarn:.2e}"
-      f"  η={eta:.0e}  NGMRES={ngmres_depth}")
+      f"  η={eta:.0e}")
 
 # ── Loading & settings ────────────────────────────────────────────────────────
 
@@ -267,7 +274,6 @@ with IncrementalWriter(f"{output}/{jobname}", grid_shape=n, grid_spacing=dx) as 
 
             d_st = d_field
             H_st = H_field
-            ngmres = NGMRESAccelerator(depth=ngmres_depth)
 
             for iter_st in range(1, maxiter_st + 1):
                 d_prev_st = d_st
@@ -284,7 +290,7 @@ with IncrementalWriter(f"{output}/{jobname}", grid_shape=n, grid_spacing=dx) as 
                 )
 
                 # 3. crack driving force — Miehe spectral split, matrix only
-                psi_pos, _ = strain_energy_miehe_split(eps_i, lam_vox, mu_vox)
+                psi_pos, _ = strain_energy_amor_split(eps_i, lam_vox, mu_vox)
                 psi_pos    = jnp.where(matrix_mask, psi_pos, 0.0)
 
                 # 4. history
@@ -297,12 +303,7 @@ with IncrementalWriter(f"{output}/{jobname}", grid_shape=n, grid_spacing=dx) as 
                     eta=eta, dt=dt,
                 )
 
-                # 6. NGMRES acceleration
-                x_in  = jnp.concatenate([d_prev_st, H_st])
-                g_out = jnp.concatenate([d_new,     H_st])
-                x_acc = ngmres.step(x_in, g_out)
-                d_st  = x_acc[:Nv]
-                H_st  = x_acc[Nv:]
+                d_st = d_new
 
                 diff    = jnp.max(jnp.abs(d_st - d_prev_st))
                 err_abs = float(diff)
