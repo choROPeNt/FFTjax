@@ -166,8 +166,8 @@ def read_npz(path: str | Path) -> dict[str, np.ndarray]:
 def read_simulation_input(
     path: str | Path,
 ) -> tuple[
-    tuple[int, int, int],
-    tuple[float, float, float],
+    tuple[int, ...],
+    tuple[float, ...],
     np.ndarray,
     np.ndarray,
     np.ndarray,
@@ -194,34 +194,52 @@ def read_simulation_input(
     path   = Path(path)
     suffix = path.suffix.lower()
 
+    def _defaults(n: tuple, phase: np.ndarray):
+        """Fallback values for optional fields."""
+        Nv = int(np.prod(n))
+        return (
+            np.zeros((3, Nv)),                # orientations
+            np.full(Nv, -1, dtype=int),       # yarn_index  (-1 = matrix)
+            (phase == 1).astype(float),       # volume_fraction (binary fallback)
+            np.zeros(Nv),                     # d_init
+            np.zeros(Nv),                     # H_init
+        )
+
     if suffix == ".vtu":
         n, L, phase, orientations, yarn_index, vf = read_vtu(path)
-        Nv     = int(np.prod(n))
+        Nv = int(np.prod(n))
         return n, L, phase, orientations, yarn_index, vf, np.zeros(Nv), np.zeros(Nv)
 
     if suffix in (".h5", ".xdmf"):
         n, L, fields = read_xdmf(path)
-        Nv     = int(np.prod(n))
-        phase  = fields.get("phase",     np.zeros(Nv)).ravel().astype(int)
-        orient = fields.get("orientation", np.zeros((*n, 3)))
-        orientations = orient.reshape(-1, 3).T          # (3, Nv)
-        yarn_index   = fields.get("yarn_index", np.full(Nv, -1.0)).ravel().astype(int)
-        vf = fields.get("volume_fraction",
-                         (phase == 1).astype(float)).ravel()
-        return n, L, phase, orientations, yarn_index, vf, np.zeros(Nv), np.zeros(Nv)
+        Nv    = int(np.prod(n))
+        phase = fields.get("phase", np.zeros(Nv)).ravel().astype(int)
+        ori_def, yi_def, vf_def, d_def, H_def = _defaults(n, phase)
+        _ori = fields.get("orientation")
+        orientations = (_ori.reshape(-1, 3).T if _ori is not None
+                        else ori_def)
+        _yi = fields.get("yarn_index")
+        yarn_index   = _yi.ravel().astype(int) if _yi is not None else yi_def
+        _vf = fields.get("volume_fraction")
+        vf           = _vf.ravel() if _vf is not None else vf_def
+        return n, L, phase, orientations, yarn_index, vf, d_def, H_def
 
     if suffix == ".npz":
         data  = read_npz(path)
         n     = tuple(int(v) for v in data["n"])
         L     = tuple(float(v) for v in data["L"])
-        Nv    = int(np.prod(n))
-        phase        = data["phase"].ravel().astype(int)
-        orientations = data["orientations"]              # (3, Nv)
-        yarn_index   = data["yarn_index"].ravel().astype(int)
-        vf           = data.get("volume_fraction",
-                                 (phase == 1).astype(float)).ravel()
-        d_init       = data.get("d_init",  np.zeros(Nv)).ravel()
-        H_init       = data.get("H_init",  np.zeros(Nv)).ravel()
+        phase = data["phase"].ravel().astype(int)
+        ori_def, yi_def, vf_def, d_def, H_def = _defaults(n, phase)
+        _ori = data.get("orientations")
+        orientations = _ori if _ori is not None else ori_def
+        _yi  = data.get("yarn_index")
+        yarn_index   = _yi.ravel().astype(int) if _yi is not None else yi_def
+        _vf  = data.get("volume_fraction")
+        vf   = _vf.ravel() if _vf is not None else vf_def
+        _di  = data.get("d_init")
+        d_init  = _di.ravel()  if _di is not None else d_def
+        _Hi  = data.get("H_init")
+        H_init  = _Hi.ravel()  if _Hi is not None else H_def
         return n, L, phase, orientations, yarn_index, vf, d_init, H_init
 
     raise ValueError(
