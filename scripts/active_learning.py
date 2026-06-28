@@ -118,7 +118,30 @@ def run_simulation(
     return output_dir / f"{jobname}.h5"
 
 
-# ── Step 2c: extract peak stress ──────────────────────────────────────────────
+# ── Step 2c: extract peak stress & stress-strain curve ───────────────────────
+
+def extract_stress_strain_curve(
+    h5_path: Path,
+    component: int = 0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Read all increments and return spatially-averaged (strain, stress) arrays.
+
+    Voigt index:  0=σ₁₁/ε₁₁  1=σ₂₂/ε₂₂  2=σ₃₃/ε₃₃
+                  3=σ₁₂/ε₁₂  4=σ₁₃/ε₁₃  5=σ₂₃/ε₂₃
+    """
+    strains, stresses = [], []
+    with h5py.File(h5_path, "r") as f:
+        groups = sorted(k for k in f.keys() if k.startswith("increment_"))
+        for g in groups:
+            grp = f[g]
+            assert isinstance(grp, h5py.Group)
+            if "stress" not in grp or "strain" not in grp:
+                continue
+            stresses.append(float(np.mean(np.array(grp["stress"])[..., component])))
+            strains.append( float(np.mean(np.array(grp["strain"])[..., component])))
+    return np.array(strains), np.array(stresses)
+
 
 def extract_peak_stress(h5_path: Path, component: int = 0) -> float:
     """
@@ -128,20 +151,8 @@ def extract_peak_stress(h5_path: Path, component: int = 0) -> float:
     Voigt index:  0=σ₁₁  1=σ₂₂  2=σ₃₃  3=σ₁₂  4=σ₁₃  5=σ₂₃
     Arrays stored in ZYX order in HDF5 with shape (*spatial, 6).
     """
-    peak = 0.0
-    with h5py.File(h5_path, "r") as f:
-        groups = sorted(k for k in f.keys() if k.startswith("increment_"))
-        for g in groups:
-            grp = f[g]
-            assert isinstance(grp, h5py.Group)
-            if "stress" not in grp:
-                continue
-            ds = grp["stress"]
-            assert isinstance(ds, h5py.Dataset)
-            arr = np.array(ds)           # shape (*spatial, 6), ZYX order
-            mean_s = float(np.mean(arr[..., component]))
-            peak = max(peak, abs(mean_s))
-    return peak
+    _, stresses = extract_stress_strain_curve(h5_path, component)
+    return float(np.max(np.abs(stresses))) if len(stresses) else 0.0
 
 
 # ── Step 3–4: GP ─────────────────────────────────────────────────────────────
@@ -156,16 +167,19 @@ def fit_and_predict(
     X_cand: np.ndarray,    # (M, 4) normalised
     n_iters: int = 500,
     lr:      float = 0.01,
-) -> np.ndarray:
-    """Fit Matérn-5/2 GP and return posterior variance at candidates."""
+) -> tuple[np.ndarray, np.ndarray, dict]:
+    """Fit Matérn-5/2 GP and return (posterior mean, posterior variance, hyperparams)."""
     key = jax.random.PRNGKey(0)
     X   = jnp.array(X_obs)
     y   = jnp.array(y_obs)
     D   = gpx.Dataset(X=X, y=y)
 
-    kernel    = gpx.kernels.Matern52(active_dims=list(range(X.shape[1])))
+    dims   = list(range(X.shape[1]))
+    kernel = gpx.kernels.SumKernel(kernels=[
+        gpx.kernels.Linear(active_dims=dims),
+        gpx.kernels.Matern32(active_dims=dims),
+    ])
     meanf     = gpx.mean_functions.Constant()
-    # API differs between GPJax versions — try both module paths
     try:
         prior = gpx.gps.Prior(mean_function=meanf, kernel=kernel)
     except AttributeError:
@@ -175,7 +189,7 @@ def fit_and_predict(
 
     opt_post, _ = gpx.fit(
         model      = posterior,
-        objective  = gpx.objectives.ConjugateMLL(negative=True),
+        objective  = lambda p, d: -gpx.objectives.conjugate_mll(p, d),
         train_data = D,
         optim      = optax.adam(lr),
         num_iters  = n_iters,
@@ -183,7 +197,19 @@ def fit_and_predict(
         safe       = True,
     )
     pred = opt_post.predict(jnp.array(X_cand), train_data=D)  # type: ignore[union-attr]
-    return np.array(pred.variance())  # type: ignore[union-attr]
+
+    def _unwrap(p):
+        return p.unwrap() if hasattr(p, "unwrap") else jnp.asarray(p)
+
+    k_linear, k_matern = opt_post.prior.kernel.kernels
+    hyperparams = {
+        "linear_variance":  float(_unwrap(k_linear.variance)),
+        "matern_lengthscale": np.array(_unwrap(k_matern.lengthscale)),
+        "matern_variance":  float(_unwrap(k_matern.variance)),
+        "noise_variance":   float(_unwrap(opt_post.likelihood.obs_stddev) ** 2),
+        "mean_constant":    float(_unwrap(opt_post.prior.mean_function.constant)),
+    }
+    return np.array(pred.mean), np.array(pred.variance), hyperparams  # type: ignore[union-attr]
 
 
 # ── Step 5: nearest patch ─────────────────────────────────────────────────────
@@ -194,6 +220,142 @@ def nearest_patch(z: np.ndarray, patches: list[dict], Z: np.ndarray) -> dict:
 
 
 # ── Persistence ───────────────────────────────────────────────────────────────
+
+def save_trace_snapshot(
+    trace_dir: Path,
+    iteration: int,
+    mean_all: np.ndarray,     # (N,) posterior mean; NaN for observed
+    var_all: np.ndarray,      # (N,) posterior variance; 0 for observed
+    obs_mask: np.ndarray,     # (N,) bool — True where already observed
+    selected_idx: int,        # index into the full N-patch array; -1 = final frame
+    hyperparams: dict,        # fitted kernel/likelihood hyperparameters
+    X_obs_n: np.ndarray,      # (n, D) normalised training inputs
+    y_obs: np.ndarray,        # (n, 1) training targets
+) -> None:
+    trace_dir.mkdir(parents=True, exist_ok=True)
+    np.savez(
+        trace_dir / f"iter_{iteration:04d}.npz",
+        mean_all=mean_all,
+        var_all=var_all,
+        obs_mask=obs_mask,
+        selected_idx=np.array(selected_idx),
+        # GP hyperparameters (Linear + Matérn-3/2 sum kernel)
+        hp_linear_variance=np.array(hyperparams["linear_variance"]),
+        hp_matern_lengthscale=hyperparams["matern_lengthscale"],
+        hp_matern_variance=np.array(hyperparams["matern_variance"]),
+        hp_noise_variance=np.array(hyperparams["noise_variance"]),
+        hp_mean_constant=np.array(hyperparams["mean_constant"]),
+        # training data (normalised)
+        X_obs_n=X_obs_n,
+        y_obs=y_obs,
+    )
+
+
+def save_gpr_figure(
+    fig_path: Path,
+    Z_all: np.ndarray,      # (N, D) full latent matrix
+    mean_all: np.ndarray,   # (N,) — NaN for observed
+    var_all: np.ndarray,    # (N,) — 0 for observed
+    obs_mask: np.ndarray,   # (N,) bool
+    selected_idx: int,      # -1 = no selection (final frame)
+    names: list[str],
+    iteration: int,
+) -> None:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import matplotlib.cm as cm
+    from matplotlib.colors import Normalize
+
+    D         = Z_all.shape[1]
+    cand_mask = ~obs_mask
+    Z_cand    = Z_all[cand_mask]
+    var_cand  = var_all[cand_mask]
+    mean_cand = mean_all[cand_mask]
+    Z_obs     = Z_all[obs_mask]
+    n_obs     = int(obs_mask.sum())
+
+    var_norm  = Normalize(vmin=var_cand.min(),  vmax=var_cand.max())
+    mean_norm = Normalize(vmin=mean_cand.min(), vmax=mean_cand.max())
+
+    fig, axes = plt.subplots(D, D, figsize=(4 * D, 4 * D))
+    fig.subplots_adjust(hspace=0.05, wspace=0.05)
+
+    for i in range(D):
+        for j in range(D):
+            ax = axes[i, j]
+            ax.tick_params(labelsize=7)
+            if i < D - 1:
+                ax.set_xticklabels([])
+            if j > 0:
+                ax.set_yticklabels([])
+
+            if i == j:
+                ax.hist(Z_all[:, i],  bins=40, color="#888", alpha=0.35, density=True)
+                ax.hist(Z_obs[:, i],  bins=15, color="white", alpha=0.85, density=True,
+                        edgecolor="black", linewidth=0.5)
+                if j == 0:
+                    ax.set_ylabel(names[i], fontsize=9)
+                if i == D - 1:
+                    ax.set_xlabel(names[j], fontsize=9)
+
+            elif j < i:
+                # lower triangle — variance
+                ax.scatter(Z_cand[:, j], Z_cand[:, i],
+                           c=var_cand, cmap="plasma", norm=var_norm,
+                           s=4, alpha=0.7, linewidths=0, rasterized=True)
+                ax.scatter(Z_obs[:, j], Z_obs[:, i],
+                           marker="*", s=60, c="white", edgecolors="black",
+                           linewidths=0.5, zorder=5)
+                if selected_idx >= 0:
+                    ax.scatter(Z_all[selected_idx, j], Z_all[selected_idx, i],
+                               marker="*", s=200, c="yellow", edgecolors="black",
+                               linewidths=0.7, zorder=6)
+                if j == 0:
+                    ax.set_ylabel(names[i], fontsize=9)
+                if i == D - 1:
+                    ax.set_xlabel(names[j], fontsize=9)
+
+            else:
+                # upper triangle — mean
+                ax.scatter(Z_cand[:, j], Z_cand[:, i],
+                           c=mean_cand, cmap="RdBu_r", norm=mean_norm,
+                           s=4, alpha=0.7, linewidths=0, rasterized=True)
+                ax.scatter(Z_obs[:, j], Z_obs[:, i],
+                           marker="*", s=60, c="white", edgecolors="black",
+                           linewidths=0.5, zorder=5)
+                if selected_idx >= 0:
+                    ax.scatter(Z_all[selected_idx, j], Z_all[selected_idx, i],
+                               marker="*", s=200, c="yellow", edgecolors="black",
+                               linewidths=0.7, zorder=6)
+                if j == 0:
+                    ax.set_ylabel(names[i], fontsize=9)
+                if i == D - 1:
+                    ax.set_xlabel(names[j], fontsize=9)
+
+    # shared colorbars
+    sm_var = cm.ScalarMappable(cmap="plasma",  norm=var_norm)
+    sm_var.set_array([])
+    fig.colorbar(sm_var, ax=axes[:, -1], shrink=0.6, pad=0.03,
+                 label="GP posterior variance σ²")
+
+    sm_mean = cm.ScalarMappable(cmap="RdBu_r", norm=mean_norm)
+    sm_mean.set_array([])
+    fig.colorbar(sm_mean, ax=axes[0, :], shrink=0.6, pad=0.03,
+                 location="top", label="GP posterior mean μ [MPa]")
+
+    title = (
+        f"Final posterior — {n_obs} observations"
+        if selected_idx < 0 else
+        f"Iteration {iteration} — {n_obs} obs | σ²_max={var_cand.max():.4f}"
+    )
+    fig.suptitle(title, fontsize=13, y=1.02)
+
+    fig_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  Figure → {fig_path}")
+
 
 def save_observations(config_path: Path, obs: list[dict]) -> None:
     """Overwrite the observations list in the YAML config file."""
@@ -264,15 +426,19 @@ def main() -> None:
                 # run simulation
                 h5 = run_simulation(patch_file, sim_config, base_out / "initial")
 
-                # extract QoI
-                sigma_peak = extract_peak_stress(h5, component=component)
+                # extract QoI + stress-strain curve
+                eps_arr, sig_arr = extract_stress_strain_curve(h5, component=component)
+                sigma_peak = float(np.max(np.abs(sig_arr))) if len(sig_arr) else 0.0
                 print(f"    peak σ (component {component}) = {sigma_peak:.4f} MPa")
+                curve_path = h5.with_name(h5.stem + "_curve.npz")
+                np.savez(curve_path, strain=eps_arr, stress=sig_arr)
 
                 # add observation
                 obs.append({
-                    "params":  {k: float(v) for k, v in zip(names, p["mu_mean"])},
-                    "output":  float(sigma_peak),
-                    "file":    p["file"],
+                    "params":     {k: float(v) for k, v in zip(names, p["mu_mean"])},
+                    "output":     float(sigma_peak),
+                    "file":       p["file"],
+                    "curve_file": str(curve_path),
                 })
                 cfg["observations"] = obs
                 save_observations(args.config, obs)
@@ -295,10 +461,10 @@ def main() -> None:
             print("All patches observed — done.")
             break
 
-        # ── Step 4: predict variance ──────────────────────────────────────────
+        # ── Step 4: predict mean & variance ──────────────────────────────────
         print(f"Step 4  GP uncertainty (Matérn-5/2, {args.gp_iters} iters) …")
-        var = fit_and_predict(X_obs_n, y_obs, X_cand_n,
-                              n_iters=args.gp_iters, lr=args.lr)
+        mean, var, hyperparams = fit_and_predict(X_obs_n, y_obs, X_cand_n,
+                                                 n_iters=args.gp_iters, lr=args.lr)
 
         # ── Step 5: select next ───────────────────────────────────────────────
         best = int(np.argmax(var))
@@ -315,22 +481,90 @@ def main() -> None:
             p = cand_patches[i]
             print(f"  {rank}. σ²={var[i]:.4e}  {p['file']}  phi={p['phi']:.4f}")
 
+        # save per-iteration GP snapshot + figure
+        cand_idx_full = np.where(cand_mask)[0]
+        mean_all = np.full(len(patches), np.nan)
+        mean_all[cand_idx_full] = mean
+        var_all = np.zeros(len(patches))
+        var_all[cand_idx_full] = var
+        obs_mask_full = ~np.array(cand_mask)
+        sel_idx_full  = int(cand_idx_full[best])
+
+        save_trace_snapshot(
+            base_out / "trace",
+            iteration,
+            mean_all,
+            var_all,
+            obs_mask=obs_mask_full,
+            selected_idx=sel_idx_full,
+            hyperparams=hyperparams,
+            X_obs_n=X_obs_n,
+            y_obs=y_obs,
+        )
+        save_gpr_figure(
+            base_out / "figures" / f"iter_{iteration:04d}.png",
+            Z_all, mean_all, var_all, obs_mask_full, sel_idx_full, names, iteration,
+        )
+
         # ── Step 6: run next simulation ───────────────────────────────────────
         print(f"\nStep 6  Run simulation …")
         patch_file = patch_dir / next_p["file"]
         h5 = run_simulation(patch_file, sim_config, base_out / f"iter_{iteration:02d}")
-        sigma_peak = extract_peak_stress(h5, component=component)
+        eps_arr, sig_arr = extract_stress_strain_curve(h5, component=component)
+        sigma_peak = float(np.max(np.abs(sig_arr))) if len(sig_arr) else 0.0
         print(f"        peak σ = {sigma_peak:.4f} MPa")
+        curve_path = h5.with_name(h5.stem + "_curve.npz")
+        np.savez(curve_path, strain=eps_arr, stress=sig_arr)
 
         obs.append({
-            "params": {k: float(v) for k, v in zip(names, next_p["mu_mean"])},
-            "output": float(sigma_peak),
-            "file":   next_p["file"],
+            "params":     {k: float(v) for k, v in zip(names, next_p["mu_mean"])},
+            "output":     float(sigma_peak),
+            "file":       next_p["file"],
+            "curve_file": str(curve_path),
         })
         cfg["observations"] = obs
         save_observations(args.config, obs)
 
-    print(f"\nDone — {len(cfg.get('observations', []))} total observations.")
+    # ── Final GP update after last simulation ─────────────────────────────────
+    obs = list(cfg.get("observations", []) or [])
+    if obs:
+        print(f"\nFinal GP update on {len(obs)} observations …")
+        X_obs   = np.array([[o["params"][k] for k in names] for o in obs])
+        y_obs   = np.array([[o["output"]] for o in obs])
+        X_obs_n = _normalize(X_obs, lo, hi)
+
+        obs_files  = {o.get("file", "") for o in obs}
+        cand_mask  = [p["file"] not in obs_files for p in patches]
+        X_cand_n   = _normalize(Z_all[np.where(cand_mask)[0]], lo, hi)
+
+        if X_cand_n.shape[0] > 0:
+            mean, var, hyperparams = fit_and_predict(X_obs_n, y_obs, X_cand_n,
+                                                     n_iters=args.gp_iters, lr=args.lr)
+            cand_idx_full = np.where(cand_mask)[0]
+            obs_mask_full = ~np.array(cand_mask)
+            mean_all = np.full(len(patches), np.nan)
+            mean_all[cand_idx_full] = mean
+            var_all = np.zeros(len(patches))
+            var_all[cand_idx_full] = var
+
+            save_trace_snapshot(
+                base_out / "trace",
+                args.iters + 1,
+                mean_all,
+                var_all,
+                obs_mask=obs_mask_full,
+                selected_idx=-1,
+                hyperparams=hyperparams,
+                X_obs_n=X_obs_n,
+                y_obs=y_obs,
+            )
+            save_gpr_figure(
+                base_out / "figures" / "final.png",
+                Z_all, mean_all, var_all, obs_mask_full, -1, names, args.iters + 1,
+            )
+            print(f"  σ²_max = {var.max():.4e}  (final posterior)")
+
+    print(f"\nDone — {len(obs)} total observations.")
 
 
 if __name__ == "__main__":

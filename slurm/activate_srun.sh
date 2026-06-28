@@ -3,7 +3,7 @@ set -euo pipefail
 
 PARTITION="capella"
 ACCOUNT="p_haftfaeden"
-TIME="01:00:00"
+TIME="06:00:00"
 CPUS=6
 MEM_PER_CPU="10G"
 GPUS=1

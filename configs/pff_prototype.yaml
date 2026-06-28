@@ -2,7 +2,7 @@
 # Input: NPZ with phase array (0=matrix, 1=fiber, 2=interphase)
 # UNITS: mm throughout.  Gc in MPa·mm,  l0 in mm.
 
-input:   data/patches_fft/patch_0000_phi0.6705.npz
+input:   data/patches_fft/patch_0848_phi0.4980.npz
 jobname: "{input.stem}_pff"
 output:  output/simulation
 
@@ -42,9 +42,9 @@ materials:
 
 pff:
   l0:               3.0e-4   # mm  = 3 × voxelsize
-  Gc_mat:           6.4e-4   # MPa·mm  matrix toughness
-  Gc_interphase:    3.2e-4   # MPa·mm  interphase cracks easier (< Gc_mat)
-  Gc_yarn_factor:   1000     # fibre never cracks
+  Gc_mat:           0.8e-3   # MPa·mm  matrix toughness
+  Gc_interphase:    0.4e-3   # MPa·mm  interphase cracks easier (< Gc_mat)
+  Gc_yarn_factor:   2     # fibre never cracks
   eta:              1.0e-6
 
   toler_st_abs:    1.0e-2
@@ -56,8 +56,8 @@ pff:
 # ── Solver ────────────────────────────────────────────────────────────────────
 
 solver:
-  toler_lin:   1.0e-4
-  toler_nw:    1.0e-4
+  toler_lin:   1.0e-2
+  toler_nw:    1.0e-2
   maxiter_cg:  500
   maxiter_nw:  300
   scheme:      rotated
@@ -66,7 +66,7 @@ solver:
 
 loading:
   eps_goal:
-    - [1.0e-3, 0.0,   0.0]
+    - [1.0e-2, 0.0,   0.0]
     - [0.0,    0.0,   0.0]
     - [0.0,    0.0,   0.0]
 
