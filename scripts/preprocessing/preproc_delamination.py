@@ -1,31 +1,33 @@
 """
 Preprocessing for mode-I delamination PFF simulation.
 
-Reads a TexGen voxel VTU, appends matrix padding layers in Z to create
-an interlaminar resin zone at the periodic boundary, and inserts a
-rectangular starter crack centred on the XY mid-axes inside that zone.
+Reads a voxel XDMF/HDF5 file (written by IncrementalWriter, e.g. from
+texgen_export), appends matrix padding layers in Z to create an interlaminar
+resin zone at the periodic boundary, and inserts a rectangular starter crack
+centred on the XY mid-axes inside that zone.
 
 Under periodic BCs the padding at z = nz … nz+n_pad−1 is adjacent to
 z = 0, forming one continuous interlaminar region.  The starter crack
 (d = 1) is placed in the centre of this padding, centred in X and Y.
 
-Output: .npz file consumed by the PFF solver.
+Expected input XDMF fields
+--------------------------
+  phase        (nx, ny, nz)    int-valued float  0=matrix, 1=yarn
+  yarn_index   (nx, ny, nz)    int-valued float  −1=matrix, >=0=yarn
+  orientation  (nx, ny, nz, 3) float             YarnTangent per voxel
 
-Contents of the .npz
---------------------
-  n              (3,)   int    padded grid shape (nx, ny, nz_pad)
-  L              (3,)   float  padded domain size (mm)
-  phase          (Nv,)  int    0=matrix 1=yarn
-  orientations   (3,Nv) float  YarnTangent per voxel
-  yarn_index     (Nv,)  int    raw YarnIndex (-1=matrix, >=0=yarn)
-  d_init         (Nv,)  float  initial damage field (1 inside crack)
-  H_init         (Nv,)  float  initial history field (large inside crack)
+Output XDMF fields
+------------------
+  phase        (nx, ny, nz_pad)    padded phase (2=crack void)
+  yarn_index   (nx, ny, nz_pad)    padded yarn index (−2=crack void)
+  orientation  (nx, ny, nz_pad, 3) padded tangents
+  crack_void   (nx, ny, nz_pad)    binary crack mask
 
 Usage
 -----
-    python scripts/preproc_delamination.py data/myweave.vtu
-    python scripts/preproc_delamination.py data/myweave.vtu \\
-        --n_pad 6 --crack_x 0.4 --crack_y 0.8 --out output/
+    python scripts/preproc_delamination.py data/myweave.xdmf
+    python scripts/preproc_delamination.py data/myweave.h5 \\
+        --n_pad 6 --crack_y 0.8 --out output/
 """
 
 import argparse
@@ -36,27 +38,33 @@ import numpy as np
 
 sys.path.insert(0, "src")
 
-from generation.vtu import read_texgen_vtu
-from post.io        import IncrementalWriter
+from utils.io_read import read_xdmf
+from post.io       import IncrementalWriter
 
 
-def _read_vtu(path: str):
-    """Thin shim: delegates to generation.vtu.read_texgen_vtu, returns (dx,dy,dz) spacing."""
-    n, L, phase, orient, yarn_index, _vf = read_texgen_vtu(path)
+def _read_input(path: str):
+    """Read voxel geometry from an XDMF/HDF5 file, return 3-D arrays."""
+    n, L, fields = read_xdmf(path)
     nx, ny, nz = n
     Lx, Ly, Lz = L
     dx, dy, dz = Lx / nx, Ly / ny, Lz / nz
-    return (nx, ny, nz), (dx, dy, dz), phase, orient, yarn_index
+
+    phase_3d  = fields["phase"].astype(int)                   # (nx, ny, nz)
+    yarn_3d   = fields["yarn_index"].astype(int)               # (nx, ny, nz)
+    orient_3d = fields["orientation"].transpose(3, 0, 1, 2)   # (3, nx, ny, nz)
+    vf_3d     = fields["volume_fraction"].astype(np.float64)   # (nx, ny, nz)
+
+    return (nx, ny, nz), (dx, dy, dz), phase_3d, orient_3d, yarn_3d, vf_3d
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Preprocess TexGen VTU for mode-I delamination PFF"
+        description="Preprocess voxel XDMF for mode-I delamination PFF"
     )
-    parser.add_argument("vtu", type=Path,
-                        help="TexGen voxel VTU file")
+    parser.add_argument("xdmf", type=Path,
+                        help="Voxel geometry XDMF or HDF5 file (must contain phase, yarn_index, orientation fields)")
     parser.add_argument("--n_pad", type=int, default=4,
                         help="Matrix voxels added to both Y sides — resin zone (default 4)")
     parser.add_argument("--n_pad_z", type=int, default=0,
@@ -70,9 +78,9 @@ def main():
                         help="Output directory (default: output/preprocessed/)")
     args = parser.parse_args()
 
-    # ── read VTU ─────────────────────────────────────────────────────────────
-    print(f"Reading {args.vtu} …")
-    (nx, ny, nz), (dx, dy, dz), phase, orient, yarn_index = _read_vtu(str(args.vtu))
+    # ── read XDMF ────────────────────────────────────────────────────────────
+    print(f"Reading {args.xdmf} …")
+    (nx, ny, nz), (dx, dy, dz), phase_3d, orient_3d, yarn_3d, vf_3d = _read_input(str(args.xdmf))
     print(f"  fabric grid : ({nx}, {ny}, {nz})")
 
     # ── pad Z with pure matrix (isolates Z-periodic fabric images) ───────────
@@ -85,18 +93,16 @@ def main():
     n_pad   = args.n_pad
     n_pad_z = args.n_pad_z
 
-    phase_3d  = phase.reshape(nx, ny, nz)
-    orient_3d = orient.reshape(3, nx, ny, nz)
-    yarn_3d   = yarn_index.reshape(nx, ny, nz)
-
     zpd       = (nx, ny, n_pad_z)
     z_phase   = np.zeros(zpd, dtype=int)
     z_orient  = np.zeros((3, *zpd))
     z_yarn    = np.full(zpd, -1, dtype=int)
+    z_vf      = np.zeros(zpd)
 
     phase_3d  = np.concatenate([z_phase,  phase_3d,  z_phase],  axis=2)
     yarn_3d   = np.concatenate([z_yarn,   yarn_3d,   z_yarn],   axis=2)
     orient_3d = np.concatenate([z_orient, orient_3d, z_orient], axis=3)
+    vf_3d     = np.concatenate([z_vf,     vf_3d,     z_vf],     axis=2)
     nz_new    = nz + 2 * n_pad_z
 
     # ── pad Y with pure matrix (interlaminar resin zones — crack lives here) ──
@@ -113,10 +119,12 @@ def main():
     y_phase   = np.zeros(ypd, dtype=int)
     y_orient  = np.zeros((3, *ypd))
     y_yarn    = np.full(ypd, -1, dtype=int)
+    y_vf      = np.zeros(ypd)
 
     phase_new  = np.concatenate([y_phase,  phase_3d,  y_phase],  axis=1).ravel()
     yarn_new   = np.concatenate([y_yarn,   yarn_3d,   y_yarn],   axis=1).ravel()
     orient_new = np.concatenate([y_orient, orient_3d, y_orient], axis=2).reshape(3, -1)
+    vf_new     = np.concatenate([y_vf,     vf_3d,     y_vf],     axis=1).ravel()
 
     Lx    = nx    * dx
     Ly    = ny_new * dy
@@ -157,7 +165,7 @@ def main():
 
     # ── save XDMF/HDF5 ────────────────────────────────────────────────────────
     args.out.mkdir(parents=True, exist_ok=True)
-    stem      = args.vtu.stem + "_delam_preproc"
+    stem      = args.xdmf.stem + "_delam_preproc"
     xdmf_stem = str(args.out / stem)
     dx_new    = tuple(Li / ni for Li, ni in zip(L_new, n_new))
 
@@ -167,7 +175,8 @@ def main():
             "phase":       phase_new.reshape(n_new).astype(np.float32),
             "yarn_index":  yarn_new.reshape(n_new).astype(np.float32),
             "orientation": orient_new.T.reshape(*n_new, 3).astype(np.float64),
-            "crack_void":  (phase_new == 2).reshape(n_new).astype(np.float32),
+            "crack_void":        (phase_new == 2).reshape(n_new).astype(np.float32),
+            "volume_fraction":   vf_new.reshape(n_new).astype(np.float64),
         }, time=0.0)
 
     # store grid metadata as HDF5 root attributes so the PFF solver can load them
