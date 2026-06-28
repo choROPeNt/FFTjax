@@ -1,8 +1,11 @@
 # PFF simulation config — square-packed circular-fibre RVE, matrix cracking
 # Input: preprocessed XDMF from generate_rve.py / configs/preproc_rve.yaml
+#
+# UNITS: mm throughout.  Stress in MPa  →  Gc in MPa·mm,  l0 in mm.
+#   1 MPa·mm = 1000 J/m²   (e.g. 1e-4 MPa·mm = 0.1 J/m²)
 
-input:   output/preprocessed/rve_phi0.6.xdmf
-jobname: "{input.stem}"
+input:   output/preprocessed/rve_phi0.75.xdmf
+jobname: "{input.stem}_tension"
 output:  output/simulation
 
 # Solid circular fibres → binary phi (0/1); Vf_yarn=1.0 so phi_ind = vf/1.0 = vf
@@ -31,12 +34,11 @@ materials:
 # ── Phase-field parameters ────────────────────────────────────────────────────
 
 pff:
-  l0:              0.30     # mm  ≥ 3 × voxelsize (voxelsize ≈ 0.1 µm → 0.0001 mm)
-  Gc_mat:          0.008     # MPa·mm  matrix fracture toughness
+  l0:              3.0e-4   # mm  = 3 × voxelsize (voxelsize = 1e-4 mm)
+  Gc_mat:          6.4e-4   # MPa·mm  (= 0.64 J/m²)  matrix fracture toughness
   Gc_yarn_factor:  2     # fibre never cracks
   eta:             1.0e-6   # viscous regularisation (Schneider & Kästner 2025)
 
-  ngmres_depth:    5        # NGMRES staggered accelerator depth
 
   toler_st_abs:    1.0e-2
   toler_st_rel:    1.0e-3

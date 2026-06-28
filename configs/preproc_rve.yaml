@@ -3,10 +3,10 @@
 
 geometry:
   type:      square_rve
-  phi:       0.6          # target fibre volume fraction
-  r_fib:     3.5          # fibre radius  µm
-  vox:       0.1          # voxel size    µm  (isotropic)
-  nz:        10           # voxels through thickness
+  phi:       0.75          # target fibre volume fraction
+  r_fib:     0.0035        # mm  fibre radius  (= 3.5 µm)
+  vox:       0.00005        # mm  voxel size    (= 0.1 µm, isotropic)
+  nz:        1           # voxels through thickness
   fibre_dir: [0.0, 0.0, 1.0]   # fibre axis in global frame
   Vf_yarn:   1.0          # fibre packing within tow (1.0 = solid fibre)
 
