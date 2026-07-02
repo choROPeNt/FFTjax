@@ -61,6 +61,43 @@ def update_history(
     return jnp.maximum(H_prev, psi_pos)
 
 
+def update_history_hybrid(
+    H_prev:  jnp.ndarray,
+    psi_pos: jnp.ndarray,
+    d_prev:  jnp.ndarray,
+    d_thres: float = 0.95,
+) -> jnp.ndarray:
+    """
+    Hybrid damage-/crack-like irreversibility (Steinke & Kaliske 2019, as
+    adopted by Schneider & Kästner 2025, doi:10.1111/ffe.14553).
+
+    Pure damage-like irreversibility (``update_history``: H = max(H_prev, ψ⁺)
+    everywhere) locks in the history field as soon as any damage nucleates,
+    which over-widens the diffuse process zone. The hybrid formulation only
+    enforces the monotone history lock once a point has effectively cracked
+    (d ≥ d_thres); below the threshold the driving force is left unrestricted
+    so the pre-crack process zone can still relax:
+
+        H = ψ⁺                     if d_prev < d_thres   (unrestricted)
+        H = max(H_prev, ψ⁺)        if d_prev ≥ d_thres    (irreversible)
+
+    Parameters
+    ----------
+    H_prev  : (Nv,)   history variable from the previous increment
+    psi_pos : (Nv,)   current tensile strain energy density ψ⁺
+    d_prev  : (Nv,)   damage field used to gate the switch (current best
+                       estimate of d — e.g. from the previous staggered
+                       iteration or the previous increment)
+    d_thres : float   phase-field threshold above which irreversibility is
+                       enforced (default 0.95)
+
+    Returns
+    -------
+    H : (Nv,)
+    """
+    return jnp.where(d_prev >= d_thres, jnp.maximum(H_prev, psi_pos), psi_pos)
+
+
 # ── Helmholtz preconditioned CG ───────────────────────────────────────────────
 
 @partial(jax.jit, static_argnames=("n", "maxiter"))
