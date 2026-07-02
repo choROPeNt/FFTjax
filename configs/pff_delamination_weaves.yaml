@@ -60,8 +60,8 @@ elastic: &elastic
 
 pff: &pff
   l0:             0.06      # mm
-  Gc_mat:         0.16      # MPa·mm
-  Gc_yarn_factor: 1000
+  Gc_mat:         0.16e-1      # MPa·mm
+  Gc_yarn_factor: 2
   eta:            0.0       # viscous regularisation (set > 0 to suppress snap-through)
 
   toler_st_abs:   1.0e-2
@@ -73,8 +73,8 @@ pff: &pff
 # ── Elastic solver ────────────────────────────────────────────────────────────
 
 solver: &solver
-  toler_lin:   1.0e-4
-  toler_nw:    1.0e-7
+  toler_lin:   1.0e-2
+  toler_nw:    1.0e-2
   maxiter_cg:  1000
   maxiter_nw:  6
   scheme:      rotated
@@ -85,7 +85,7 @@ loading: &loading
   eps_goal:
     - [0.0, 0.0, 0.0]
     - [0.0, 0.0, 0.0]
-    - [0.0, 0.0, 1.0e-4]
+    - [0.0, 0.0, 1.0e-2]
 
 # ── Time stepper ──────────────────────────────────────────────────────────────
 
