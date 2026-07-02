@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fftjax"
+version = "0.0.1"
+description = "GPU-accelerated, differentiable FFT-based spectral solver framework built on JAX"
+readme = "readme.md"
+requires-python = ">=3.10"
+authors = [
+    { name = "Christian Düreth", email = "christian.duereth@tu-dresden.de" },
+]
+dependencies = [
+    "jax",
+    "numpy",
+    "h5py",
+    "pyyaml",
+]
+
+[project.urls]
+Homepage = "https://github.com/choROPeNt/FFTjax"
+Documentation = "https://choROPeNt.github.io/FFTjax/"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
