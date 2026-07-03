@@ -19,7 +19,8 @@ Staggered scheme per increment
         1. Degrade stiffness:     C_eff = g(d) · C_field
         2. Mechanical solve:      (ε, σ) = solve_elastic(C_eff, G_glob, ε̄)
         3. Crack driving force:   ψ⁺ from undegraded Amor dev/vol
-        4. Update history:        H = max(H_prev, ψ⁺)
+        4. Update history:        hybrid irreversibility (Steinke & Kaliske 2019) —
+                                   H = max(H_prev, ψ⁺) if d ≥ d_thres, else H = ψ⁺
         5. Damage solve:          d = solve_helmholtz_cg(H, ...)
         6. Converged?             max|d_new − d_old| < toler_st
 
@@ -50,7 +51,7 @@ from operators.green       import build_freq_grid, build_green_operator
 from post.fields           import field_to_grid, von_mises, compute_displacement
 from post.io               import IncrementalWriter, to_voigt
 from solvers.elastic_nw_cg import solve_elastic
-from solvers.pff_damage    import degradation, update_history, solve_helmholtz_cg
+from solvers.pff_damage    import degradation, update_history_hybrid, solve_helmholtz_cg
 from solvers.types         import SolveState, SolverSettings
 
 jax.config.update("jax_enable_x64", True)
@@ -106,6 +107,12 @@ Gc = 2.7        # MPa·mm  (= 2.7 N/mm, AT2 convention from reference)
 print(f"PFF      : l₀ = {l0} mm,  Gc = {Gc} MPa·mm"
       f"  →  Gc/l₀ = {Gc/l0:.3g} MPa")
 
+# Hybrid damage-/crack-like irreversibility threshold (Steinke & Kaliske 2019,
+# as adopted by Schneider & Kästner 2025). History lock (H = max(H_prev, ψ⁺))
+# only kicks in once d ≥ d_thres; below it H = ψ⁺ is left unrestricted so the
+# pre-crack process zone doesn't over-widen.
+d_thres = 0.95
+
 # ── Solver settings ───────────────────────────────────────────────────────────
 
 eps_goal = jnp.array([
@@ -118,13 +125,14 @@ settings = SolverSettings(
     ndim=3,
     n=n,
     L=L,
-    toler_lin=1e-4,
-    toler_nw=1e-4,
+    toler_lin=1e-2,
+    toler_nw=1e-2,
     maxiter_cg=500,
     maxiter_nw=300,
-    jobname="benchmark_pff_shear_miehe",
+    jobname="benchmark_pff_shear",
     output="output",
 )
+
 settings.add_load_step(
     control=jnp.zeros((3, 3)),
     strain_ave_goal=eps_goal,
@@ -244,10 +252,11 @@ with IncrementalWriter(
                 )
 
                 # 3. crack driving force from undegraded Miehe spectral split
-                psi_pos, _ = strain_energy_miehe_split(eps_i, lam_vox, mu_vox)
+                psi_pos, _ = strain_energy_amor_split(eps_i, lam_vox, mu_vox)
 
-                # 4. update history variable (irreversibility)
-                H_st = update_history(H_st, psi_pos)
+                # 4. update history variable — hybrid damage-/crack-like
+                #    irreversibility, gated on the current damage estimate
+                H_st = update_history_hybrid(H_st, psi_pos, d_prev_st, d_thres=d_thres)
 
                 # 5. damage solve — Helmholtz preconditioned CG
                 d_st, iter_helm, conv_helm = solve_helmholtz_cg(

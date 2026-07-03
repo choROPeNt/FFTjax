@@ -134,7 +134,7 @@ settings = SolverSettings(
     toler_nw=1e-2,
     maxiter_cg=500,
     maxiter_nw=300,
-    jobname="benchmark_pff_tension_amor",
+    jobname="benchmark_pff_tension",
     output="output",
 )
 settings.add_load_step(
