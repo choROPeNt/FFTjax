@@ -390,7 +390,7 @@ print(f"Written → {csv_path}")
 
 # ── Reference comparison plot ──────────────────────────────────────────────────
 
-ref_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ref_tension.csv")
+ref_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ref_tension_2.csv")
 ref = np.loadtxt(ref_path, delimiter=",", skiprows=1)
 
 fig, ax = plt.subplots(figsize=(6, 4))
