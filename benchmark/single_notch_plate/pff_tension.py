@@ -135,7 +135,7 @@ settings = SolverSettings(
     maxiter_cg=500,
     maxiter_nw=300,
     jobname="benchmark_pff_tension",
-    output="output",
+    output="output/benchmark/",
 )
 settings.add_load_step(
     control=jnp.zeros((3, 3)),
@@ -390,7 +390,7 @@ print(f"Written → {csv_path}")
 
 # ── Reference comparison plot ──────────────────────────────────────────────────
 
-ref_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ref_tension_2.csv")
+ref_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ref_tension_3.csv")
 ref = np.loadtxt(ref_path, delimiter=",", skiprows=1)
 
 fig, ax = plt.subplots(figsize=(6, 4))

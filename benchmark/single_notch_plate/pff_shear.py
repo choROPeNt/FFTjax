@@ -130,7 +130,7 @@ settings = SolverSettings(
     maxiter_cg=500,
     maxiter_nw=300,
     jobname="benchmark_pff_shear",
-    output="output",
+    output="output/benchmark",
 )
 
 settings.add_load_step(
