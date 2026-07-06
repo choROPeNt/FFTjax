@@ -1,6 +1,7 @@
 import os
 os.environ["JAX_ENABLE_X64"] = "1"
 
+from typing import Tuple
 from functools import partial
 from math import prod
 
@@ -13,14 +14,14 @@ from utils.cg import cg_count
 
 @partial(jit, static_argnames=("n_i", "maxiter"))
 def dstrain_nw_cg(
-    n_i:        tuple,
+    n_i:        Tuple,
     C_field:    jnp.ndarray,
     G_glob:     jnp.ndarray,
     eps_bar:    jnp.ndarray,
     stress_goal: jnp.ndarray | None = None,
     toler_lin:  float = 1e-4,
     maxiter:    int   = 1000,
-) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
     Inner CG solve for one Newton step of the variational FFT elastic solver
     (small strains, Vondrejc / Lucarini–Segurado formulation).
@@ -35,9 +36,9 @@ def dstrain_nw_cg(
     Parameters
     ----------
     n_i         : grid shape (nx, ny, nz) — must be static for JIT
-    C_field     : (3, 3, 3, 3, Nv)  per-voxel stiffness (or tangent)
-    G_glob      : (3, 3, 3, 3, Nv)  Green's operator in Fourier space
-    eps_bar     : (3, 3)             prescribed macroscopic strain
+    C_field     : (3, 3, 3, 3, Nv)      per-voxel stiffness (or tangent)
+    G_glob      : (3, 3, 3, 3, Nv)      Green's operator in Fourier space
+    eps_bar     : (3, 3)                prescribed macroscopic strain
     stress_goal : (3, 3, Nv) or None target stress field (None = zero, strain BC)
     toler_lin   : relative CG residual tolerance
     maxiter     : maximum CG iterations — must be static for JIT

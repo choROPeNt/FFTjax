@@ -50,8 +50,8 @@ from mat_models.elastic    import (LinearElasticIsotropic, assemble_C_field,
 from operators.green       import build_freq_grid, build_green_operator
 from post.fields           import field_to_grid, von_mises, compute_displacement
 from post.io               import IncrementalWriter, to_voigt
-from solvers.elastic_nw_cg import solve_elastic
-from solvers.pff_damage    import degradation, update_history_hybrid, solve_helmholtz_cg
+from solvers.mechanical.strain_nw_cg import solve_elastic
+from solvers.damage.pff_damage    import degradation, update_history_hybrid, solve_helmholtz_cg
 from solvers.types         import SolveState, SolverSettings
 
 jax.config.update("jax_enable_x64", True)

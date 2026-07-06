@@ -40,7 +40,7 @@ from operators.green       import build_freq_grid, build_green_operator
 from post.fields           import field_to_grid, von_mises, compute_displacement
 from post.io               import IncrementalWriter, to_voigt
 from solvers.types         import SolveState, SolverSettings
-from solvers.elastic_nw_cg import solve_elastic
+from solvers.mechanical.strain_nw_cg import solve_elastic
 from utils.config          import load_config
 from utils.io_read         import read_simulation_input
 

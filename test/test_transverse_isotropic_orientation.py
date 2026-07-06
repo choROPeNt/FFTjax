@@ -31,7 +31,7 @@ from mat_models.elastic    import TransverseIsotropicFibre, assemble_C_field_ori
 from operators.green       import build_freq_grid, build_green_operator
 from post.fields           import field_to_grid, von_mises, compute_displacement
 from post.io               import IncrementalWriter, to_voigt
-from solvers.elastic_nw_cg import solve_elastic
+from solvers.mechanical.strain_nw_cg import solve_elastic
 
 jax.config.update("jax_enable_x64", True)
 
