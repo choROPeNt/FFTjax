@@ -24,6 +24,30 @@ def ddot42(A: jnp.ndarray, B: jnp.ndarray) -> jnp.ndarray:
     return jnp.einsum('ijklm,klm->ijm', A, B)
 
 
+@jax.jit
+def odot11(A: jnp.ndarray, B: jnp.ndarray) -> jnp.ndarray:
+    """
+    Dyadic product  C_ijm = A_im B_jm.
+
+    Shapes: (3,Nv) × (3,Nv) → (3,3,Nv)
+    Used to build the (unsymmetrized) Fourier-space displacement gradient
+    ``odot11(u_hat, iξ)`` in the displacement-based FFT solver.
+    """
+    return jnp.einsum('im,jm->ijm', A, B)
+
+
+@jax.jit
+def dot21(A: jnp.ndarray, B: jnp.ndarray) -> jnp.ndarray:
+    """
+    Contraction  c_im = A_ijm B_jm.
+
+    Shapes: (3,3,Nv) × (3,Nv) → (3,Nv)
+    Used to take the Fourier-space divergence of a stress field,
+    ``dot21(σ_hat, iξ)``, in the displacement-based FFT solver.
+    """
+    return jnp.einsum('ijm,jm->im', A, B)
+
+
 # ---------------------------------------
 # 3D Identity Tensors
 # ---------------------------------------
