@@ -163,4 +163,45 @@ print(f"max |eps_disp - eps_strain| / eps_11 = {err_eps_rel:.3e}")
 
 assert int(it_u) > 0   # sanity: this case must actually exercise CG iterations
 assert err_eps_rel < 1e-3
+print("PASSED\n")
+
+# ── Case 4 — heterogeneous (sharp interface), mixed BC ────────────────────────
+# Regression test: the du<->sv cross-coupling terms only enter the operator
+# for *heterogeneous* materials (they vanish identically for homogeneous C,
+# which is why cases 1-2 above cannot catch a sign error in that coupling).
+# A random per-voxel two-phase field with high stiffness contrast is a
+# worst-case (sharp-interface) exercise of that coupling.
+print("── Case 4: heterogeneous (sharp interface), mixed BC ────────────────")
+
+n_het = (8, 8, 8)
+Nv_het = int(np.prod(n_het))
+rng = np.random.default_rng(0)
+phase_het = jnp.array(rng.integers(0, 2, size=Nv_het))
+C_field_sharp = assemble_C_field([mat, mat2], phase_het)
+xi_flat_het = build_freq_grid(n_het, L)
+
+control = ((1, 0, 0), (0, 1, 0), (0, 0, 1))
+eps_bar_guess = jnp.zeros((3, 3))
+sigma_11_goal = 50.0
+stress_goal = jnp.array([
+    [sigma_11_goal, 0.0, 0.0],
+    [0.0,           0.0, 0.0],
+    [0.0,           0.0, 0.0],
+])
+
+eps_u, sigma_u, delta_u, eps_bar_out, it_u, conv_u = ddisp_nw_cg(
+    n_het, C_field_sharp, xi_flat_het, eps_bar_guess, control, stress_goal,
+    toler_lin=1e-8, maxiter=500,
+)
+
+sigma_mean = jnp.mean(sigma_u, axis=-1)
+print(f"disp-based CG : iters={int(it_u)} converged={bool(conv_u)}")
+print(f"mean sigma_11 = {float(sigma_mean[0,0]):.4f}  (goal {sigma_11_goal})")
+print(f"mean sigma_22 = {float(sigma_mean[1,1]):.4e}  mean sigma_33 = {float(sigma_mean[2,2]):.4e}  (goal 0)")
+
+assert bool(conv_u)
+assert int(it_u) < 100   # regression guard: the sign bug made this never converge
+assert abs(float(sigma_mean[0, 0]) - sigma_11_goal) < 1e-4
+assert abs(float(sigma_mean[1, 1])) < 1e-4
+assert abs(float(sigma_mean[2, 2])) < 1e-4
 print("PASSED")

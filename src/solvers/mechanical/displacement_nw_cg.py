@@ -56,6 +56,7 @@ def ddisp_nw_cg(
     stress_goal: jnp.ndarray,
     toler_lin:  float = 1e-4,
     maxiter:    int   = 1000,
+    C0:         jnp.ndarray | None = None,
 ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
     Displacement-based Newton-CG solve for one Newton step of the variational
@@ -85,6 +86,11 @@ def ddisp_nw_cg(
                   ``control == 1`` are used
     toler_lin   : relative CG residual tolerance
     maxiter     : maximum CG iterations — must be static for JIT
+    C0          : (3, 3, 3, 3) or None  reference stiffness used to build a
+                  frequency-domain preconditioner ``(ξ·C0·ξ)⁻¹``. Without a
+                  preconditioner CG needs O(10²-10³) iterations for realistic
+                  (high-contrast) composites; default is the voxel-average of
+                  ``C_field``.
 
     Returns
     -------
@@ -148,7 +154,7 @@ def ddisp_nw_cg(
         sigma_trial   = jnp.einsum("ijklm,klm->ijm", C_field, eps_trial)
         sigma_hat     = fft_(sigma_trial)
         div_flat      = ifft_(jnp.einsum("ijm,jm->im", sigma_hat, iq))
-        extra_out     = sm2sv(jnp.real(sigma_hat[:, :, 0]))
+        extra_out     = -sm2sv(jnp.real(sigma_hat[:, :, 0]))
         return pack(div_flat, extra_out)
 
     # ── RHS from the prescribed (strain-controlled) baseline strain ─────────
@@ -156,12 +162,45 @@ def ddisp_nw_cg(
     sigma0    = jnp.einsum("ijklm,klm->ijm", C_field, eps0)
     sigma0_hat = fft_(sigma0)
     bb_div    = -ifft_(jnp.einsum("ijm,jm->im", sigma0_hat, iq))
-    bb_extra  = Nv * sm2sv(stress_goal) - sm2sv(jnp.real(sigma0_hat[:, :, 0]))
+    bb_extra  = sm2sv(jnp.real(sigma0_hat[:, :, 0])) - Nv * sm2sv(stress_goal)
     bb        = pack(bb_div, bb_extra)
+
+    # ── Preconditioner  M ≈ A⁻¹, built from a reference (homogeneous) medium ──
+    # "du" block: per-frequency acoustic tensor  K0(ξ) = ξ·C0·ξ  (3,3,Nv),
+    # inverted pointwise. ξ=0 at the true DC bin *and* at every point where a
+    # Nyquist-zeroed dimension (see _nyquist_safe_xi) makes all components
+    # vanish simultaneously — K0 is singular there and must be regularized;
+    # these are exactly the directions the operator itself is blind to
+    # (a rigid-body-translation-like gauge freedom), so any regular value works.
+    C0_ref  = jnp.mean(C_field, axis=-1) if C0 is None else C0
+    K0_hat  = jnp.einsum("jm,ijkl,lm->ikm", iq.imag, C0_ref, iq.imag)
+    null_pt = jnp.all(iq.imag == 0.0, axis=0)
+    K0_hat  = jnp.where(null_pt[None, None, :], jnp.eye(3)[:, :, None], K0_hat)
+    K0_inv  = jnp.moveaxis(jnp.linalg.inv(jnp.moveaxis(K0_hat, -1, 0)), 0, -1)
+
+    def M_du(r_du):
+        r_hat = fft_(r_du)
+        z_hat = jnp.einsum("ikm,km->im", K0_inv, r_hat)
+        return ifft_(z_hat)
+
+    # "extra" block: self-coupling of the macroscopic-strain unknowns,
+    # approximated with the same reference stiffness (-Nv * C0 : sv2sm(·)),
+    # matching the sign of A_op's extra_out.
+    if pairs:
+        basis   = jnp.eye(len(pairs), dtype=eps_bar.dtype)
+        P_extra = jnp.stack([
+            -Nv * sm2sv(jnp.einsum("ijkl,kl->ij", C0_ref, sv2sm(basis[k])))
+            for k in range(len(pairs))
+        ], axis=1)
+
+    def M(x_flat):
+        du, sv = unpack(x_flat)
+        z_sv = jnp.linalg.solve(P_extra, sv) if pairs else sv
+        return pack(M_du(du), z_sv)
 
     # ── CG solve ──────────────────────────────────────────────────────────────
     x0 = jnp.zeros_like(bb)
-    x_flat, iter_count, converged = cg_count(A_op, bb, x0, toler_lin, maxiter)
+    x_flat, iter_count, converged = cg_count(A_op, bb, x0, toler_lin, maxiter, M=M)
 
     du_sol, sv_sol = unpack(x_flat)
     deps_bar_free  = sv2sm(sv_sol)
