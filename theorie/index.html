@@ -379,6 +379,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#mechanical-solver-formulations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Mechanical solver formulations
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#variational-formulation" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -482,6 +493,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#mechanical-solver-formulations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Mechanical solver formulations
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#variational-formulation" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -558,6 +580,24 @@
 \]</div>
 <p>which converts differential operators into algebraic expressions. The equilibrium equation is then solved iteratively in Fourier space using a Green operator formulation, enabling efficient convolution-based updates.</p>
 <p>The computational complexity scales as <span class="arithmatex">\( \mathcal{O}(N \log N) \)</span> due to the use of Fast Fourier Transforms.</p>
+<hr />
+<h3 id="mechanical-solver-formulations">Mechanical solver formulations</h3>
+<p>FFTjax provides two Newton-CG solvers for the mechanical equilibrium problem (<code>solvers/mechanical/</code>), differing in which field is the CG unknown.</p>
+<p><strong>Strain-based (<code>strain_nw_cg.py</code>, Vondřejc et al. 2014 / Lucarini &amp; Segurado 2018).</strong>
+The unknown is the periodic strain fluctuation <span class="arithmatex">\( \Delta\varepsilon \)</span>. Equilibrium is enforced through a fixed reference-medium Green's operator <span class="arithmatex">\( \hat{\Gamma}_0(\boldsymbol{\xi}) \)</span> (isotropic, "standard" or Willot "rotated" discretisation):</p>
+<div class="arithmatex">\[
+A(\Delta\varepsilon) = \mathcal{F}^{-1}\!\big[\hat{\Gamma}_0 : \mathcal{F}[\mathbb{C}:\Delta\varepsilon]\big], \qquad
+b = -\mathcal{F}^{-1}\!\big[\hat{\Gamma}_0 : \mathcal{F}[\mathbb{C}:\varepsilon_0 - \sigma_{\text{goal}}]\big]
+\]</div>
+<p><span class="arithmatex">\( \hat{\Gamma}_0 \)</span> only ever appears in <em>even</em> powers of <span class="arithmatex">\( \boldsymbol{\xi} \)</span> (e.g. <span class="arithmatex">\( \xi_i\xi_j \)</span>), which is what makes the CG operator provably symmetric positive-definite for arbitrarily heterogeneous <span class="arithmatex">\( \mathbb{C}(\mathbf{x}) \)</span>, and is why it needs no extra preconditioning beyond the reference medium itself.</p>
+<p><strong>Displacement-based (<code>displacement_nw_cg.py</code>).</strong>
+The unknown is instead the periodic displacement fluctuation <span class="arithmatex">\( \hat{u} \)</span> itself, with the strain built directly from its symmetric gradient in Fourier space, <span class="arithmatex">\( \hat{\varepsilon} = \tfrac{1}{2}(i\boldsymbol{\xi}\otimes\hat{u} + \text{sym.}) \)</span>, and the true (possibly heterogeneous) tangent <span class="arithmatex">\( \mathbb{C}(\mathbf{x}) \)</span> applied with <strong>no reference-medium approximation</strong>. Because <span class="arithmatex">\( \boldsymbol{\xi} \)</span> now appears to an <em>odd</em> power, the Nyquist frequency component must be zeroed on even grid dimensions to preserve the Hermitian symmetry a real-input FFT requires — an FFT-Galerkin-specific correction not needed by the Green's-operator formulation. Convergence for realistic (high-contrast) composites additionally needs a frequency-domain preconditioner <span class="arithmatex">\( (\boldsymbol{\xi}\cdot\mathbb{C}_0\cdot\boldsymbol{\xi})^{-1} \)</span> built from a reference stiffness <span class="arithmatex">\( \mathbb{C}_0 \)</span>.</p>
+<p><strong>Mixed strain/stress boundary conditions.</strong>
+Both formulations can prescribe macroscopic strain on some tensor components and macroscopic stress on others (e.g. a free-lateral-surface uniaxial-stress test), selected via a <code>(3,3)</code> <code>control</code> mask. The two schemes solve this differently:</p>
+<ul>
+<li>The <em>displacement-based</em> solver embeds the stress-controlled average-strain correction directly as an extra unknown in the zero-frequency mode of the strain field, coupled to the fluctuation field through the same symmetric CG operator — valid for arbitrary (including heterogeneous) materials.</li>
+<li>The <em>strain-based</em> solver can instead reclaim the Green's operator's own (otherwise always-zero) DC block for this purpose (<code>dstrain_nw_cg_mixed</code>), which is cheaper but only symmetric — and therefore only a valid one-shot CG solve — for <strong>homogeneous</strong> materials; for heterogeneous materials the mixed-BC CG operator loses symmetry and the displacement-based solver must be used instead.</li>
+</ul>
 <hr />
 <h3 id="variational-formulation">Variational formulation</h3>
 <p>The solver is based on an energy minimization principle. For elasticity and phase-field fracture, the total energy functional reads</p>
