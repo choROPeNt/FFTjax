@@ -27,7 +27,7 @@ Both targets are ramped linearly with the same pseudo-time fraction.
 
 Usage
 -----
-    python scripts/simulation/displacement_nw_cg_mixed.py configs/elastic_rve_mixed.yaml
+    python scripts/simulation/elastic_nw_cg_disp_mixed.py configs/elastic_rve_mixed.yaml
 
 Output
 ------
