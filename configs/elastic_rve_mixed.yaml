@@ -3,7 +3,7 @@
 # {input.name}   resolves to the filename with extension     (e.g. "rve.xdmf")
 # {input.parent} resolves to the parent directory
 
-input:    output/preprocessed/rve_phi0.6.xdmf
+input:    output/preprocessed/rve_phi0.55.xdmf
 jobname:  "{input.stem}_mixed"
 output:   output/simulation
 
@@ -14,15 +14,15 @@ Vf_yarn:  1.0   # solid circular fibres → no sub-tow packing
 materials:
   matrix:
     type: LinearElasticIsotropic
-    E:    3500.0      # MPa
-    nu:   0.35
+    E:    3760.0      # MPa
+    nu:   0.39
     name: epoxy matrix
 
   fibre:
     type:   TransverseIsotropicFibre
     E_L:    230000.0  # MPa  longitudinal
     E_T:    15000.0   # MPa  transverse
-    G_LT:   15000.0   # MPa  longitudinal-transverse shear
+    G_LT:   12000.0   # MPa  longitudinal-transverse shear
     nu_LT:  0.20
     nu_TT:  0.30
     name:   carbon fibre
