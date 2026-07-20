@@ -5,7 +5,7 @@
 #   1 MPa·mm = 1000 J/m²   (e.g. 1e-4 MPa·mm = 0.1 J/m²)
 
 input:   output/preprocessed/rve_phi0.75.xdmf
-jobname: "{input.stem}_tension"
+jobname: "{input.stem}_tension_hybrid"
 output:  output/simulation
 
 # Solid circular fibres → binary phi (0/1); Vf_yarn=1.0 so phi_ind = vf/1.0 = vf

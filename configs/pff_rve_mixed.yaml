@@ -36,7 +36,7 @@ materials:
 pff:
   l0:              3.0e-4   # mm  = 3 × voxelsize (voxelsize = 1e-4 mm)
   Gc_mat:          6.4e-4   # MPa·mm  (= 0.64 J/m²)  matrix fracture toughness
-  Gc_yarn_factor:  2     # fibre never cracks
+  Gc_yarn_factor:  2  # fibre never cracks (Gc_yarn = factor × Gc_mat)
   eta:             1.0e-6   # viscous regularisation (Schneider & Kästner 2025)
 
 
@@ -51,8 +51,8 @@ pff:
 # "scheme" (rotated | continuous) option for this script.
 
 solver:
-  toler_lin:    1.0e-8
-  toler_nw:     1.0e-7
+  toler_lin:    1.0e-2
+  toler_nw:     1.0e-2
   maxiter_cg:   2000
   maxiter_nw:   6
 
