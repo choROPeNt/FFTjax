@@ -18,6 +18,10 @@ dependencies = [
     "pyyaml",
 ]
 
+[project.optional-dependencies]
+cuda = ["jax[cuda12]"]
+tpu = ["jax[tpu]"]
+
 [project.urls]
 Homepage = "https://github.com/choROPeNt/FFTjax"
 Documentation = "https://choROPeNt.github.io/FFTjax/"
