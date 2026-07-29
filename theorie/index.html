@@ -9,7 +9,7 @@
       
       
       
-        <link rel="prev" href="../start/">
+        <link rel="prev" href="../installation/">
       
       
         <link rel="next" href="../examples/">
@@ -23,7 +23,7 @@
     
     
       
-        <title>Theorie - FFTjax</title>
+        <title>📖 Theorie - FFTjax</title>
       
     
     
@@ -52,6 +52,8 @@
       <link rel="stylesheet" href="../assets/_mkdocstrings.css">
     
       <link rel="stylesheet" href="../css/extra.css">
+    
+      <link rel="stylesheet" href="../css/benchmark.css">
     
     <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
     
@@ -113,7 +115,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Theorie
+              📖 Theorie
             
           </span>
         </div>
@@ -265,7 +267,7 @@
   <span class="md-ellipsis">
     
   
-    Home
+    🏠 Home
   
 
     
@@ -285,14 +287,14 @@
   
   
     <li class="md-nav__item">
-      <a href="../start/" class="md-nav__link">
+      <a href="../installation/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    Getting Started
+    🚀 Getting Started
   
 
     
@@ -326,7 +328,7 @@
   <span class="md-ellipsis">
     
   
-    Theorie
+    📖 Theorie
   
 
     
@@ -344,7 +346,7 @@
   <span class="md-ellipsis">
     
   
-    Theorie
+    📖 Theorie
   
 
     
@@ -444,7 +446,34 @@
   <span class="md-ellipsis">
     
   
-    Examples
+    🧪 Examples
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../benchmark/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ⚡ Benchmark
   
 
     
@@ -556,7 +585,7 @@
   
 
 
-  <h1>Theorie</h1>
+  <h1>📖 Theorie</h1>
 
 <p>FFTjax solves variational partial differential equations on voxelized domains using a spectral Fourier-based</p>
 <h3 id="spectral-solution-of-pdes">Spectral solution of PDEs</h3>
@@ -669,6 +698,8 @@ which is likewise solved using CG with spectral evaluation of the differential o
             </div>
           
           
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
 <script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
         </div>
         
@@ -701,7 +732,7 @@ which is likewise solved using CG with spectral evaluation of the differential o
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.expand", "navigation.instant", "content.code.copy", "content.code.annotate", "header.autohide"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.expand", "navigation.instant", "content.code.copy", "content.code.annotate", "content.tabs.link", "header.autohide"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
       <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
@@ -709,6 +740,10 @@ which is likewise solved using CG with spectral evaluation of the differential o
         <script src="../javascripts/mathjax.js"></script>
       
         <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+      
+        <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+      
+        <script src="../javascripts/benchmark.js"></script>
       
     
   </body>
