@@ -3,18 +3,32 @@ repo_url: https://github.com/choROPeNt/FFTjax
 repo_name: choROPeNt/FFTjax
 
 markdown_extensions:
+  - attr_list
+  - md_in_html
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
   - pymdownx.arithmatex:
       generic: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
 
 extra_javascript:
   # Arithmatex bridge for Material
   - javascripts/mathjax.js
   # MathJax v3
   - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js
+  # Chart.js for the interactive benchmark page
+  - https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js
+  - javascripts/benchmark.js
 
 
 extra_css:
   - css/extra.css
+  - css/benchmark.css
 
 theme:
   name: material
@@ -27,6 +41,7 @@ theme:
     - navigation.instant
     - content.code.copy
     - content.code.annotate
+    - content.tabs.link
     - header.autohide
 
   palette:
@@ -68,7 +83,8 @@ plugins:
                     docstring_style: null
 
 nav:
-  - Home: index.md
-  - Getting Started: start.md
-  - Theorie: theorie.md
-  - Examples: examples.md
+  - 🏠 Home: index.md
+  - 🚀 Getting Started: installation.md
+  - 📖 Theorie: theorie.md
+  - 🧪 Examples: examples.md
+  - ⚡ Benchmark: benchmark.md
