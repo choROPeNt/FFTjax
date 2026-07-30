@@ -3,13 +3,10 @@
 .claude/
 
 # user folders and symbolic links
-
-
 .venv
-data
-data
-out
-output
+/.venv
+/data
+/output
 
 
 
