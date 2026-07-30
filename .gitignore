@@ -128,8 +128,12 @@ venv.bak/
 # Rope project settings
 .ropeproject
 
-# mkdocs documentation
-/site
+# Docusaurus docs site: generated/derived content, rebuilt by `npm run build`
+# (node_modules, build, .docusaurus are also covered by docs/.gitignore)
+docs/api-docs/
+
+# old docs/ (Sphinx-based) kept as a local, untracked backup during the rebuild
+/docs_
 
 # mypy
 .mypy_cache/

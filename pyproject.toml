@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "fftjax"
 version = "0.0.1"
-description = "GPU-accelerated, differentiable FFT-based spectral solver framework built on JAX"
+description = "image-based, GPU-accelerated, differentiable FFT-based spectral solver framework built on JAX"
 readme = "readme.md"
 requires-python = ">=3.10"
 authors = [
@@ -16,11 +16,17 @@ dependencies = [
     "numpy",
     "h5py",
     "pyyaml",
+    "matplotlib",
 ]
 
 [project.optional-dependencies]
 cuda = ["jax[cuda12]"]
 tpu = ["jax[tpu]"]
+docs = [
+    "sphinx",
+    "sphinx-markdown-builder",
+
+]
 
 [project.urls]
 Homepage = "https://github.com/choROPeNt/FFTjax"

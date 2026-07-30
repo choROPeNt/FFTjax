@@ -1,21 +1,24 @@
 """
 HDF5 + XDMF incremental writer for ParaView visualization.
 
-Usage
------
-writer = IncrementalWriter("results/sim", grid_shape=(32, 32, 32), grid_spacing=(1.0, 1.0, 1.0))
-for inc, data in enumerate(simulation):
-    writer.write_increment(inc, {
-        "stress": to_voigt(stress),   # (nx, ny, nz, 3, 3) -> (nx, ny, nz, 6)
-        "strain": to_voigt(strain),
-        "phase":  phase,              # scalar (nx, ny, nz)
-    })
-writer.close()
+Examples
+--------
+::
 
-Voigt convention (symmetric tensors)
--------------------------------------
-Index mapping:  0=11  1=22  2=33  3=12  4=13  5=23   (Abaqus convention)
-Strain factor:  stress -> factor 1  |  strain -> factor 2 on shear components (Mandel)
+    writer = IncrementalWriter("results/sim", grid_shape=(32, 32, 32), grid_spacing=(1.0, 1.0, 1.0))
+    for inc, data in enumerate(simulation):
+        writer.write_increment(inc, {
+            "stress": to_voigt(stress),   # (nx, ny, nz, 3, 3) -> (nx, ny, nz, 6)
+            "strain": to_voigt(strain),
+            "phase":  phase,              # scalar (nx, ny, nz)
+        })
+    writer.close()
+
+Notes
+-----
+Voigt convention (symmetric tensors) index mapping: 0=11 1=22 2=33 3=12 4=13 5=23
+(Abaqus convention). Strain factor: stress -> factor 1, strain -> factor 2 on shear
+components (Mandel).
 """
 
 import os
@@ -106,7 +109,7 @@ class IncrementalWriter:
         fields : dict[str, np.ndarray]
             Mapping of field name → numpy array.
             Each array must match grid_shape for scalar fields,
-            or (*grid_shape, components) for vector / tensor fields.
+            or ``(*grid_shape, components)`` for vector / tensor fields.
             JAX arrays are converted automatically via np.asarray().
         time : float | None
             Physical time value written to the XDMF ``<Time Value="..."/>``.

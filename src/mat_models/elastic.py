@@ -128,9 +128,9 @@ class LinearElasticIsotropic:
         Parameters
         ----------
         engineering : bool
-            False (default) — tensor shear convention (ε₁₂, shear block = 2μ).
-                Compatible with ``post.io.to_voigt`` and the FFT solver output.
-            True  — engineering / Abaqus-UMAT convention (γ₁₂ = 2ε₁₂, shear block = μ).
+            False (default) — tensor shear convention (ε₁₂, shear block = 2μ),
+            compatible with ``post.io.to_voigt`` and the FFT solver output.
+            True — engineering / Abaqus-UMAT convention (γ₁₂ = 2ε₁₂, shear block = μ).
         """
         lam, mu = self.lam, self.mu
         shear_factor = mu if engineering else 2.0 * mu

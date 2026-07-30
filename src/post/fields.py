@@ -35,7 +35,7 @@ def von_mises(sigma_grid: np.ndarray) -> np.ndarray:
 
     Parameters
     ----------
-    sigma_grid : (*n, 3, 3)   stress tensor field on the grid
+    sigma_grid : ``(*n, 3, 3)``   stress tensor field on the grid
 
     Returns
     -------
@@ -61,9 +61,11 @@ def compute_displacement(
     Recover the displacement field from a compatible strain field via Fourier
     integration.
 
-    Exact inversion of  ε̂_ij = (iξ_j û_i + iξ_i û_j) / 2  for ξ ≠ 0:
+    Exact inversion of ``ε̂_ij = (iξ_j û_i + iξ_i û_j) / 2`` for ξ ≠ 0:
 
-        û_i = −2i/|ξ|² Σ_j Ê'_ij ξ_j  +  i ξ_i (Σ_{jk} ξ_j Ê'_jk ξ_k) / |ξ|⁴
+    ::
+
+        û_i = -2i/|ξ|² Σ_j Ê'_ij ξ_j  +  i ξ_i (Σ_{jk} ξ_j Ê'_jk ξ_k) / |ξ|⁴
 
     The second (longitudinal correction) term is zero for divergence-free
     (incompressible) fields; it is required for the compressible elastic case.

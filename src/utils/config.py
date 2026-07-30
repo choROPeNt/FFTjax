@@ -1,7 +1,7 @@
 """
-YAML configuration loader with {variable} interpolation.
+YAML configuration loader with ``{variable}`` interpolation.
 
-Supports referencing other keys and Path attributes:
+Supports referencing other keys and Path attributes::
 
     input:   output/preprocessed/rve.xdmf
     jobname: "{input.stem}"          # → "rve"
@@ -9,12 +9,12 @@ Supports referencing other keys and Path attributes:
 
 Resolution rules
 ----------------
-- {key}          replace with the value of ``key`` in the same config
-- {key.attr}     resolve ``key`` first, wrap in Path, apply ``.attr``
-                 (stem, name, parent, suffix, …)
-- {a.b.c}        walk nested dicts  a → b → c
+- ``{key}``        replace with the value of ``key`` in the same config
+- ``{key.attr}``   resolve ``key`` first, wrap in Path, apply ``.attr``
+                   (stem, name, parent, suffix, …)
+- ``{a.b.c}``      walk nested dicts  a → b → c
 - Chained references are resolved in up to 5 passes, so
-  {c} where c = "{b}" where b = "{a}" resolves correctly.
+  ``{c}`` where c = ``"{b}"`` where b = ``"{a}"`` resolves correctly.
 """
 
 from __future__ import annotations
@@ -74,7 +74,7 @@ def _walk(node: Any, ctx: dict) -> Any:
 
 def load_config(path: str | Path) -> dict:
     """
-    Load a YAML file and resolve all {variable} references.
+    Load a YAML file and resolve all ``{variable}`` references.
 
     Parameters
     ----------

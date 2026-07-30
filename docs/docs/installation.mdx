@@ -1,0 +1,168 @@
+---
+title: 🚀 Getting Started
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+export const NvidiaIcon = () => (
+  <svg role="img" viewBox="0 0 24 24" width="0.9em" height="0.9em" fill="#76B900">
+    <title>NVIDIA</title>
+    <path d="M8.948 8.798v-1.43a6.7 6.7 0 0 1 .424-.018c3.922-.124 6.493 3.374 6.493 3.374s-2.774 3.851-5.75 3.851c-.398 0-.787-.062-1.158-.185v-4.346c1.528.185 1.837.857 2.747 2.385l2.04-1.714s-1.492-1.952-4-1.952a6.016 6.016 0 0 0-.796.035m0-4.735v2.138l.424-.027c5.45-.185 9.01 4.47 9.01 4.47s-4.08 4.964-8.33 4.964c-.37 0-.733-.035-1.095-.097v1.325c.3.035.61.062.91.062 3.957 0 6.82-2.023 9.593-4.408.459.371 2.34 1.263 2.73 1.652-2.633 2.208-8.772 3.984-12.253 3.984-.335 0-.653-.018-.971-.053v1.864H24V4.063zm0 10.326v1.131c-3.657-.654-4.673-4.46-4.673-4.46s1.758-1.944 4.673-2.262v1.237H8.94c-1.528-.186-2.73 1.245-2.73 1.245s.68 2.412 2.739 3.11M2.456 10.9s2.164-3.197 6.5-3.533V6.201C4.153 6.59 0 10.653 0 10.653s2.35 6.802 8.948 7.42v-1.237c-4.84-.6-6.492-5.936-6.492-5.936z" />
+  </svg>
+);
+
+export const AmdIcon = () => (
+  <svg role="img" viewBox="0 0 24 24" width="1.95em" height="1.95em" fill="#ED1C24">
+    <title>AMD</title>
+    <path d="M18.324 9.137l1.559 1.56h2.556v2.557L24 14.814V9.137zM2 9.52l-2 4.96h1.309l.37-.982H3.9l.408.982h1.338L3.432 9.52zm4.209 0v4.955h1.238v-3.092l1.338 1.562h.188l1.338-1.556v3.091h1.238V9.52H10.47l-1.592 1.845L7.287 9.52zm6.283 0v4.96h2.057c1.979 0 2.88-1.046 2.88-2.472 0-1.36-.937-2.488-2.747-2.488zm1.237.91h.792c1.17 0 1.63.711 1.63 1.57 0 .728-.372 1.572-1.616 1.572h-.806zm-10.985.273l.791 1.932H2.008zm17.137.307l-1.604 1.603v2.25h2.246l1.604-1.607h-2.246z" />
+  </svg>
+);
+
+export const GoogleIcon = () => (
+  <svg role="img" viewBox="0 0 24 24" width="0.9em" height="0.9em" fill="#4285F4">
+    <title>Google</title>
+    <path d="M12.48 10.92v3.28h7.84c-.24 1.84-.853 3.187-1.787 4.133-1.147 1.147-2.933 2.4-6.053 2.4-4.827 0-8.6-3.893-8.6-8.72s3.773-8.72 8.6-8.72c2.6 0 4.507 1.027 5.907 2.347l2.307-2.307C18.747 1.44 16.133 0 12.48 0 5.867 0 .307 5.387.307 12s5.56 12 12.173 12c3.573 0 6.267-1.173 8.373-3.36 2.16-2.16 2.84-5.213 2.84-7.667 0-.76-.053-1.467-.173-2.053H12.48z" />
+  </svg>
+);
+
+export const TabIcon = ({children}) => (
+  <span style={{display: 'inline-flex', alignItems: 'center', gap: '0.4em'}}>{children}</span>
+);
+
+# 🚀 Getting Started
+
+:::warning[Not on PyPI yet]
+FFTjax is under active development and hasn't been published to PyPI. Install it directly from source in editable mode.
+:::
+
+## 💿 Installation
+
+<Tabs>
+  <TabItem value="cpu" label="🖥️ CPU" default>
+
+```bash
+git clone https://github.com/choROPeNt/FFTjax.git
+cd FFTjax
+pip install -e .
+```
+
+  </TabItem>
+  <TabItem value="gpu" label={<TabIcon><NvidiaIcon /> Nvidia GPU (CUDA)</TabIcon>}>
+
+```bash
+git clone https://github.com/choROPeNt/FFTjax.git
+cd FFTjax
+pip install -e ".[cuda]"
+```
+
+  </TabItem>
+  <TabItem value="tpu" label={<TabIcon><GoogleIcon /> Google TPU</TabIcon>}>
+
+```bash
+git clone https://github.com/choROPeNt/FFTjax.git
+cd FFTjax
+pip install -e ".[tpu]"
+```
+
+:::caution[Single precision, automatically]
+TPUs don't support `float64` natively — double precision is emulated and impractically slow. FFTjax
+detects this itself (via `jax.default_backend()`) and runs in `float32` on TPU automatically, no
+configuration needed. That still means the CG tolerances this project tunes for `float64` (see the
+smoke test below) may need loosening, and results should be checked against a CPU/GPU `float64` run
+before trusting them. To force `float64` on TPU anyway (accepting the performance cost), set
+`JAX_ENABLE_X64=1` in the environment before running — an explicit value there is always respected
+over the automatic detection.
+:::
+
+  </TabItem>
+  <TabItem value="rocm" label={<TabIcon><AmdIcon /> AMD GPU (ROCm)</TabIcon>}>
+
+```bash
+git clone https://github.com/choROPeNt/FFTjax.git
+cd FFTjax
+pip install -e .
+pip install -U "jax[rocm]"
+```
+
+:::caution[Untested]
+JAX provides a ROCm build for AMD GPUs on Linux, but this path has not been tested with FFTjax —
+no `rocm` extra is declared in `pyproject.toml` yet, so it's installed directly above. Verify with
+the smoke test below before relying on it.
+:::
+
+  </TabItem>
+</Tabs>
+
+The `cuda` and `tpu` extras are defined in [`pyproject.toml`](https://github.com/choROPeNt/FFTjax/blob/main/pyproject.toml)
+as `jax[cuda12]` and `jax[tpu]`, respectively, so the accelerator-specific `jaxlib` build is
+resolved and installed directly, rather than installing the CPU build first and upgrading it
+to the target backend afterward.
+
+:::info[JAX auto-configuration]
+Importing any FFTjax module configures JAX automatically (`src/utils/precision.py`):
+- **Precision**: `float64` on CPU/GPU, `float32` on TPU — detected via `jax.default_backend()`. An
+  explicit `JAX_ENABLE_X64` already set in the environment is always respected instead of the
+  automatic choice.
+- **GPU memory**: `XLA_PYTHON_CLIENT_PREALLOCATE` defaults to `false`, so JAX grows GPU memory usage
+  as needed instead of reserving ~75% of it upfront on first use — friendlier to sharing a GPU with
+  other processes. Set it explicitly to `true` in the environment before importing FFTjax if you
+  want the old upfront-allocation behavior back.
+:::
+
+Editable installation (`pip install -e`) links the package to the local `src/` tree by reference
+instead of copying it, so changes to the source are reflected immediately without reinstallation —
+relevant given the package's active development and correspondingly frequent interface changes.
+
+
+
+## ✅ Verify
+
+Check the package installed:
+
+```bash
+python -c "from importlib.metadata import version; print(version('fftjax'))"
+```
+
+Then run a full smoke test — builds a frequency grid, assembles an elastic stiffness field, and runs
+one Newton-CG strain solve, so a pass means JAX, the accelerator-aware precision configuration, and
+the FFT solver machinery are all actually working, not just importable. No manual precision setup
+needed — importing `operators.green` already configures it:
+
+```bash
+python - <<'PY'
+import jax
+from operators.green import build_freq_grid, build_green_operator
+from mat_models.elastic import LinearElasticIsotropic, assemble_C_field
+from solvers.mechanical.strain_nw_cg import solve_elastic
+import jax.numpy as jnp
+
+n, L = (8, 8, 8), (1.0, 1.0, 1.0)
+mat = LinearElasticIsotropic(E=210e3, nu=0.3)
+C_field = assemble_C_field([mat], jnp.zeros(8**3, dtype=int))
+xi = build_freq_grid(n, L)
+G = build_green_operator(xi, mat.lam, mat.mu)
+eps_bar = jnp.array([[1e-3, 0, 0], [0, 0, 0], [0, 0, 0]])
+eps, sigma, delta, it, conv = solve_elastic(n, C_field, G, eps_bar)
+
+expected_dtype = jnp.float32 if jax.default_backend() == "tpu" else jnp.float64
+actual_dtype = jnp.zeros(1).dtype
+assert actual_dtype == expected_dtype, f"expected {expected_dtype}, got {actual_dtype}"
+assert bool(conv), "solver did not converge"
+print("backend:", jax.default_backend(), "| devices:", jax.devices())
+print("dtype:", actual_dtype, "| solve converged in", int(it), "iterations")
+print("FFTjax install OK")
+PY
+```
+
+:::tip[GPU/TPU install]
+On a GPU or TPU machine, `jax.devices()` above should list an accelerator, not `CpuDevice`. If it
+still shows CPU after installing the `cuda`/`tpu` extra, JAX likely fell back silently — check
+`pip show jaxlib` matches the accelerator build.
+:::
+
+## 🧪 Run the tests
+
+```bash
+python -m pytest test/
+```
