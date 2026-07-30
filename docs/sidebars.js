@@ -15,9 +15,23 @@ const sidebars = {
     'theorie',
     {
       type: 'category',
-      label: 'Examples',
+      label: '🧪 Examples',
       link: {type: 'doc', id: 'examples/index'},
-      items: ['examples/lin-elastic-strain'],
+      items: [
+        {
+          type: 'category',
+          label: '⚙️ Mechanical Solvers',
+          items: ['examples/lin-elastic-strain'],
+        },
+        {
+          type: 'category',
+          label: '💥 Damage & Fracture Solvers',
+          items: ['examples/phase-field'],
+        },
+        // Inverse Calibration and Structure-Property groups are placeholders
+        // on the Examples page (no doc pages yet) -- add matching categories
+        // here once real pages exist under examples/.
+      ],
     },
     'benchmark',
   ],
