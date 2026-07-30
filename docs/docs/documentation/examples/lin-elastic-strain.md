@@ -1,5 +1,7 @@
 # Linear-Elastic Strain Solve
 
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/choROPeNt/FFTjax/blob/main/notebooks/lin-elastic_strain.ipynb)
+
 A minimal walkthrough of FFTjax's strain-based Newton-CG elastic solver
 (`solvers.mechanical.strain_nw_cg.solve_elastic`) on a homogeneous, isotropic cube under a
 prescribed macroscopic strain.
@@ -100,6 +102,10 @@ python docs/examples_src/lin_elastic_strain.py
 If the example changes, re-run the script and update the pasted output/image above — there's no
 build-time execution here (unlike the earlier Sphinx-based docs' `sphinx-gallery` integration),
 since Docusaurus can't run Python.
+
+For an interactive follow-on that extends this to a real two-phase composite (where the CG solve
+actually iterates), run [`notebooks/lin-elastic_strain.ipynb`](https://github.com/choROPeNt/FFTjax/blob/main/notebooks/lin-elastic_strain.ipynb)
+directly in Colab via the badge above, or locally with Jupyter.
 :::
 
 ## Next steps
