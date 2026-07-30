@@ -1,7 +1,7 @@
 # FFTjax
 
 <p align="center">
-  <img src="docs/assets/fftjax_logo.svg" width="150">
+  <img src="docs/static/img/fftjax_logo.svg" width="150">
 </p>
 
 
