@@ -8,10 +8,11 @@ Examples
     writer = IncrementalWriter("results/sim", grid_shape=(32, 32, 32), grid_spacing=(1.0, 1.0, 1.0))
     for inc, data in enumerate(simulation):
         writer.write_increment(inc, {
-            "stress": to_voigt(stress),   # (nx, ny, nz, 3, 3) -> (nx, ny, nz, 6)
-            "strain": to_voigt(strain),
-            "phase":  phase,              # scalar (nx, ny, nz)
-        })
+            "stress":       to_voigt(stress),   # (nx, ny, nz, 3, 3) -> (nx, ny, nz, 6)
+            "strain":       to_voigt(strain),
+            "phase":        phase,              # scalar (nx, ny, nz)
+            "displacement": displacement,       # (nx, ny, nz, 3)
+        }, point_fields={"displacement"})
     writer.close()
 
 Notes
@@ -19,6 +20,17 @@ Notes
 Voigt convention (symmetric tensors) index mapping: 0=11 1=22 2=33 3=12 4=13 5=23
 (Abaqus convention). Strain factor: stress -> factor 1, strain -> factor 2 on shear
 components (Mandel).
+
+Every field is written voxel-centered (XDMF ``Center="Cell"``) by default, matching
+the FFT/voxel discretization this project uses throughout (strain, stress, and
+damage are naturally per-voxel state variables). Pass a field's name in
+``point_fields`` to instead write it node-centered (XDMF ``Center="Node"`` -- the
+spec's term; ParaView surfaces this as "Point Data"), one value per corner of the
+n+1 node grid -- this is what ParaView's "Warp By Vector" filter needs to deform
+the geometry, since it operates on point data. The n-cell values are interpolated
+to the n+1 corner nodes by periodic box averaging (2 neighbours per axis, wrapping
+across the domain boundary), consistent with the periodic boundary conditions this
+project's FFT solvers assume.
 """
 
 import os
@@ -87,7 +99,8 @@ class IncrementalWriter:
         self._h5_basename = os.path.basename(self.h5_path)
 
         self._h5 = h5py.File(self.h5_path, "w")
-        self._increments: list[tuple[int, list[str], float]] = []  # (inc_id, [field_names], time)
+        # (inc_id, [(field_name, center)], time) -- center is "cell" or "point"
+        self._increments: list[tuple[int, list[tuple[str, str]], float]] = []
 
     # ------------------------------------------------------------------
     # Public API
@@ -98,6 +111,7 @@ class IncrementalWriter:
         increment: int,
         fields: dict[str, np.ndarray],
         time: float | None = None,
+        point_fields: set[str] | frozenset[str] | None = None,
     ) -> None:
         """
         Write one increment to HDF5.
@@ -107,27 +121,39 @@ class IncrementalWriter:
         increment : int
             Increment index — used as the HDF5 group name.
         fields : dict[str, np.ndarray]
-            Mapping of field name → numpy array.
+            Mapping of field name → numpy array, given voxel-centered (one value
+            per voxel) regardless of ``point_fields`` below.
             Each array must match grid_shape for scalar fields,
             or ``(*grid_shape, components)`` for vector / tensor fields.
             JAX arrays are converted automatically via np.asarray().
         time : float | None
             Physical time value written to the XDMF ``<Time Value="..."/>``.
             Defaults to the increment index when not provided.
+        point_fields : set[str] | None
+            Names (a subset of ``fields``' keys) to write node-centered instead
+            of voxel-centered -- e.g. ``{"displacement"}`` so ParaView's "Warp By
+            Vector" filter can use it directly. Each such field is interpolated
+            from its n voxel values to the n+1 corner-node values per axis via
+            periodic box averaging (see module docstring) before being written.
         """
         grp = self._h5.require_group(f"increment_{increment:06d}")
-        written: list[str] = []
+        written: list[tuple[str, str]] = []
 
         for name, arr in fields.items():
             arr = np.asarray(arr)  # detach from JAX / device
             _check_field_shape(arr, self.grid_shape, name)
+
+            is_point = point_fields is not None and name in point_fields
+            if is_point:
+                arr = _cell_to_node(arr, self.ndim)
+
             # XDMF CoRectMesh convention: Dimensions="nz ny nx" (last dim = X = fastest).
             # Transpose spatial axes to ZYX order so the HDF5 layout matches.
             spatial = tuple(range(self.ndim - 1, -1, -1))   # (2,1,0) for 3-D
             trailing = tuple(range(self.ndim, arr.ndim))
             arr = arr.transpose(spatial + trailing)
             grp.create_dataset(name, data=arr, compression="gzip", compression_opts=4)
-            written.append(name)
+            written.append((name, "point" if is_point else "cell"))
 
         self._h5.flush()
         time_val = float(increment) if time is None else float(time)
@@ -163,19 +189,28 @@ class IncrementalWriter:
             lines.append(f"        {self._topology_tag()}")
             lines.append(f"        {self._geometry_tag()}")
 
-            for fname in field_names:
+            for fname, center in field_names:
                 ds = self._h5[grp_path][fname]
                 arr_shape = ds.shape
                 number_type, precision = _xdmf_dtype(ds)
-                # grid_shape is (nx,ny,nz); stored data is transposed to (nz,ny,nx,...),
-                # so pass the reversed shape so dims_str matches the HDF5 layout.
-                attr_type, n_components, dims_str = _attribute_meta(
-                    arr_shape, tuple(reversed(self.grid_shape))
-                )
+                # grid_shape is (nx,ny,nz) voxels; stored data is transposed to
+                # (nz,ny,nx,...), and node-centered fields have one extra value
+                # per axis (n+1 corners) -- reverse (and grow) to match.
+                if center == "point":
+                    dims_grid = tuple(reversed(tuple(s + 1 for s in self.grid_shape)))
+                else:
+                    dims_grid = tuple(reversed(self.grid_shape))
+                attr_type, n_components, dims_str = _attribute_meta(arr_shape, dims_grid)
                 h5_ref = f"{self._h5_basename}:/{grp_path}/{fname}"
 
+                # XDMF's Center enum is Node|Cell|Grid|Face|Edge|Other -- "Point"
+                # is not a valid value (that's VTK/ParaView's user-facing term
+                # for the same concept); the internal "point"/"cell" strings
+                # here map to the spec's "Node"/"Cell".
+                xdmf_center = "Node" if center == "point" else "Cell"
                 lines.append(
-                    f'        <Attribute Name="{fname}" AttributeType="{attr_type}" Center="Cell">'
+                    f'        <Attribute Name="{fname}" AttributeType="{attr_type}" '
+                    f'Center="{xdmf_center}">'
                 )
                 lines.append(
                     f'          <DataItem Dimensions="{dims_str}" '
@@ -196,8 +231,10 @@ class IncrementalWriter:
 
     def _topology_tag(self) -> str:
         # XDMF CoRectMesh Dimensions = number of *nodes* (corners), listed ZYX.
-        # We use n+1 nodes per direction so we get exactly n cells, and declare
-        # data with Center="Cell" — each cell corresponds to one voxel.
+        # We use n+1 nodes per direction so we get exactly n cells. Most
+        # Attributes declare Center="Cell" (one value per voxel); fields in
+        # point_fields declare Center="Point" instead, using these same n+1
+        # corner nodes directly (see _cell_to_node).
         if self.ndim == 2:
             nx, ny = self.grid_shape
             return f'<Topology TopologyType="2DCoRectMesh" Dimensions="{ny + 1} {nx + 1}" />'
@@ -305,6 +342,44 @@ def from_voigt(voigt: np.ndarray, mandel: bool = False) -> np.ndarray:
 # ------------------------------------------------------------------
 # Private helpers
 # ------------------------------------------------------------------
+
+def _cell_to_node(arr: np.ndarray, ndim: int) -> np.ndarray:
+    """
+    Interpolate a voxel-centered field (n per axis) to its corner nodes
+    (n+1 per axis) by periodic box averaging.
+
+    Each node is the average of the (up to) 2**ndim voxels touching it. This is
+    done as ``ndim`` sequential 1-D box averages of width 2 (averaging is
+    separable), each with a periodic wrap: node i's two neighbours along an
+    axis are voxels ``i-1 mod n`` and ``i mod n``, so e.g. node 0 and node n
+    (the two ends of the CoRectMesh's n+1 corners) come out identical, both
+    being the periodic seam -- correct for the periodic RVEs this project's
+    FFT solvers assume.
+
+    Parameters
+    ----------
+    arr  : (n0, n1, [n2,] ...trailing)   voxel-centered field, spatial axes first
+    ndim : int   number of leading spatial axes to interpolate (2 or 3)
+
+    Returns
+    -------
+    out : (n0+1, n1+1, [n2+1,] ...trailing)
+    """
+    out = arr
+    for ax in range(ndim):
+        pad_width = [(0, 0)] * out.ndim
+        pad_width[ax] = (1, 1)
+        ext = np.pad(out, pad_width, mode="wrap")
+
+        n_ax = out.shape[ax]
+        sl_lo = [slice(None)] * out.ndim
+        sl_hi = [slice(None)] * out.ndim
+        sl_lo[ax] = slice(0, n_ax + 1)
+        sl_hi[ax] = slice(1, n_ax + 2)
+
+        out = 0.5 * (ext[tuple(sl_lo)] + ext[tuple(sl_hi)])
+    return out
+
 
 def _check_field_shape(arr: np.ndarray, grid_shape: tuple[int, ...], name: str) -> None:
     if arr.shape[:len(grid_shape)] != grid_shape:
