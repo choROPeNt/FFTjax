@@ -6,7 +6,7 @@ import prismGithubDimmed from './src/theme/prismGithubDimmed.js';
 const config = {
   title: 'FFTjax',
   tagline: 'GPU-accelerated, differentiable FFT-based spectral solver framework built on JAX',
-  favicon: 'img/favicon.ico',
+  favicon: 'img/fftjax_logo.svg',
 
   future: {
     v4: true,
