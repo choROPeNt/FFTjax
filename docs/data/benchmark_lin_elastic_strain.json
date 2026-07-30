@@ -1,0 +1,133 @@
+{
+  "generated": "2026-07-29",
+  "backend": "cpu",
+  "device": "TFRT_CPU_0",
+  "ndim": 3,
+  "material": {
+    "matrix": {
+      "name": "aluminium",
+      "E": 70000.0,
+      "nu": 0.33
+    },
+    "inclusion": {
+      "name": "steel",
+      "E": 210000.0,
+      "nu": 0.3
+    },
+    "volume_fraction_target": 0.15,
+    "geometry": "centred sphere"
+  },
+  "solver": {
+    "toler_lin": 1e-06,
+    "maxiter": 1000,
+    "eps_bar": [
+      [
+        0.001,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.0
+      ]
+    ]
+  },
+  "results": [
+    {
+      "n": [
+        16,
+        16,
+        16
+      ],
+      "elements": 4096,
+      "volume_fraction": 0.15234375,
+      "cg_iterations": 29,
+      "converged": true,
+      "compile_ms": 156.11375001026317,
+      "run_ms": 40.91137500169376,
+      "backend": "cpu",
+      "device": "TFRT_CPU_0"
+    },
+    {
+      "n": [
+        24,
+        24,
+        24
+      ],
+      "elements": 13824,
+      "volume_fraction": 0.14525462962962962,
+      "cg_iterations": 35,
+      "converged": true,
+      "compile_ms": 263.5374999954365,
+      "run_ms": 154.20854166829182,
+      "backend": "cpu",
+      "device": "TFRT_CPU_0"
+    },
+    {
+      "n": [
+        32,
+        32,
+        32
+      ],
+      "elements": 32768,
+      "volume_fraction": 0.1494140625,
+      "cg_iterations": 42,
+      "converged": true,
+      "compile_ms": 648.6352499923669,
+      "run_ms": 447.21433333082433,
+      "backend": "cpu",
+      "device": "TFRT_CPU_0"
+    },
+    {
+      "n": [
+        48,
+        48,
+        48
+      ],
+      "elements": 110592,
+      "volume_fraction": 0.14973958333333334,
+      "cg_iterations": 31,
+      "converged": true,
+      "compile_ms": 1431.9780829973752,
+      "run_ms": 1181.0569860002336,
+      "backend": "cpu",
+      "device": "TFRT_CPU_0"
+    },
+    {
+      "n": [
+        64,
+        64,
+        64
+      ],
+      "elements": 262144,
+      "volume_fraction": 0.1505126953125,
+      "cg_iterations": 41,
+      "converged": true,
+      "compile_ms": 4948.739583007409,
+      "run_ms": 4639.557638666399,
+      "backend": "cpu",
+      "device": "TFRT_CPU_0"
+    },
+    {
+      "n": [
+        96,
+        96,
+        96
+      ],
+      "elements": 884736,
+      "volume_fraction": 0.1501736111111111,
+      "cg_iterations": 26,
+      "converged": true,
+      "compile_ms": 9569.418999992195,
+      "run_ms": 8438.05256933168,
+      "backend": "cpu",
+      "device": "TFRT_CPU_0"
+    }
+  ]
+}
