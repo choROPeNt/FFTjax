@@ -4,7 +4,7 @@ JAX precision and memory configuration, applied once at import time.
 - Enables float64 (X64) on CPU/GPU, where this project's CG solvers assume
   double precision. Leaves JAX at its default float32 on TPU, since TPU has
   no native float64 support (double precision is emulated there and
-  impractically slow -- see docs/docs/installation.mdx).
+  impractically slow -- see docs/docs/documentation/installation.mdx).
 - Disables XLA's default GPU memory preallocation
   (XLA_PYTHON_CLIENT_PREALLOCATE), so JAX grows GPU memory usage as needed
   instead of grabbing ~75% of it upfront on first use.

@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
-# Regenerates api-docs/ from src/ docstrings via a headless Sphinx build
+# Regenerates docs/api/ from src/ docstrings via a headless Sphinx build
 # (see docs/api_src/conf.py). Runs as the "prestart"/"prebuild" npm hook.
 #
-# Output deliberately lives at docs/api-docs/ (a sibling of docs/docs/, the
-# main docs plugin's content root) rather than docs/docs/api/: nesting the
-# API plugin instance's path inside the main instance's path causes SSG
-# rendering to crash ("Cannot read properties of undefined (reading 'id')"
-# in DocItem) -- confirmed by testing byte-identical content at a sibling
-# path vs. a nested path, only the nested one broke. Keep them as siblings.
+# Output lives at docs/docs/api/, a *sibling* of docs/docs/documentation/
+# (the main docs plugin's content root) -- both live under the common
+# docs/docs/ parent, but neither instance's configured `path` is nested
+# inside the other's. Nesting one plugin instance's path inside another
+# instance's own path causes SSG rendering to crash ("Cannot read properties
+# of undefined (reading 'id')" in DocItem) -- confirmed by testing
+# byte-identical content at a sibling path vs. a nested path, only the
+# nested one broke. Keep them as siblings under the shared parent.
 #
 # Prefers the repo's .venv (local dev, where sphinx-build usually isn't on
 # PATH unless the venv is activated) and falls back to plain `sphinx-build`
@@ -28,6 +30,6 @@ else
   exit 1
 fi
 
-rm -rf api-docs
-"$SPHINX_BUILD" -b markdown api_src api-docs
-rm -rf api-docs/.doctrees
+rm -rf docs/api
+"$SPHINX_BUILD" -b markdown api_src docs/api
+rm -rf docs/api/.doctrees

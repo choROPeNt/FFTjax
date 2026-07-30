@@ -5,7 +5,7 @@ steel inclusion (E=210e3, nu=0.3) in an aluminium matrix (E=70e3, nu=0.33),
 Vf~15%, under a prescribed uniaxial macroscopic strain.
 
 Writes results to docs/static/data/benchmark_lin_elastic_strain.json for the
-interactive Benchmark page (docs/docs/benchmark.mdx).
+interactive Benchmark page (docs/docs/documentation/benchmark.mdx).
 """
 import sys
 sys.path.insert(0, "src")

@@ -3,7 +3,7 @@ Sweeps the frequency-grid construction (operators.green.set_freq_*) over a
 range of grid sizes, comparing plain NumPy, eager JAX, and JIT-compiled JAX.
 
 Writes results to docs/static/data/benchmark_set_freq.json for the interactive
-Benchmark page (docs/docs/benchmark.mdx).
+Benchmark page (docs/docs/documentation/benchmark.mdx).
 """
 import sys
 sys.path.insert(0, "src")

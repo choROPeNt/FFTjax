@@ -13,7 +13,7 @@ hand, so this script doubles as a sanity check of the install.
 
 Saves its plot to docs/static/img/lin_elastic_strain.png for the
 Examples page. Re-run this script and copy its printed output into
-docs/docs/examples/lin-elastic-strain.md if the example ever changes.
+docs/docs/documentation/examples/lin-elastic-strain.md if the example ever changes.
 """
 import sys
 from pathlib import Path

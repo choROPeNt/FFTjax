@@ -45,15 +45,12 @@ const config = {
       /** @type {import('@docusaurus/preset-classic').Options} */
       ({
         docs: {
-          path: 'docs',
+          path: 'docs/documentation',
           routeBasePath: 'documentation',
           sidebarPath: './sidebars.js',
           editUrl: 'https://github.com/choROPeNt/FFTjax/tree/main/docs/',
           remarkPlugins: [require('remark-math')],
           rehypePlugins: [require('rehype-katex')],
-          // API docs are served by their own plugin instance below (separate
-          // sidebar, separate /api path).
-          exclude: ['api/**'],
         },
         blog: false,
         theme: {
@@ -69,7 +66,7 @@ const config = {
       /** @type {import('@docusaurus/plugin-content-docs').Options} */
       ({
         id: 'api',
-        path: 'api-docs',
+        path: 'docs/api',
         routeBasePath: 'api',
         sidebarPath: './sidebarsApi.js',
         editUrl: 'https://github.com/choROPeNt/FFTjax/tree/main/docs/',
