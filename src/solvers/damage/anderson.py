@@ -29,8 +29,7 @@ NGMRESAccelerator
     at the same cost as AndersonAccelerator (one sweep per step).
 """
 
-import os
-os.environ["JAX_ENABLE_X64"] = "1"
+import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on TPU, no GPU prealloc)
 
 import jax.numpy as jnp
 
@@ -39,8 +38,8 @@ class AndersonAccelerator:
     """
     Stateful Anderson-mixing accelerator for a Python-driven fixed-point loop.
 
-    Call :meth:`reset` at the start of each new fixed-point problem, then feed
-    successive ``(x, G(x))`` pairs to :meth:`step`, which returns the next
+    Call ``reset()`` at the start of each new fixed-point problem, then feed
+    successive ``(x, G(x))`` pairs to ``step()``, which returns the next
     accelerated iterate.
 
     Parameters

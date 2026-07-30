@@ -4,18 +4,18 @@ Sweeps the strain-based Newton-CG elastic solver (solvers.mechanical.strain_nw_c
 steel inclusion (E=210e3, nu=0.3) in an aluminium matrix (E=70e3, nu=0.33),
 Vf~15%, under a prescribed uniaxial macroscopic strain.
 
-Writes results to docs/data/benchmark_lin_elastic_strain.json for the
-interactive benchmark page (docs/benchmark.md).
+Writes results to docs/static/data/benchmark_lin_elastic_strain.json for the
+interactive Benchmark page (docs/docs/benchmark.mdx).
 """
 import sys
 sys.path.insert(0, "src")
-import os
-os.environ["JAX_ENABLE_X64"] = "1"
 
 import json
+import os
 import time
 import datetime
 
+import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on TPU, no GPU prealloc)
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -29,7 +29,7 @@ L = (1.0, 1.0, 1.0)
 VF_TARGET = 0.15
 TOLER_LIN = 1e-6
 MAXITER = 1000
-OUT_PATH = "docs/data/benchmark_lin_elastic_strain.json"
+OUT_PATH = "docs/static/data/benchmark_lin_elastic_strain.json"
 
 MATRIX = LinearElasticIsotropic(E=70e3, nu=0.33, name="aluminium")
 INCLUSION = LinearElasticIsotropic(E=210e3, nu=0.3, name="steel")

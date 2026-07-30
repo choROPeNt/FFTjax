@@ -1,5 +1,4 @@
-import os
-os.environ["JAX_ENABLE_X64"] = "1"
+import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on TPU, no GPU prealloc)
 
 import jax
 import jax.numpy as jnp

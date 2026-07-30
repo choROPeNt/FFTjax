@@ -1,5 +1,4 @@
-import os
-os.environ["JAX_ENABLE_X64"] = "1"
+import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on TPU, no GPU prealloc)
 
 import jax
 import jax.numpy as jnp
@@ -204,7 +203,7 @@ def solve_helmholtz_cg_het(
     fracture toughness Gc(x).
 
     The operator is in divergence form (correct variational derivative of
-    ∫ Gc(x) [d²/2l + l/2 |∇d|²] dx):
+    ``∫ Gc(x) [d²/2l + l/2 |∇d|²] dx``):
 
         -l₀ ∇·(Gc(x) ∇d) + (Gc(x)/l₀ + η/Δt + 2H) d = 2H + (η/Δt) dₙ
 

@@ -2,18 +2,18 @@
 Sweeps the frequency-grid construction (operators.green.set_freq_*) over a
 range of grid sizes, comparing plain NumPy, eager JAX, and JIT-compiled JAX.
 
-Writes results to docs/data/benchmark_set_freq.json for the interactive
-benchmark page (docs/benchmark.md).
+Writes results to docs/static/data/benchmark_set_freq.json for the interactive
+Benchmark page (docs/docs/benchmark.mdx).
 """
 import sys
 sys.path.insert(0, "src")
-import os
-os.environ["JAX_ENABLE_X64"] = "1"
 
 import json
+import os
 import time
 import datetime
 
+import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on TPU, no GPU prealloc)
 import jax
 import numpy as np
 
@@ -21,7 +21,7 @@ from operators.green import set_freq_np, set_freq_jax, set_freq_jax_jit
 
 GRID_SIZES = [8, 16, 24, 32, 48, 64, 96, 128, 160]
 L = (1.0, 1.0, 1.0)
-OUT_PATH = "docs/data/benchmark_set_freq.json"
+OUT_PATH = "docs/static/data/benchmark_set_freq.json"
 
 
 def time_ms(fn, repeats=30, sync=None):

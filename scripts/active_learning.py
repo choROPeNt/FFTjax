@@ -33,7 +33,6 @@ Dependencies
 import argparse
 import json
 import os
-os.environ["JAX_ENABLE_X64"] = "1"   # must be set before importing jax
 import subprocess
 import sys
 from pathlib import Path
@@ -43,6 +42,7 @@ import numpy as np
 import yaml
 
 sys.path.insert(0, "src")
+import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on TPU, no GPU prealloc)
 from utils.config import load_config
 
 # ── GPJax ────────────────────────────────────────────────────────────────────

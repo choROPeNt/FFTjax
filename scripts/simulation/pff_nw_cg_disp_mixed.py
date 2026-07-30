@@ -37,11 +37,11 @@ Output
 import argparse
 import os
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
-os.environ["JAX_ENABLE_X64"] = "1"
 
 import sys
 sys.path.insert(0, "src")
 
+import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on TPU, no GPU prealloc)
 import jax
 import jax.numpy as jnp
 import numpy as np
