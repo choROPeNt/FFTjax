@@ -86,5 +86,7 @@ nav:
   - 🏠 Home: index.md
   - 🚀 Getting Started: installation.md
   - 📖 Theorie: theorie.md
-  - 🧪 Examples: examples.md
+  - 🧪 Examples:
+      - Overview: examples.md
+      - Linear-Elastic Strain: examples/lin-elastic_strain.ipynb
   - ⚡ Benchmark: benchmark.md
