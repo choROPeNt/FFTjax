@@ -1,5 +1,5 @@
 {
-  "generated": "2026-07-29",
+  "generated": "2026-07-30",
   "backend": "cpu",
   "device": "TFRT_CPU_0",
   "ndim": 3,
@@ -49,8 +49,8 @@
       "volume_fraction": 0.15234375,
       "cg_iterations": 29,
       "converged": true,
-      "compile_ms": 156.11375001026317,
-      "run_ms": 40.91137500169376,
+      "compile_ms": 157.23283300030744,
+      "run_ms": 42.15606933333523,
       "backend": "cpu",
       "device": "TFRT_CPU_0"
     },
@@ -64,8 +64,8 @@
       "volume_fraction": 0.14525462962962962,
       "cg_iterations": 35,
       "converged": true,
-      "compile_ms": 263.5374999954365,
-      "run_ms": 154.20854166829182,
+      "compile_ms": 267.15758399950573,
+      "run_ms": 153.57648600183893,
       "backend": "cpu",
       "device": "TFRT_CPU_0"
     },
@@ -79,8 +79,8 @@
       "volume_fraction": 0.1494140625,
       "cg_iterations": 42,
       "converged": true,
-      "compile_ms": 648.6352499923669,
-      "run_ms": 447.21433333082433,
+      "compile_ms": 602.2539580008015,
+      "run_ms": 474.58377766694565,
       "backend": "cpu",
       "device": "TFRT_CPU_0"
     },
@@ -94,8 +94,8 @@
       "volume_fraction": 0.14973958333333334,
       "cg_iterations": 31,
       "converged": true,
-      "compile_ms": 1431.9780829973752,
-      "run_ms": 1181.0569860002336,
+      "compile_ms": 1338.8323750041309,
+      "run_ms": 1197.4906666679697,
       "backend": "cpu",
       "device": "TFRT_CPU_0"
     },
@@ -109,8 +109,8 @@
       "volume_fraction": 0.1505126953125,
       "cg_iterations": 41,
       "converged": true,
-      "compile_ms": 4948.739583007409,
-      "run_ms": 4639.557638666399,
+      "compile_ms": 4835.763458999281,
+      "run_ms": 4903.8682636649655,
       "backend": "cpu",
       "device": "TFRT_CPU_0"
     },
@@ -124,8 +124,8 @@
       "volume_fraction": 0.1501736111111111,
       "cg_iterations": 26,
       "converged": true,
-      "compile_ms": 9569.418999992195,
-      "run_ms": 8438.05256933168,
+      "compile_ms": 9467.422624999017,
+      "run_ms": 8342.287222001081,
       "backend": "cpu",
       "device": "TFRT_CPU_0"
     }

@@ -1,0 +1,536 @@
+<!doctype html><html lang=en dir=ltr class="docs-wrapper plugin-docs plugin-id-api docs-version-current docs-doc-page docs-doc-id-solvers" data-has-hydrated=false><head><meta charset=UTF-8><meta name=generator content="Docusaurus v3.10.2"><title data-rh=true>solvers | FFTjax</title><meta data-rh=true name=viewport content="width=device-width, initial-scale=1.0"/><meta data-rh=true name=twitter:card content=summary_large_image /><meta data-rh=true property=og:url content=https://choROPeNt.github.io/FFTjax/api/solvers /><meta data-rh=true property=og:locale content=en /><meta data-rh=true name=docusaurus_locale content=en /><meta data-rh=true name=docsearch:language content=en /><meta data-rh=true name=docusaurus_version content=current /><meta data-rh=true name=docusaurus_tag content=docs-api-current /><meta data-rh=true name=docsearch:version content=current /><meta data-rh=true name=docsearch:docusaurus_tag content=docs-api-current /><meta data-rh=true property=og:title content="solvers | FFTjax"/><meta data-rh=true name=description content="FFT-based variational solvers, grouped by problem type."/><meta data-rh=true property=og:description content="FFT-based variational solvers, grouped by problem type."/><link data-rh=true rel=icon href=/FFTjax/img/fftjax_logo.svg /><link data-rh=true rel=canonical href=https://choROPeNt.github.io/FFTjax/api/solvers /><link data-rh=true rel=alternate href=https://choROPeNt.github.io/FFTjax/api/solvers hreflang=en /><link data-rh=true rel=alternate href=https://choROPeNt.github.io/FFTjax/api/solvers hreflang=x-default /><script data-rh=true type=application/ld+json>{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","item":"https://choROPeNt.github.io/FFTjax/api/solvers","name":"solvers","position":1}]}</script><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css type=text/css integrity=sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV crossorigin=anonymous><link rel=stylesheet href=/FFTjax/assets/css/styles.cf829d51.css /><script src=/FFTjax/assets/js/runtime~main.418806bb.js defer></script><script src=/FFTjax/assets/js/main.e22d9cb1.js defer></script></head><body><svg style="display: none;"><defs>
+<symbol id=theme-svg-external-link viewBox="0 0 24 24"><path fill=currentColor d="M21 13v10h-21v-19h12v2h-10v15h17v-8h2zm3-12h-10.988l4.035 4-6.977 7.07 2.828 2.828 6.977-7.07 4.125 4.172v-11z"/></symbol>
+</defs></svg>
+<script>!function(){var t=function(){try{return new URLSearchParams(window.location.search).get("docusaurus-theme")}catch(t){}}()||function(){try{return window.localStorage.getItem("theme-d7b")}catch(t){}}();document.documentElement.setAttribute("data-theme",t||(window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light")),document.documentElement.setAttribute("data-theme-choice",t||"system")}(),function(){try{for(var[t,e]of new URLSearchParams(window.location.search).entries())if(t.startsWith("docusaurus-data-")){var a=t.replace("docusaurus-data-","data-");document.documentElement.setAttribute(a,e)}}catch(t){}}()</script><div id=__docusaurus><link rel=preload as=image href=/FFTjax/img/fftjax_logo.svg /><div role=region aria-label="Skip to main content"><a class=skipToContent_fXgn href=#__docusaurus_skipToContent_fallback>Skip to main content</a></div><nav aria-label=Main class="theme-layout-navbar navbar navbar--fixed-top"><div class=navbar__inner><div class="theme-layout-navbar-left navbar__items"><button aria-label="Toggle navigation bar" aria-expanded=false class="navbar__toggle clean-btn" type=button><svg width=30 height=30 viewBox="0 0 30 30" aria-hidden=true><path stroke=currentColor stroke-linecap=round stroke-miterlimit=10 stroke-width=2 d="M4 7h22M4 15h22M4 23h22"/></svg></button><a class=navbar__brand href=/FFTjax/><div class=navbar__logo><img src=/FFTjax/img/fftjax_logo.svg alt="FFTjax Logo" class="themedComponent_mlkZ themedComponent--light_NVdE"/><img src=/FFTjax/img/fftjax_logo.svg alt="FFTjax Logo" class="themedComponent_mlkZ themedComponent--dark_xIcU"/></div><b class="navbar__title text--truncate">FFTjax</b></a><a class="navbar__item navbar__link" href=/FFTjax/documentation>Documentation</a><a aria-current=page class="navbar__item navbar__link navbar__link--active" href=/FFTjax/api>API</a></div><div class="theme-layout-navbar-right navbar__items navbar__items--right"><a href=https://github.com/choROPeNt/FFTjax target=_blank rel="noopener noreferrer" class="navbar__item navbar__link">GitHub<svg width=13.5 height=13.5 aria-label="(opens in new tab)" class=iconExternalLink_nPIU><use href=#theme-svg-external-link /></svg></a><div class="toggle_vylO colorModeToggle_DEke"><button class="clean-btn toggleButton_gllP toggleButtonDisabled_aARS" type=button disabled title="system mode" aria-label="Switch between dark and light mode (currently system mode)"><svg viewBox="0 0 24 24" width=24 height=24 aria-hidden=true class="toggleIcon_g3eP lightToggleIcon_pyhR"><path fill=currentColor d="M12,9c1.65,0,3,1.35,3,3s-1.35,3-3,3s-3-1.35-3-3S10.35,9,12,9 M12,7c-2.76,0-5,2.24-5,5s2.24,5,5,5s5-2.24,5-5 S14.76,7,12,7L12,7z M2,13l2,0c0.55,0,1-0.45,1-1s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S1.45,13,2,13z M20,13l2,0c0.55,0,1-0.45,1-1 s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S19.45,13,20,13z M11,2v2c0,0.55,0.45,1,1,1s1-0.45,1-1V2c0-0.55-0.45-1-1-1S11,1.45,11,2z M11,20v2c0,0.55,0.45,1,1,1s1-0.45,1-1v-2c0-0.55-0.45-1-1-1C11.45,19,11,19.45,11,20z M5.99,4.58c-0.39-0.39-1.03-0.39-1.41,0 c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0s0.39-1.03,0-1.41L5.99,4.58z M18.36,16.95 c-0.39-0.39-1.03-0.39-1.41,0c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0c0.39-0.39,0.39-1.03,0-1.41 L18.36,16.95z M19.42,5.99c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06c-0.39,0.39-0.39,1.03,0,1.41 s1.03,0.39,1.41,0L19.42,5.99z M7.05,18.36c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06 c-0.39,0.39-0.39,1.03,0,1.41s1.03,0.39,1.41,0L7.05,18.36z"/></svg><svg viewBox="0 0 24 24" width=24 height=24 aria-hidden=true class="toggleIcon_g3eP darkToggleIcon_wfgR"><path fill=currentColor d="M9.37,5.51C9.19,6.15,9.1,6.82,9.1,7.5c0,4.08,3.32,7.4,7.4,7.4c0.68,0,1.35-0.09,1.99-0.27C17.45,17.19,14.93,19,12,19 c-3.86,0-7-3.14-7-7C5,9.07,6.81,6.55,9.37,5.51z M12,3c-4.97,0-9,4.03-9,9s4.03,9,9,9s9-4.03,9-9c0-0.46-0.04-0.92-0.1-1.36 c-0.98,1.37-2.58,2.26-4.4,2.26c-2.98,0-5.4-2.42-5.4-5.4c0-1.81,0.89-3.42,2.26-4.4C12.92,3.04,12.46,3,12,3L12,3z"/></svg><svg viewBox="0 0 24 24" width=24 height=24 aria-hidden=true class="toggleIcon_g3eP systemToggleIcon_QzmC"><path fill=currentColor d="m12 21c4.971 0 9-4.029 9-9s-4.029-9-9-9-9 4.029-9 9 4.029 9 9 9zm4.95-13.95c1.313 1.313 2.05 3.093 2.05 4.95s-0.738 3.637-2.05 4.95c-1.313 1.313-3.093 2.05-4.95 2.05v-14c1.857 0 3.637 0.737 4.95 2.05z"/></svg></button></div><div class=navbarSearchContainer_Bca1></div></div></div><div role=presentation class=navbar-sidebar__backdrop></div></nav><div id=__docusaurus_skipToContent_fallback class="theme-layout-main main-wrapper mainWrapper_z2l0"><div class=docsWrapper_hBAB><button aria-label="Scroll back to top" class="clean-btn theme-back-to-top-button backToTopButton_sjWU" type=button></button><div class=docRoot_UBD9><aside class="theme-doc-sidebar-container docSidebarContainer_YfHR"><div class=sidebarViewport_aRkj><div class=sidebar_njMd><nav aria-label="Docs sidebar" class="menu thin-scrollbar menu_SIkG"><ul class="theme-doc-sidebar-menu menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class=menu__link href=/FFTjax/api/generation><span class=linkLabel_WmDU>generation</span></a><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class=menu__link href=/FFTjax/api><span class=linkLabel_WmDU>API Reference</span></a><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class=menu__link href=/FFTjax/api/mat_models><span class=linkLabel_WmDU>mat_models</span></a><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class=menu__link href=/FFTjax/api/operators><span class=linkLabel_WmDU>operators</span></a><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class=menu__link href=/FFTjax/api/post><span class=linkLabel_WmDU>post</span></a><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link menu__link--active" aria-current=page href=/FFTjax/api/solvers><span class=linkLabel_WmDU>solvers</span></a><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class=menu__link href=/FFTjax/api/utils><span class=linkLabel_WmDU>utils</span></a></ul></nav></div></div></aside><main class=docMainContainer_TBSr><div class="container padding-top--md padding-bottom--lg"><div class=row><div class="col docItemCol_VOVn"><div class=docItemContainer_Djhp><article><nav class="theme-doc-breadcrumbs breadcrumbsContainer_Z_bl" aria-label=Breadcrumbs><ul class=breadcrumbs><li class=breadcrumbs__item><a aria-label="Home page" class=breadcrumbs__link href=/FFTjax/><svg viewBox="0 0 24 24" class=breadcrumbHomeIcon_YNFT><path d="M10 19v-5h4v5c0 .55.45 1 1 1h3c.55 0 1-.45 1-1v-7h1.7c.46 0 .68-.57.33-.87L12.67 3.6c-.38-.34-.96-.34-1.34 0l-8.36 7.53c-.34.3-.13.87.33.87H5v7c0 .55.45 1 1 1h3c.55 0 1-.45 1-1z" fill=currentColor /></svg></a><li class="breadcrumbs__item breadcrumbs__item--active"><span class=breadcrumbs__link>solvers</span></ul></nav><div class="tocCollapsible_ETCw theme-doc-toc-mobile tocMobile_ITEo"><button type=button class="clean-btn tocCollapsibleButton_TO0P">On this page</button></div><div class="theme-doc-markdown markdown"><header><h1><code>solvers</code></h1></header>
+<p>FFT-based variational solvers, grouped by problem type.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id=shared-types>Shared types<a href=#shared-types class=hash-link aria-label="Direct link to Shared types" title="Direct link to Shared types" translate=no>​</a></h2>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id=class-solverstypessolvestatestrain_loc-stress_loc-tangent_glob-strain_ave-stress_ave-strain_ave_inc_goal-stress_ave_inc_goal-deltastrain_loc-deltastress_loc-stress_loc_goal-deltastrain_loc-time-dtime-kinc-kstep-iter_nw-iter_cg-info-bb0n-pnewdt><em>class</em> solvers.types.SolveState(strain_loc, stress_loc, tangent_glob, strain_ave, stress_ave, strain_ave_inc_goal, stress_ave_inc_goal, Deltastrain_loc, Deltastress_loc, stress_loc_goal, deltastrain_loc, time, dtime, kinc, kstep, iter_nw, iter_cg, info, bb0n, pnewdt)<a href=#class-solverstypessolvestatestrain_loc-stress_loc-tangent_glob-strain_ave-stress_ave-strain_ave_inc_goal-stress_ave_inc_goal-deltastrain_loc-deltastress_loc-stress_loc_goal-deltastrain_loc-time-dtime-kinc-kstep-iter_nw-iter_cg-info-bb0n-pnewdt class=hash-link aria-label="Direct link to class-solverstypessolvestatestrain_loc-stress_loc-tangent_glob-strain_ave-stress_ave-strain_ave_inc_goal-stress_ave_inc_goal-deltastrain_loc-deltastress_loc-stress_loc_goal-deltastrain_loc-time-dtime-kinc-kstep-iter_nw-iter_cg-info-bb0n-pnewdt" title="Direct link to class-solverstypessolvestatestrain_loc-stress_loc-tangent_glob-strain_ave-stress_ave-strain_ave_inc_goal-stress_ave_inc_goal-deltastrain_loc-deltastress_loc-stress_loc_goal-deltastrain_loc-time-dtime-kinc-kstep-iter_nw-iter_cg-info-bb0n-pnewdt" translate=no>​</a></h3>
+<p>Bases: <code>NamedTuple</code></p>
+<p>Evolving state for one variational NW-CG elastic solve.</p>
+<p>A NamedTuple so it is automatically a JAX pytree — safe to pass
+through jax.jit, lax.while_loop, lax.scan, etc.</p>
+<p>Precomputed operators (G_glob, C_field) are intentionally excluded;
+they are static and should be passed as separate arguments to the solver.</p>
+<ul>
+<li class=""><strong>Parameters:</strong>
+<ul>
+<li class=""><strong>strain_loc</strong> (<em>Array</em>)</li>
+<li class=""><strong>stress_loc</strong> (<em>Array</em>)</li>
+<li class=""><strong>tangent_glob</strong> (<em>Array</em>)</li>
+<li class=""><strong>strain_ave</strong> (<em>Array</em>)</li>
+<li class=""><strong>stress_ave</strong> (<em>Array</em>)</li>
+<li class=""><strong>strain_ave_inc_goal</strong> (<em>Array</em>)</li>
+<li class=""><strong>stress_ave_inc_goal</strong> (<em>Array</em>)</li>
+<li class=""><strong>Deltastrain_loc</strong> (<em>Array</em>)</li>
+<li class=""><strong>Deltastress_loc</strong> (<em>Array</em>)</li>
+<li class=""><strong>stress_loc_goal</strong> (<em>Array</em>)</li>
+<li class=""><strong>deltastrain_loc</strong> (<em>Array</em>)</li>
+<li class=""><strong>time</strong> (<em>float</em>)</li>
+<li class=""><strong>dtime</strong> (<em>float</em>)</li>
+<li class=""><strong>kinc</strong> (<em>int</em>)</li>
+<li class=""><strong>kstep</strong> (<em>int</em>)</li>
+<li class=""><strong>iter_nw</strong> (<em>int</em>)</li>
+<li class=""><strong>iter_cg</strong> (<em>int</em>)</li>
+<li class=""><strong>info</strong> (<em>int</em>)</li>
+<li class=""><strong>bb0n</strong> (<em>float</em>)</li>
+<li class=""><strong>pnewdt</strong> (<em>float</em>)</li>
+</ul>
+</li>
+</ul>
+<h4 class="anchor anchorTargetStickyNavbar_Vzrq" id=strain_loc--array>strain_loc <em>: Array</em><a href=#strain_loc--array class=hash-link aria-label="Direct link to strain_loc--array" title="Direct link to strain_loc--array" translate=no>​</a></h4>
+<p>Alias for field number 0</p>
+<h4 class="anchor anchorTargetStickyNavbar_Vzrq" id=stress_loc--array>stress_loc <em>: Array</em><a href=#stress_loc--array class=hash-link aria-label="Direct link to stress_loc--array" title="Direct link to stress_loc--array" translate=no>​</a></h4>
+<p>Alias for field number 1</p>
+<h4 class="anchor anchorTargetStickyNavbar_Vzrq" id=tangent_glob--array>tangent_glob <em>: Array</em><a href=#tangent_glob--array class=hash-link aria-label="Direct link to tangent_glob--array" title="Direct link to tangent_glob--array" translate=no>​</a></h4>
+<p>Alias for field number 2</p>
+<h4 class="anchor anchorTargetStickyNavbar_Vzrq" id=strain_ave--array>strain_ave <em>: Array</em><a href=#strain_ave--array class=hash-link aria-label="Direct link to strain_ave--array" title="Direct link to strain_ave--array" translate=no>​</a></h4>
+<p>Alias for field number 3</p>
+<h4 class="anchor anchorTargetStickyNavbar_Vzrq" id=stress_ave--array>stress_ave <em>: Array</em><a href=#stress_ave--array class=hash-link aria-label="Direct link to stress_ave--array" title="Direct link to stress_ave--array" translate=no>​</a></h4>
+<p>Alias for field number 4</p>
+<h4 class="anchor anchorTargetStickyNavbar_Vzrq" id=strain_ave_inc_goal--array>strain_ave_inc_goal <em>: Array</em><a href=#strain_ave_inc_goal--array class=hash-link aria-label="Direct link to strain_ave_inc_goal--array" title="Direct link to strain_ave_inc_goal--array" translate=no>​</a></h4>
+<p>Alias for field number 5</p>
+<h4 class="anchor anchorTargetStickyNavbar_Vzrq" id=stress_ave_inc_goal--array>stress_ave_inc_goal <em>: Array</em><a href=#stress_ave_inc_goal--array class=hash-link aria-label="Direct link to stress_ave_inc_goal--array" title="Direct link to stress_ave_inc_goal--array" translate=no>​</a></h4>
+<p>Alias for field number 6</p>
+<h4 class="anchor anchorTargetStickyNavbar_Vzrq" id=deltastrain_loc--array>Deltastrain_loc <em>: Array</em><a href=#deltastrain_loc--array class=hash-link aria-label="Direct link to deltastrain_loc--array" title="Direct link to deltastrain_loc--array" translate=no>​</a></h4>
+<p>Alias for field number 7</p>
+<h4 class="anchor anchorTargetStickyNavbar_Vzrq" id=deltastress_loc--array>Deltastress_loc <em>: Array</em><a href=#deltastress_loc--array class=hash-link aria-label="Direct link to deltastress_loc--array" title="Direct link to deltastress_loc--array" translate=no>​</a></h4>
+<p>Alias for field number 8</p>
+<h4 class="anchor anchorTargetStickyNavbar_Vzrq" id=stress_loc_goal--array>stress_loc_goal <em>: Array</em><a href=#stress_loc_goal--array class=hash-link aria-label="Direct link to stress_loc_goal--array" title="Direct link to stress_loc_goal--array" translate=no>​</a></h4>
+<p>Alias for field number 9</p>
+<h4 class="anchor anchorTargetStickyNavbar_Vzrq" id=deltastrain_loc--array-1>deltastrain_loc <em>: Array</em><a href=#deltastrain_loc--array-1 class=hash-link aria-label="Direct link to deltastrain_loc--array-1" title="Direct link to deltastrain_loc--array-1" translate=no>​</a></h4>
+<p>Alias for field number 10</p>
+<h4 class="anchor anchorTargetStickyNavbar_Vzrq" id=time--float>time <em>: float</em><a href=#time--float class=hash-link aria-label="Direct link to time--float" title="Direct link to time--float" translate=no>​</a></h4>
+<p>Alias for field number 11</p>
+<h4 class="anchor anchorTargetStickyNavbar_Vzrq" id=dtime--float>dtime <em>: float</em><a href=#dtime--float class=hash-link aria-label="Direct link to dtime--float" title="Direct link to dtime--float" translate=no>​</a></h4>
+<p>Alias for field number 12</p>
+<h4 class="anchor anchorTargetStickyNavbar_Vzrq" id=kinc--int>kinc <em>: int</em><a href=#kinc--int class=hash-link aria-label="Direct link to kinc--int" title="Direct link to kinc--int" translate=no>​</a></h4>
+<p>Alias for field number 13</p>
+<h4 class="anchor anchorTargetStickyNavbar_Vzrq" id=kstep--int>kstep <em>: int</em><a href=#kstep--int class=hash-link aria-label="Direct link to kstep--int" title="Direct link to kstep--int" translate=no>​</a></h4>
+<p>Alias for field number 14</p>
+<h4 class="anchor anchorTargetStickyNavbar_Vzrq" id=iter_nw--int>iter_nw <em>: int</em><a href=#iter_nw--int class=hash-link aria-label="Direct link to iter_nw--int" title="Direct link to iter_nw--int" translate=no>​</a></h4>
+<p>Alias for field number 15</p>
+<h4 class="anchor anchorTargetStickyNavbar_Vzrq" id=iter_cg--int>iter_cg <em>: int</em><a href=#iter_cg--int class=hash-link aria-label="Direct link to iter_cg--int" title="Direct link to iter_cg--int" translate=no>​</a></h4>
+<p>Alias for field number 16</p>
+<h4 class="anchor anchorTargetStickyNavbar_Vzrq" id=info--int>info <em>: int</em><a href=#info--int class=hash-link aria-label="Direct link to info--int" title="Direct link to info--int" translate=no>​</a></h4>
+<p>Alias for field number 17</p>
+<h4 class="anchor anchorTargetStickyNavbar_Vzrq" id=bb0n--float>bb0n <em>: float</em><a href=#bb0n--float class=hash-link aria-label="Direct link to bb0n--float" title="Direct link to bb0n--float" translate=no>​</a></h4>
+<p>Alias for field number 18</p>
+<h4 class="anchor anchorTargetStickyNavbar_Vzrq" id=pnewdt--float>pnewdt <em>: float</em><a href=#pnewdt--float class=hash-link aria-label="Direct link to pnewdt--float" title="Direct link to pnewdt--float" translate=no>​</a></h4>
+<p>Alias for field number 19</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id=class-solverstypessolversettingsndim-n-l-toler_lin1e-07-toler_nw1e-07-maxiter_cg1000-maxiter_nw6-control-strain_ave_goal-stress_ave_goal-timer-jobname-output><em>class</em> solvers.types.SolverSettings(ndim, n, L, toler_lin=1e-07, toler_nw=1e-07, maxiter_cg=1000, maxiter_nw=6, control=<factory>, strain_ave_goal=<factory>, stress_ave_goal=<factory>, timer=<factory>, jobname='', output='')</factory></factory></factory></factory><a href=#class-solverstypessolversettingsndim-n-l-toler_lin1e-07-toler_nw1e-07-maxiter_cg1000-maxiter_nw6-control-strain_ave_goal-stress_ave_goal-timer-jobname-output class=hash-link aria-label="Direct link to class-solverstypessolversettingsndim-n-l-toler_lin1e-07-toler_nw1e-07-maxiter_cg1000-maxiter_nw6-control-strain_ave_goal-stress_ave_goal-timer-jobname-output" title="Direct link to class-solverstypessolversettingsndim-n-l-toler_lin1e-07-toler_nw1e-07-maxiter_cg1000-maxiter_nw6-control-strain_ave_goal-stress_ave_goal-timer-jobname-output" translate=no>​</a></h3>
+<p>Bases: <code>object</code></p>
+<p>Static configuration for the variational NW-CG elastic solver.</p>
+<p>Passed once at setup; nothing here changes during iteration.
+Load steps are accumulated by calling add_load_step().</p>
+<ul>
+<li class=""><strong>Parameters:</strong>
+<ul>
+<li class=""><strong>ndim</strong> (<em>int</em>)</li>
+<li class=""><strong>n</strong> (<em>tuple</em> *[*<em>int</em> <em>,</em>  <em>...</em> <em>]</em>)</li>
+<li class=""><strong>L</strong> (<em>tuple</em> *[*<em>float</em> <em>,</em>  <em>...</em> <em>]</em>)</li>
+<li class=""><strong>toler_lin</strong> (<em>float</em>)</li>
+<li class=""><strong>toler_nw</strong> (<em>float</em>)</li>
+<li class=""><strong>maxiter_cg</strong> (<em>int</em>)</li>
+<li class=""><strong>maxiter_nw</strong> (<em>int</em>)</li>
+<li class=""><strong>control</strong> (<em>list</em> *[*<em>Array</em> <em>]</em>)</li>
+<li class=""><strong>strain_ave_goal</strong> (<em>list</em> *[*<em>Array</em> <em>]</em>)</li>
+<li class=""><strong>stress_ave_goal</strong> (<em>list</em> *[*<em>Array</em> <em>]</em>)</li>
+<li class=""><strong>timer</strong> (<em>list</em> *[*<em>tuple</em> *[*<em>float</em> <em>,</em> <em>float</em> <em>,</em> <em>float</em> <em>,</em> <em>float</em> <em>]</em> <em>]</em>)</li>
+<li class=""><strong>jobname</strong> (<em>str</em>)</li>
+<li class=""><strong>output</strong> (<em>str</em>)</li>
+</ul>
+</li>
+</ul>
+<h4 class="anchor anchorTargetStickyNavbar_Vzrq" id=property-rsteps--range><em>property</em> rsteps <em>: range</em><a href=#property-rsteps--range class=hash-link aria-label="Direct link to property-rsteps--range" title="Direct link to property-rsteps--range" translate=no>​</a></h4>
+<p>1-based step range matching the reference solver convention.</p>
+<h4 class="anchor anchorTargetStickyNavbar_Vzrq" id=add_load_stepcontrol-strain_ave_goal-stress_ave_goal-timer>add_load_step(control, strain_ave_goal, stress_ave_goal, timer)<a href=#add_load_stepcontrol-strain_ave_goal-stress_ave_goal-timer class=hash-link aria-label="Direct link to add_load_step(control, strain_ave_goal, stress_ave_goal, timer)" title="Direct link to add_load_step(control, strain_ave_goal, stress_ave_goal, timer)" translate=no>​</a></h4>
+<p>Append one load step.</p>
+<ul>
+<li class=""><strong>Parameters:</strong>
+<ul>
+<li class=""><strong>control</strong> (<em>Array</em>)</li>
+<li class=""><strong>strain_ave_goal</strong> (<em>Array</em>)</li>
+<li class=""><strong>stress_ave_goal</strong> (<em>Array</em>)</li>
+<li class=""><strong>timer</strong> (<em>tuple</em> *[*<em>float</em> <em>,</em> <em>float</em> <em>,</em> <em>float</em> <em>,</em> <em>float</em> <em>]</em>)</li>
+</ul>
+</li>
+<li class=""><strong>Return type:</strong>
+None</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id=solversmechanical><code>solvers.mechanical</code><a href=#solversmechanical class=hash-link aria-label="Direct link to solversmechanical" title="Direct link to solversmechanical" translate=no>​</a></h2>
+<p>Strain- and displacement-based Newton-CG solvers.</p>
+<p><a id=module-solvers.mechanical.strain_nw_cg class=anchorTargetStickyNavbar_Vzrq></a></p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id=solversmechanicalstrain_nw_cgdstrain_nw_cgn_i-c_field-g_glob-eps_bar-stress_goalnone-toler_lin00001-maxiter1000>solvers.mechanical.strain_nw_cg.dstrain_nw_cg(n_i, C_field, G_glob, eps_bar, stress_goal=None, toler_lin=0.0001, maxiter=1000)<a href=#solversmechanicalstrain_nw_cgdstrain_nw_cgn_i-c_field-g_glob-eps_bar-stress_goalnone-toler_lin00001-maxiter1000 class=hash-link aria-label="Direct link to solvers.mechanical.strain_nw_cg.dstrain_nw_cg(n_i, C_field, G_glob, eps_bar, stress_goal=None, toler_lin=0.0001, maxiter=1000)" title="Direct link to solvers.mechanical.strain_nw_cg.dstrain_nw_cg(n_i, C_field, G_glob, eps_bar, stress_goal=None, toler_lin=0.0001, maxiter=1000)" translate=no>​</a></h3>
+<p>Inner CG solve for one Newton step of the variational FFT elastic solver
+(small strains, Vondrejc / Lucarini–Segurado formulation).</p>
+<p>Solves the linear system
+: A(Δε) = b</p>
+<p>where
+: A(v)  = iFFT( G̃ : FFT( C : v ) )     [Green–stiffness operator]
+b     = -iFFT( G̃ : FFT( C:ε₀ − σ_goal ) )   [projected residual]
+ε₀    = eps_bar broadcast to all voxels   [uniform initial guess]</p>
+<ul>
+<li class=""><strong>Parameters:</strong>
+<ul>
+<li class=""><strong>n_i</strong> (<em>grid shape</em> *(*<em>nx</em> <em>,</em> <em>ny</em> <em>,</em> <em>nz</em> <em>)</em>  <em>— must be static for JIT</em>)</li>
+<li class=""><strong>C_field</strong> ( *(*<em>3</em> <em>,</em> <em>3</em> <em>,</em> <em>3</em> <em>,</em> <em>3</em> <em>,</em> <em>Nv</em> <em>)</em>      <em>per-voxel stiffness</em> <em>(or</em> <em>tangent</em> <em>)</em>)</li>
+<li class=""><strong>G_glob</strong> ( *(*<em>3</em> <em>,</em> <em>3</em> <em>,</em> <em>3</em> <em>,</em> <em>3</em> <em>,</em> <em>Nv</em> <em>)</em>      <em>Green's operator in Fourier space</em>)</li>
+<li class=""><strong>eps_bar</strong> ( *(*<em>3</em> <em>,</em> <em>3</em> <em>)</em>                <em>prescribed macroscopic strain</em>)</li>
+<li class=""><strong>stress_goal</strong> ( *(*<em>3</em> <em>,</em> <em>3</em> <em>,</em> <em>Nv</em> <em>) or</em> <em>None target stress field</em> *(*<em>None = zero</em> <em>,</em> <em>strain BC</em> <em>)</em>)</li>
+<li class=""><strong>toler_lin</strong> (<em>relative CG residual tolerance</em>)</li>
+<li class=""><strong>maxiter</strong> (<em>maximum CG iterations — must be static for JIT</em>)</li>
+</ul>
+</li>
+<li class=""><strong>Returns:</strong>
+<ul>
+<li class=""><strong>eps</strong> ( <em>(3, 3, Nv)   updated local strain  ε = ε₀ + Δε</em>)</li>
+<li class=""><strong>sigma</strong> ( <em>(3, 3, Nv)   updated local stress  σ = C : ε</em>)</li>
+<li class=""><strong>delta</strong> ( <em>(3, 3, Nv)   strain correction     Δε</em>)</li>
+<li class=""><strong>iter_count</strong> (<em>int array    CG iterations performed</em>)</li>
+<li class=""><strong>converged</strong> (<em>bool array   True if residual tolerance met</em>)</li>
+</ul>
+</li>
+<li class=""><strong>Return type:</strong>
+<em>Tuple</em>[<em>Array</em>, <em>Array</em>, <em>Array</em>, <em>Array</em>, <em>Array</em>]</li>
+</ul>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id=solversmechanicalstrain_nw_cgsolve_elasticn_i-c_field-g_glob-eps_bar-stress_goalnone-toler_lin00001-maxiter1000>solvers.mechanical.strain_nw_cg.solve_elastic(n_i, C_field, G_glob, eps_bar, stress_goal=None, toler_lin=0.0001, maxiter=1000)<a href=#solversmechanicalstrain_nw_cgsolve_elasticn_i-c_field-g_glob-eps_bar-stress_goalnone-toler_lin00001-maxiter1000 class=hash-link aria-label="Direct link to solvers.mechanical.strain_nw_cg.solve_elastic(n_i, C_field, G_glob, eps_bar, stress_goal=None, toler_lin=0.0001, maxiter=1000)" title="Direct link to solvers.mechanical.strain_nw_cg.solve_elastic(n_i, C_field, G_glob, eps_bar, stress_goal=None, toler_lin=0.0001, maxiter=1000)" translate=no>​</a></h3>
+<p>Inner CG solve for one Newton step of the variational FFT elastic solver
+(small strains, Vondrejc / Lucarini–Segurado formulation).</p>
+<p>Solves the linear system
+: A(Δε) = b</p>
+<p>where
+: A(v)  = iFFT( G̃ : FFT( C : v ) )     [Green–stiffness operator]
+b     = -iFFT( G̃ : FFT( C:ε₀ − σ_goal ) )   [projected residual]
+ε₀    = eps_bar broadcast to all voxels   [uniform initial guess]</p>
+<ul>
+<li class=""><strong>Parameters:</strong>
+<ul>
+<li class=""><strong>n_i</strong> (<em>grid shape</em> *(*<em>nx</em> <em>,</em> <em>ny</em> <em>,</em> <em>nz</em> <em>)</em>  <em>— must be static for JIT</em>)</li>
+<li class=""><strong>C_field</strong> ( *(*<em>3</em> <em>,</em> <em>3</em> <em>,</em> <em>3</em> <em>,</em> <em>3</em> <em>,</em> <em>Nv</em> <em>)</em>      <em>per-voxel stiffness</em> <em>(or</em> <em>tangent</em> <em>)</em>)</li>
+<li class=""><strong>G_glob</strong> ( *(*<em>3</em> <em>,</em> <em>3</em> <em>,</em> <em>3</em> <em>,</em> <em>3</em> <em>,</em> <em>Nv</em> <em>)</em>      <em>Green's operator in Fourier space</em>)</li>
+<li class=""><strong>eps_bar</strong> ( *(*<em>3</em> <em>,</em> <em>3</em> <em>)</em>                <em>prescribed macroscopic strain</em>)</li>
+<li class=""><strong>stress_goal</strong> ( *(*<em>3</em> <em>,</em> <em>3</em> <em>,</em> <em>Nv</em> <em>) or</em> <em>None target stress field</em> *(*<em>None = zero</em> <em>,</em> <em>strain BC</em> <em>)</em>)</li>
+<li class=""><strong>toler_lin</strong> (<em>relative CG residual tolerance</em>)</li>
+<li class=""><strong>maxiter</strong> (<em>maximum CG iterations — must be static for JIT</em>)</li>
+</ul>
+</li>
+<li class=""><strong>Returns:</strong>
+<ul>
+<li class=""><strong>eps</strong> ( <em>(3, 3, Nv)   updated local strain  ε = ε₀ + Δε</em>)</li>
+<li class=""><strong>sigma</strong> ( <em>(3, 3, Nv)   updated local stress  σ = C : ε</em>)</li>
+<li class=""><strong>delta</strong> ( <em>(3, 3, Nv)   strain correction     Δε</em>)</li>
+<li class=""><strong>iter_count</strong> (<em>int array    CG iterations performed</em>)</li>
+<li class=""><strong>converged</strong> (<em>bool array   True if residual tolerance met</em>)</li>
+</ul>
+</li>
+<li class=""><strong>Return type:</strong>
+<em>Tuple</em>[<em>Array</em>, <em>Array</em>, <em>Array</em>, <em>Array</em>, <em>Array</em>]</li>
+</ul>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id=solversmechanicalstrain_nw_cgdstrain_nw_cg_mixedn_i-c_field-g_glob-eps_bar-control-stress_ave_goal-toler_lin00001-maxiter1000>solvers.mechanical.strain_nw_cg.dstrain_nw_cg_mixed(n_i, C_field, G_glob, eps_bar, control, stress_ave_goal, toler_lin=0.0001, maxiter=1000)<a href=#solversmechanicalstrain_nw_cgdstrain_nw_cg_mixedn_i-c_field-g_glob-eps_bar-control-stress_ave_goal-toler_lin00001-maxiter1000 class=hash-link aria-label="Direct link to solvers.mechanical.strain_nw_cg.dstrain_nw_cg_mixed(n_i, C_field, G_glob, eps_bar, control, stress_ave_goal, toler_lin=0.0001, maxiter=1000)" title="Direct link to solvers.mechanical.strain_nw_cg.dstrain_nw_cg_mixed(n_i, C_field, G_glob, eps_bar, control, stress_ave_goal, toler_lin=0.0001, maxiter=1000)" translate=no>​</a></h3>
+<p>Variational Newton-CG elastic solve with mixed macroscopic strain/stress
+boundary conditions (Vondrejc et al. 2014 / Lucarini & Segurado 2018,
+FFTMAD’s <code>variational_nw_cg_*</code> family).</p>
+<p>Unlike <code>ddisp_nw_cg</code> (which solves for an entirely separate displacement
+field with its own preconditioner), this reuses the existing strain-based
+Green’s-operator CG solver almost unchanged. The trick: <code>G_glob</code> is
+exactly zero at the zero-frequency (DC) point in the pure-strain scheme,
+since the mean strain is fully prescribed there and the CG correction
+never touches it. Overriding that otherwise-unused DC block with
+<code>I4s : control</code> reclaims it as a free unknown exactly for the
+stress-controlled tensor components — the correction field’s own mean
+value at those components becomes the solved macroscopic-strain
+correction, with no extra unknowns, no separate preconditioner, and no
+change to the well-conditioned Γ0-based operator elsewhere.</p>
+<p><strong>HOMOGENEOUS MATERIALS ONLY as a one-shot solve.</strong> The DC-override CG
+operator is only symmetric (hence only reliably CG-solvable in one shot)
+when <code>mean(C:v) == C0:mean(v)</code> for the trial field <code>v</code> — true for a
+spatially constant <code>C_field</code>, false in general for a heterogeneous one
+(verified directly: for a two-phase composite the operator’s symmetry
+error is ~80%, and CG diverges to nonsense). FFTMAD’s own reference
+implementation only uses this trick <em>inside</em> an outer Newton iteration
+that repeatedly re-solves and updates the stress target — never as a
+single CG pass — which is not what this function does. Use
+<code>ddisp_nw_cg</code> for heterogeneous materials with mixed BC instead.</p>
+<ul>
+<li class=""><strong>Parameters:</strong>
+<ul>
+<li class=""><strong>n_i</strong> (<em>grid shape</em> *(*<em>nx</em> <em>,</em> <em>ny</em> <em>,</em> <em>nz</em> <em>)</em>  <em>— must be static for JIT</em>)</li>
+<li class=""><strong>C_field</strong> ( *(*<em>3</em> <em>,</em> <em>3</em> <em>,</em> <em>3</em> <em>,</em> <em>3</em> <em>,</em> <em>Nv</em> <em>)</em>  <em>per-voxel stiffness</em> <em>(or</em> <em>tangent</em> <em>)</em>)</li>
+<li class=""><strong>G_glob</strong> ( *(*<em>3</em> <em>,</em> <em>3</em> <em>,</em> <em>3</em> <em>,</em> <em>3</em> <em>,</em> <em>Nv</em> <em>)</em>  <em>Green's operator in Fourier space</em>) – (its own DC block, index -1 == 0, is overridden internally —
+pass the same G_glob used for pure-strain BC)</li>
+<li class=""><strong>eps_bar</strong> ( *(*<em>3</em> <em>,</em> <em>3</em> <em>)</em>  <em>prescribed macroscopic strain; entries where</em>) – <code>control == 1</code> are ignored (solved for instead)</li>
+<li class=""><strong>control</strong> ( *(*<em>3</em> <em>,</em> <em>3</em> <em>)</em> <em>static 0/1 mask</em> <em>,</em> <em>1 = stress-controlled</em> <em>,</em> <em>0 = strain-controlled</em>)</li>
+<li class=""><strong>stress_ave_goal</strong> ( *(*<em>3</em> <em>,</em> <em>3</em> <em>)</em>  <em>target macroscopic stress; only entries where</em>) – <code>control == 1</code> are used</li>
+<li class=""><strong>toler_lin</strong> (<em>relative CG residual tolerance</em>)</li>
+<li class=""><strong>maxiter</strong> (<em>maximum CG iterations — must be static for JIT</em>)</li>
+</ul>
+</li>
+<li class=""><strong>Returns:</strong>
+<ul>
+<li class=""><strong>eps</strong> ( <em>(3, 3, Nv)   updated local strain</em>)</li>
+<li class=""><strong>sigma</strong> ( <em>(3, 3, Nv)   updated local stress  σ = C : ε</em>)</li>
+<li class=""><strong>delta</strong> ( <em>(3, 3, Nv)   strain correction (fluctuation + macroscopic part)</em>)</li>
+<li class=""><strong>eps_bar_out</strong> ( <em>(3, 3)       macroscopic strain, with stress-controlled</em>) – entries filled in by the solve</li>
+<li class=""><strong>iter_count</strong> (<em>int array    CG iterations performed</em>)</li>
+<li class=""><strong>converged</strong> (<em>bool array   True if residual tolerance met</em>)</li>
+</ul>
+</li>
+<li class=""><strong>Return type:</strong>
+<em>Tuple</em>[<em>Array</em>, <em>Array</em>, <em>Array</em>, <em>Array</em>, <em>Array</em>, <em>Array</em>]</li>
+</ul>
+<p><a id=module-solvers.mechanical.displacement_nw_cg class=anchorTargetStickyNavbar_Vzrq></a></p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id=solversmechanicaldisplacement_nw_cgddisp_nw_cgn_i-c_field-xi_flat-eps_bar-control-stress_goal-toler_lin00001-maxiter1000-c0none>solvers.mechanical.displacement_nw_cg.ddisp_nw_cg(n_i, C_field, xi_flat, eps_bar, control, stress_goal, toler_lin=0.0001, maxiter=1000, C0=None)<a href=#solversmechanicaldisplacement_nw_cgddisp_nw_cgn_i-c_field-xi_flat-eps_bar-control-stress_goal-toler_lin00001-maxiter1000-c0none class=hash-link aria-label="Direct link to solvers.mechanical.displacement_nw_cg.ddisp_nw_cg(n_i, C_field, xi_flat, eps_bar, control, stress_goal, toler_lin=0.0001, maxiter=1000, C0=None)" title="Direct link to solvers.mechanical.displacement_nw_cg.ddisp_nw_cg(n_i, C_field, xi_flat, eps_bar, control, stress_goal, toler_lin=0.0001, maxiter=1000, C0=None)" translate=no>​</a></h3>
+<p>Displacement-based Newton-CG solve for one Newton step of the variational
+FFT elastic solver, supporting mixed strain/stress macroscopic boundary
+conditions (FFTMAD’s <code>displacement_nw_cg_small</code> / <code>du_loc_nw_CG</code>).</p>
+<p>Unlike the strain-based <code>dstrain_nw_cg</code> (which uses a fixed
+reference-medium Green’s operator), this solves directly for a periodic
+displacement fluctuation field via the true (possibly heterogeneous)
+tangent stiffness <code>C_field</code>, with no reference-medium approximation.
+The macroscopic-average strain correction for stress-controlled directions
+is solved for jointly with the displacement fluctuation, by embedding it
+in the (otherwise physically meaningless) zero-frequency mode of the
+Fourier-space strain field — the same trick used by the reference
+implementation, adapted here to a real-space CG unknown (full <code>fftn</code>/
+<code>ifftn</code>, no Hermitian-symmetry DOF reduction).</p>
+<ul>
+<li class=""><strong>Parameters:</strong>
+<ul>
+<li class=""><strong>n_i</strong> (<em>grid shape</em> *(*<em>nx</em> <em>,</em> <em>ny</em> <em>,</em> <em>nz</em> <em>)</em>  <em>— must be static for JIT</em>)</li>
+<li class=""><strong>C_field</strong> ( *(*<em>3</em> <em>,</em> <em>3</em> <em>,</em> <em>3</em> <em>,</em> <em>3</em> <em>,</em> <em>Nv</em> <em>)</em>  <em>per-voxel tangent stiffness</em>)</li>
+<li class=""><strong>xi_flat</strong> ((3, Nv)           angular-frequency grid (<code>operators.green.build_freq_grid</code>))</li>
+<li class=""><strong>eps_bar</strong> ( *(*<em>3</em> <em>,</em> <em>3</em> <em>)</em>  <em>prescribed macroscopic strain; entries where</em>) – <code>control == 1</code> are ignored (solved for instead)</li>
+<li class=""><strong>control</strong> ( *(*<em>3</em> <em>,</em> <em>3</em> <em>)</em> <em>static 0/1 mask</em> <em>,</em> <em>1 = stress-controlled</em> <em>,</em> <em>0 = strain-controlled</em>)</li>
+<li class=""><strong>stress_goal</strong> ( *(*<em>3</em> <em>,</em> <em>3</em> <em>)</em>  <em>target macroscopic stress; only entries where</em>) – <code>control == 1</code> are used</li>
+<li class=""><strong>toler_lin</strong> (<em>relative CG residual tolerance</em>)</li>
+<li class=""><strong>maxiter</strong> (<em>maximum CG iterations — must be static for JIT</em>)</li>
+<li class=""><strong>C0</strong> ( *(*<em>3</em> <em>,</em> <em>3</em> <em>,</em> <em>3</em> <em>,</em> <em>3</em> <em>) or</em> <em>None  reference stiffness used to build a</em>) – frequency-domain preconditioner <code>(ξ·C0·ξ)⁻¹</code>. Without a
+preconditioner CG needs O(10²-10³) iterations for realistic
+(high-contrast) composites; default is the voxel-average of
+<code>C_field</code>.</li>
+</ul>
+</li>
+<li class=""><strong>Returns:</strong>
+<ul>
+<li class=""><strong>eps</strong> ( <em>(3, 3, Nv)   updated local strain</em>)</li>
+<li class=""><strong>sigma</strong> ( <em>(3, 3, Nv)   updated local stress  σ = C : ε</em>)</li>
+<li class=""><strong>delta</strong> ( <em>(3, 3, Nv)   strain correction (fluctuation + macroscopic part)</em>)</li>
+<li class=""><strong>eps_bar_out</strong> ( <em>(3, 3)       macroscopic strain, with stress-controlled</em>) – entries filled in by the solve</li>
+<li class=""><strong>iter_count</strong> (<em>int array    CG iterations performed</em>)</li>
+<li class=""><strong>converged</strong> (<em>bool array   True if residual tolerance met</em>)</li>
+</ul>
+</li>
+<li class=""><strong>Return type:</strong>
+<em>Tuple</em>[<em>Array</em>, <em>Array</em>, <em>Array</em>, <em>Array</em>, <em>Array</em>, <em>Array</em>]</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id=solversdamage><code>solvers.damage</code><a href=#solversdamage class=hash-link aria-label="Direct link to solversdamage" title="Direct link to solversdamage" translate=no>​</a></h2>
+<p>Phase-field damage (Helmholtz CG) and staggered-loop accelerators.</p>
+<p><a id=module-solvers.damage.pff_damage class=anchorTargetStickyNavbar_Vzrq></a></p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id=solversdamagepff_damagedegradationd-k1e-06>solvers.damage.pff_damage.degradation(d, k=1e-06)<a href=#solversdamagepff_damagedegradationd-k1e-06 class=hash-link aria-label="Direct link to solvers.damage.pff_damage.degradation(d, k=1e-06)" title="Direct link to solvers.damage.pff_damage.degradation(d, k=1e-06)" translate=no>​</a></h3>
+<p>Quadratic degradation function  g(d) = (1 - k) * (1 − d)² + k.</p>
+<p>k is the numerical residual stiffness k_res.  The default 1e-6 matches
+the void-phase stiffness reduction used in Schneider & Kästner (2024).</p>
+<ul>
+<li class=""><strong>Parameters:</strong>
+<ul>
+<li class=""><strong>d</strong> ( *(*<em>Nv</em> <em>,</em> <em>)</em>   <em>damage field ∈</em> *[*<em>0</em> <em>,</em> <em>1</em> <em>]</em>)</li>
+<li class=""><strong>k</strong> (<em>float   residual stiffness k_res</em> *(*<em>default 1e-6</em> <em>)</em>)</li>
+</ul>
+</li>
+<li class=""><strong>Returns:</strong>
+<strong>g</strong> ( <em>(Nv,)</em>)</li>
+<li class=""><strong>Return type:</strong>
+<em>Array</em></li>
+</ul>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id=solversdamagepff_damageupdate_historyh_prev-psi_pos>solvers.damage.pff_damage.update_history(H_prev, psi_pos)<a href=#solversdamagepff_damageupdate_historyh_prev-psi_pos class=hash-link aria-label="Direct link to solvers.damage.pff_damage.update_history(H_prev, psi_pos)" title="Direct link to solvers.damage.pff_damage.update_history(H_prev, psi_pos)" translate=no>​</a></h3>
+<p>Enforce crack irreversibility: H = max(H_prev, ψ⁺).</p>
+<ul>
+<li class=""><strong>Parameters:</strong>
+<ul>
+<li class=""><strong>H_prev</strong> ( *(*<em>Nv</em> <em>,</em> <em>)</em>   <em>history variable from the previous increment</em>)</li>
+<li class=""><strong>psi_pos</strong> ( *(*<em>Nv</em> <em>,</em> <em>)</em>   <em>current tensile strain energy density ψ⁺</em>)</li>
+</ul>
+</li>
+<li class=""><strong>Returns:</strong>
+<strong>H</strong> ( <em>(Nv,)</em>)</li>
+<li class=""><strong>Return type:</strong>
+<em>Array</em></li>
+</ul>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id=solversdamagepff_damageupdate_history_hybridh_prev-psi_pos-d_prev-d_thres095>solvers.damage.pff_damage.update_history_hybrid(H_prev, psi_pos, d_prev, d_thres=0.95)<a href=#solversdamagepff_damageupdate_history_hybridh_prev-psi_pos-d_prev-d_thres095 class=hash-link aria-label="Direct link to solvers.damage.pff_damage.update_history_hybrid(H_prev, psi_pos, d_prev, d_thres=0.95)" title="Direct link to solvers.damage.pff_damage.update_history_hybrid(H_prev, psi_pos, d_prev, d_thres=0.95)" translate=no>​</a></h3>
+<p>Hybrid damage-/crack-like irreversibility (Steinke & Kaliske 2019, as
+adopted by Schneider & Kästner 2025, doi:10.1111/ffe.14553).</p>
+<p>Pure damage-like irreversibility (<code>update_history</code>: H = max(H_prev, ψ⁺)
+everywhere) locks in the history field as soon as any damage nucleates,
+which over-widens the diffuse process zone. The hybrid formulation only
+enforces the monotone history lock once a point has effectively cracked
+(d ≥ d_thres); below the threshold the driving force is left unrestricted
+so the pre-crack process zone can still relax:</p>
+<blockquote>
+<p>H = ψ⁺                     if d_prev &lt; d_thres   (unrestricted)
+H = max(H_prev, ψ⁺)        if d_prev ≥ d_thres    (irreversible)</p>
+</blockquote>
+<ul>
+<li class=""><strong>Parameters:</strong>
+<ul>
+<li class=""><strong>H_prev</strong> ( *(*<em>Nv</em> <em>,</em> <em>)</em>   <em>history variable from the previous increment</em>)</li>
+<li class=""><strong>psi_pos</strong> ( *(*<em>Nv</em> <em>,</em> <em>)</em>   <em>current tensile strain energy density ψ⁺</em>)</li>
+<li class=""><strong>d_prev</strong> ( *(*<em>Nv</em> <em>,</em> <em>)</em>   <em>damage field used to gate the switch</em> *(*<em>current best</em>) – estimate of d — e.g. from the previous staggered
+iteration or the previous increment)</li>
+<li class=""><strong>d_thres</strong> (<em>float   phase-field threshold above which irreversibility is</em>) – enforced (default 0.95)</li>
+</ul>
+</li>
+<li class=""><strong>Returns:</strong>
+<strong>H</strong> ( <em>(Nv,)</em>)</li>
+<li class=""><strong>Return type:</strong>
+<em>Array</em></li>
+</ul>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id=solversdamagepff_damagesolve_helmholtz_cgl_field-xi_flat-n-l0-gc-d_prev-toler_cg00001-maxiter300-eta00-dt10>solvers.damage.pff_damage.solve_helmholtz_cg(L_field, xi_flat, n, l0, Gc, d_prev, toler_cg=0.0001, maxiter=300, eta=0.0, dt=1.0)<a href=#solversdamagepff_damagesolve_helmholtz_cgl_field-xi_flat-n-l0-gc-d_prev-toler_cg00001-maxiter300-eta00-dt10 class=hash-link aria-label="Direct link to solvers.damage.pff_damage.solve_helmholtz_cg(L_field, xi_flat, n, l0, Gc, d_prev, toler_cg=0.0001, maxiter=300, eta=0.0, dt=1.0)" title="Direct link to solvers.damage.pff_damage.solve_helmholtz_cg(L_field, xi_flat, n, l0, Gc, d_prev, toler_cg=0.0001, maxiter=300, eta=0.0, dt=1.0)" translate=no>​</a></h3>
+<p>Preconditioned CG solve of the AT2 Helmholtz damage equation with
+optional viscous regularisation (Schneider & Kästner 2025, Eq. 33).</p>
+<p>Without viscosity (η = 0, default):
+: (Gc/l₀ + 2L) d  −  Gc·l₀ Δd  =  2L</p>
+<p>With viscous regularisation (η > 0):
+: (Gc/l₀ + η/Δt + 2L) d  −  Gc·l₀ Δd  =  2L + (η/Δt) dₙ</p>
+<p>The term η/Δt adds resistance to rapid damage rate.  Without it the
+damage snap-through is instantaneous and spatially diffuse (d jumps to
+1 in a broad zone).  With η > 0 the crack grows gradually from the
+notch tip, allowing it to fully sever the domain before σ drops to zero.</p>
+<p>Irreversibility is enforced post-solve: d = max(d_prev, d_cg).</p>
+<ul>
+<li class=""><strong>Parameters:</strong>
+<ul>
+<li class=""><strong>L_field</strong> ( *(*<em>Nv</em> <em>,</em> <em>)</em>      <em>crack driving force ψ⁺</em> *(*<em>x</em> <em>)</em>)</li>
+<li class=""><strong>xi_flat</strong> ((ndim, Nv) angular-frequency grid from <code>build_freq_grid</code>)</li>
+<li class=""><strong>n</strong> (<em>tuple       grid shape — must be static for JIT</em>)</li>
+<li class=""><strong>l0</strong> (<em>float       phase-field length scale</em>)</li>
+<li class=""><strong>Gc</strong> (<em>float       critical energy release rate</em>)</li>
+<li class=""><strong>d_prev</strong> ( *(*<em>Nv</em> <em>,</em> <em>)</em>      <em>damage from the previous increment</em>) – (initial guess AND irreversibility floor)</li>
+<li class=""><strong>toler_cg</strong> (<em>float       CG relative residual tolerance</em>)</li>
+<li class=""><strong>maxiter</strong> (<em>int         max CG iterations — must be static for JIT</em>)</li>
+<li class=""><strong>eta</strong> (<em>float       viscosity η</em>  *(*<em>default 0 → no regularisation</em> <em>)</em>)</li>
+<li class=""><strong>dt</strong> (<em>float       time-step size Δt</em> *(*<em>only used when η > 0</em> <em>)</em>)</li>
+</ul>
+</li>
+<li class=""><strong>Returns:</strong>
+<ul>
+<li class=""><strong>d</strong> ( <em>(Nv,)        updated damage field ∈ [0, 1]</em>)</li>
+<li class=""><strong>iter_count</strong> (<em>int array    CG iterations performed</em>)</li>
+<li class=""><strong>converged</strong> (<em>bool array   True if residual tolerance met</em>)</li>
+</ul>
+</li>
+<li class=""><strong>Return type:</strong>
+tuple[<em>Array</em>, <em>Array</em>, <em>Array</em>]</li>
+</ul>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id=solversdamagepff_damagesolve_helmholtz_cg_hetl_field-xi_flat-n-l0-gc_field-d_prev-toler_cg00001-maxiter300-eta00-dt10>solvers.damage.pff_damage.solve_helmholtz_cg_het(L_field, xi_flat, n, l0, Gc_field, d_prev, toler_cg=0.0001, maxiter=300, eta=0.0, dt=1.0)<a href=#solversdamagepff_damagesolve_helmholtz_cg_hetl_field-xi_flat-n-l0-gc_field-d_prev-toler_cg00001-maxiter300-eta00-dt10 class=hash-link aria-label="Direct link to solvers.damage.pff_damage.solve_helmholtz_cg_het(L_field, xi_flat, n, l0, Gc_field, d_prev, toler_cg=0.0001, maxiter=300, eta=0.0, dt=1.0)" title="Direct link to solvers.damage.pff_damage.solve_helmholtz_cg_het(L_field, xi_flat, n, l0, Gc_field, d_prev, toler_cg=0.0001, maxiter=300, eta=0.0, dt=1.0)" translate=no>​</a></h3>
+<p>Preconditioned CG solve for the AT2 damage equation with spatially varying
+fracture toughness Gc(x).</p>
+<p>The operator is in divergence form (correct variational derivative of
+<code>∫ Gc(x) [d²/2l + l/2 |∇d|²] dx</code>):</p>
+<blockquote>
+<p>-l₀ ∇·(Gc(x) ∇d) + (Gc(x)/l₀ + η/Δt + 2H) d = 2H + (η/Δt) dₙ</p>
+</blockquote>
+<p>Gc lives inside the divergence — factoring it out is wrong for varying Gc.
+The operator is SPD (= Gᵀ diag(Gc·l₀) G + c(x), c > 0), so CG converges.</p>
+<p>Preconditioner: constant-coefficient reference-medium operator (same trick
+as Lippmann–Schwinger) with Gc₀ = geometric mean of Gc_field, inverted
+exactly in Fourier.  Geometric mean preconditions high-contrast fields
+better than arithmetic mean.</p>
+<ul>
+<li class=""><strong>Parameters:</strong>
+<ul>
+<li class=""><strong>L_field</strong> ( *(*<em>Nv</em> <em>,</em> <em>)</em>       <em>crack driving force ψ⁺</em> *(*<em>x</em> <em>)</em>)</li>
+<li class=""><strong>xi_flat</strong> ((ndim, Nv)  angular-frequency grid from <code>build_freq_grid</code>)</li>
+<li class=""><strong>n</strong> (<em>tuple        grid shape — static for JIT</em>)</li>
+<li class=""><strong>l0</strong> (<em>float        phase-field length scale</em>)</li>
+<li class=""><strong>Gc_field</strong> ( *(*<em>Nv</em> <em>,</em> <em>)</em>        <em>spatially varying critical energy release rate</em>)</li>
+<li class=""><strong>d_prev</strong> ( *(*<em>Nv</em> <em>,</em> <em>)</em>        <em>damage from previous increment</em>)</li>
+<li class=""><strong>toler_cg</strong> (<em>float        CG relative residual tolerance</em>)</li>
+<li class=""><strong>maxiter</strong> (<em>int          max CG iterations — static for JIT</em>)</li>
+<li class=""><strong>eta</strong> (<em>float        viscosity η</em>)</li>
+<li class=""><strong>dt</strong> (<em>float        time-step size Δt</em>)</li>
+</ul>
+</li>
+<li class=""><strong>Returns:</strong>
+<ul>
+<li class=""><strong>d</strong> ( <em>(Nv,)</em>)</li>
+<li class=""><strong>iter_count</strong> (<em>int array</em>)</li>
+<li class=""><strong>converged</strong> (<em>bool array</em>)</li>
+</ul>
+</li>
+<li class=""><strong>Return type:</strong>
+tuple[<em>Array</em>, <em>Array</em>, <em>Array</em>]</li>
+</ul>
+<p><a id=module-solvers.damage.anderson class=anchorTargetStickyNavbar_Vzrq></a></p>
+<p>Accelerators for the staggered phase-field-fracture fixed-point  x = G(x).</p>
+<p>Two classes are provided:</p>
+<p>AndersonAccelerator
+: Walker & Ni 2011 Type-II Anderson mixing.  Solves an <em>unconstrained</em> LS
+on <em>differences</em> of residuals:
+<br/></p>
+<blockquote>
+<p>fₖ = G(xₖ) − xₖ
+γ  = argmin ‖fₖ − ΔF γ‖₂        (unconstrained)
+xₖ₊₁ = xₖ + β fₖ − (ΔX + β ΔF) γ</p>
+</blockquote>
+<p>NGMRESAccelerator
+: Nonlinear GMRES — matches DAMASK’s outer -snes_type ngmres solver
+(Schneider & Kästner 2025, doi:10.1111/ffe.14553).  Solves a
+<em>constrained</em> LS directly on the residuals:
+<br/></p>
+<blockquote>
+<p>α  = argmin ‖F α‖²   s.t.  1ᵀα = 1
+xₖ₊₁ = G α                       (G columns = G(xᵢ))</p>
+  <br/>
+</blockquote>
+<p>The sum-to-1 constraint stabilises the solve when residuals become
+nearly collinear near the brittle snap-through.
+<br/>
+Full DAMASK config adds Anderson as the inner smoother
+(-snes_ngmres_anderson), generating a better trial point before each
+NGMRES function evaluation.  That variant requires one extra staggered
+sweep per step; NGMRESAccelerator implements the outer NGMRES loop only,
+at the same cost as AndersonAccelerator (one sweep per step).</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id=class-solversdamageandersonandersonacceleratordepth5-beta10-reg1e-10><em>class</em> solvers.damage.anderson.AndersonAccelerator(depth=5, beta=1.0, reg=1e-10)<a href=#class-solversdamageandersonandersonacceleratordepth5-beta10-reg1e-10 class=hash-link aria-label="Direct link to class-solversdamageandersonandersonacceleratordepth5-beta10-reg1e-10" title="Direct link to class-solversdamageandersonandersonacceleratordepth5-beta10-reg1e-10" translate=no>​</a></h3>
+<p>Bases: <code>object</code></p>
+<p>Stateful Anderson-mixing accelerator for a Python-driven fixed-point loop.</p>
+<p>Call <code>reset()</code> at the start of each new fixed-point problem, then feed
+successive <code>(x, G(x))</code> pairs to <code>step()</code>, which returns the next
+accelerated iterate.</p>
+<ul>
+<li class=""><strong>Parameters:</strong>
+<ul>
+<li class=""><strong>depth</strong> (<em>int</em>) – Window size m — number of past iterates retained.  Typical 3–5.</li>
+<li class=""><strong>beta</strong> (<em>float</em>) – Mixing / damping factor β ∈ (0, 1].  β = 1 is undamped Anderson;
+smaller values blend toward plain Picard for robustness.</li>
+<li class=""><strong>reg</strong> (<em>float</em>) – Tikhonov regularisation added to the normal-equations matrix to keep
+the least-squares solve well-posed when differences become collinear.</li>
+</ul>
+</li>
+</ul>
+<h4 class="anchor anchorTargetStickyNavbar_Vzrq" id=reset>reset()<a href=#reset class=hash-link aria-label="Direct link to reset()" title="Direct link to reset()" translate=no>​</a></h4>
+<p>Clear the iterate/residual history (new fixed-point problem).</p>
+<ul>
+<li class=""><strong>Return type:</strong>
+None</li>
+</ul>
+<h4 class="anchor anchorTargetStickyNavbar_Vzrq" id=stepx-gx>step(x, gx)<a href=#stepx-gx class=hash-link aria-label="Direct link to step(x, gx)" title="Direct link to step(x, gx)" translate=no>​</a></h4>
+<p>Produce the next iterate from the current iterate <code>x</code> and its map
+value <code>gx = G(x)</code>.</p>
+<p>The first call (empty history) returns the damped Picard step
+<code>x + β (G(x) − x)</code>, so the first staggered sweep is unchanged when
+β = 1.</p>
+<ul>
+<li class=""><strong>Parameters:</strong>
+<ul>
+<li class=""><strong>x</strong> (<em>Array</em>)</li>
+<li class=""><strong>gx</strong> (<em>Array</em>)</li>
+</ul>
+</li>
+<li class=""><strong>Return type:</strong>
+<em>Array</em></li>
+</ul>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id=class-solversdamageandersonngmresacceleratordepth5-reg1e-10><em>class</em> solvers.damage.anderson.NGMRESAccelerator(depth=5, reg=1e-10)<a href=#class-solversdamageandersonngmresacceleratordepth5-reg1e-10 class=hash-link aria-label="Direct link to class-solversdamageandersonngmresacceleratordepth5-reg1e-10" title="Direct link to class-solversdamageandersonngmresacceleratordepth5-reg1e-10" translate=no>​</a></h3>
+<p>Bases: <code>object</code></p>
+<p>NGMRES (Nonlinear GMRES) for fixed-point x = G(x).</p>
+<p>Implements the outer -snes_type ngmres solver used in DAMASK
+(Schneider & Kästner 2025, doi:10.1111/ffe.14553).</p>
+<p>At each step the window of (xᵢ, G(xᵢ)) pairs grows by one entry; the
+constrained least-squares problem</p>
+<blockquote>
+<p>α  = argmin ‖F α‖²   subject to  1ᵀα = 1
+xₖ₊₁ = G α                       (G columns = G(xᵢ), F cols = G(xᵢ)−xᵢ)</p>
+</blockquote>
+<p>is then solved via regularised normal equations and a Lagrange-multiplier
+normalisation.  The sum-to-1 constraint (absent in Anderson) prevents the
+solution from drifting when residuals become collinear near snap-through,
+and guarantees exact recovery of any fixed-point x* = G(x*).</p>
+<p>API is drop-in compatible with AndersonAccelerator (same step / reset
+signatures, no beta parameter).  Cost is identical: one staggered sweep
+per outer iteration, no extra function evaluations.</p>
+<ul>
+<li class=""><strong>Parameters:</strong>
+<ul>
+<li class=""><strong>depth</strong> (<em>int</em>) – Window size m — number of past (x, G(x)) pairs retained.</li>
+<li class=""><strong>reg</strong> (<em>float</em>) – Tikhonov regularisation on FᵀF to handle near-collinear residuals.</li>
+</ul>
+</li>
+</ul>
+<h4 class="anchor anchorTargetStickyNavbar_Vzrq" id=reset-1>reset()<a href=#reset-1 class=hash-link aria-label="Direct link to reset()" title="Direct link to reset()" translate=no>​</a></h4>
+<p>Clear window (call at the start of each new fixed-point problem).</p>
+<ul>
+<li class=""><strong>Return type:</strong>
+None</li>
+</ul>
+<h4 class="anchor anchorTargetStickyNavbar_Vzrq" id=stepx-gx-1>step(x, gx)<a href=#stepx-gx-1 class=hash-link aria-label="Direct link to step(x, gx)" title="Direct link to step(x, gx)" translate=no>​</a></h4>
+<p>Return the NGMRES-optimal next iterate given xₖ and G(xₖ) = gx.
+On the first call (empty window) returns gx (plain Picard step).</p>
+<ul>
+<li class=""><strong>Parameters:</strong>
+<ul>
+<li class=""><strong>x</strong> (<em>Array</em>)</li>
+<li class=""><strong>gx</strong> (<em>Array</em>)</li>
+</ul>
+</li>
+<li class=""><strong>Return type:</strong>
+<em>Array</em></li>
+</ul></div><footer class="theme-doc-footer docusaurus-mt-lg"><div class="row margin-top--sm theme-doc-footer-edit-meta-row"><div class="col noPrint_WFHX"><a href=https://github.com/choROPeNt/FFTjax/tree/main/docs/api-docs/solvers.md target=_blank rel="noopener noreferrer" class=theme-edit-this-page><svg fill=currentColor height=20 width=20 viewBox="0 0 40 40" class=iconEdit_Z9Sw aria-hidden=true><g><path d="m34.5 11.7l-3 3.1-6.3-6.3 3.1-3q0.5-0.5 1.2-0.5t1.1 0.5l3.9 3.9q0.5 0.4 0.5 1.1t-0.5 1.2z m-29.5 17.1l18.4-18.5 6.3 6.3-18.4 18.4h-6.3v-6.2z"/></g></svg>Edit this page</a></div><div class="col lastUpdated_JAkA"></div></div></footer></article><nav class="docusaurus-mt-lg pagination-nav" aria-label="Docs pages"><a class="pagination-nav__link pagination-nav__link--prev" href=/FFTjax/api/post><div class=pagination-nav__sublabel>Previous</div><div class=pagination-nav__label>post</div></a><a class="pagination-nav__link pagination-nav__link--next" href=/FFTjax/api/utils><div class=pagination-nav__sublabel>Next</div><div class=pagination-nav__label>utils</div></a></nav></div></div><div class="col col--3"><div class="tableOfContents_bqdL thin-scrollbar theme-doc-toc-desktop"><ul class="table-of-contents table-of-contents__left-border"><li><a href=#shared-types class="table-of-contents__link toc-highlight">Shared types</a><ul><li><a href=#class-solverstypessolvestatestrain_loc-stress_loc-tangent_glob-strain_ave-stress_ave-strain_ave_inc_goal-stress_ave_inc_goal-deltastrain_loc-deltastress_loc-stress_loc_goal-deltastrain_loc-time-dtime-kinc-kstep-iter_nw-iter_cg-info-bb0n-pnewdt class="table-of-contents__link toc-highlight"><em>class</em> solvers.types.SolveState(strain_loc, stress_loc, tangent_glob, strain_ave, stress_ave, strain_ave_inc_goal, stress_ave_inc_goal, Deltastrain_loc, Deltastress_loc, stress_loc_goal, deltastrain_loc, time, dtime, kinc, kstep, iter_nw, iter_cg, info, bb0n, pnewdt)</a><li><a href=#class-solverstypessolversettingsndim-n-l-toler_lin1e-07-toler_nw1e-07-maxiter_cg1000-maxiter_nw6-control-strain_ave_goal-stress_ave_goal-timer-jobname-output class="table-of-contents__link toc-highlight"><em>class</em> solvers.types.SolverSettings(ndim, n, L, toler_lin=1e-07, toler_nw=1e-07, maxiter_cg=1000, maxiter_nw=6, control=<factory>, strain_ave_goal=<factory>, stress_ave_goal=<factory>, timer=<factory>, jobname='', output='')</factory></factory></factory></factory></a></ul><li><a href=#solversmechanical class="table-of-contents__link toc-highlight"><code>solvers.mechanical</code></a><ul><li><a href=#solversmechanicalstrain_nw_cgdstrain_nw_cgn_i-c_field-g_glob-eps_bar-stress_goalnone-toler_lin00001-maxiter1000 class="table-of-contents__link toc-highlight">solvers.mechanical.strain_nw_cg.dstrain_nw_cg(n_i, C_field, G_glob, eps_bar, stress_goal=None, toler_lin=0.0001, maxiter=1000)</a><li><a href=#solversmechanicalstrain_nw_cgsolve_elasticn_i-c_field-g_glob-eps_bar-stress_goalnone-toler_lin00001-maxiter1000 class="table-of-contents__link toc-highlight">solvers.mechanical.strain_nw_cg.solve_elastic(n_i, C_field, G_glob, eps_bar, stress_goal=None, toler_lin=0.0001, maxiter=1000)</a><li><a href=#solversmechanicalstrain_nw_cgdstrain_nw_cg_mixedn_i-c_field-g_glob-eps_bar-control-stress_ave_goal-toler_lin00001-maxiter1000 class="table-of-contents__link toc-highlight">solvers.mechanical.strain_nw_cg.dstrain_nw_cg_mixed(n_i, C_field, G_glob, eps_bar, control, stress_ave_goal, toler_lin=0.0001, maxiter=1000)</a><li><a href=#solversmechanicaldisplacement_nw_cgddisp_nw_cgn_i-c_field-xi_flat-eps_bar-control-stress_goal-toler_lin00001-maxiter1000-c0none class="table-of-contents__link toc-highlight">solvers.mechanical.displacement_nw_cg.ddisp_nw_cg(n_i, C_field, xi_flat, eps_bar, control, stress_goal, toler_lin=0.0001, maxiter=1000, C0=None)</a></ul><li><a href=#solversdamage class="table-of-contents__link toc-highlight"><code>solvers.damage</code></a><ul><li><a href=#solversdamagepff_damagedegradationd-k1e-06 class="table-of-contents__link toc-highlight">solvers.damage.pff_damage.degradation(d, k=1e-06)</a><li><a href=#solversdamagepff_damageupdate_historyh_prev-psi_pos class="table-of-contents__link toc-highlight">solvers.damage.pff_damage.update_history(H_prev, psi_pos)</a><li><a href=#solversdamagepff_damageupdate_history_hybridh_prev-psi_pos-d_prev-d_thres095 class="table-of-contents__link toc-highlight">solvers.damage.pff_damage.update_history_hybrid(H_prev, psi_pos, d_prev, d_thres=0.95)</a><li><a href=#solversdamagepff_damagesolve_helmholtz_cgl_field-xi_flat-n-l0-gc-d_prev-toler_cg00001-maxiter300-eta00-dt10 class="table-of-contents__link toc-highlight">solvers.damage.pff_damage.solve_helmholtz_cg(L_field, xi_flat, n, l0, Gc, d_prev, toler_cg=0.0001, maxiter=300, eta=0.0, dt=1.0)</a><li><a href=#solversdamagepff_damagesolve_helmholtz_cg_hetl_field-xi_flat-n-l0-gc_field-d_prev-toler_cg00001-maxiter300-eta00-dt10 class="table-of-contents__link toc-highlight">solvers.damage.pff_damage.solve_helmholtz_cg_het(L_field, xi_flat, n, l0, Gc_field, d_prev, toler_cg=0.0001, maxiter=300, eta=0.0, dt=1.0)</a><li><a href=#class-solversdamageandersonandersonacceleratordepth5-beta10-reg1e-10 class="table-of-contents__link toc-highlight"><em>class</em> solvers.damage.anderson.AndersonAccelerator(depth=5, beta=1.0, reg=1e-10)</a><li><a href=#class-solversdamageandersonngmresacceleratordepth5-reg1e-10 class="table-of-contents__link toc-highlight"><em>class</em> solvers.damage.anderson.NGMRESAccelerator(depth=5, reg=1e-10)</a></ul></ul></div></div></div></div></main></div></div></div><footer class="theme-layout-footer footer footer--dark"><div class="container container-fluid"><div class="row footer__links"><div class="theme-layout-footer-column col footer__col"><div class=footer__title>Docs</div><ul class="footer__items clean-list"><li class=footer__item><a class=footer__link-item href=/FFTjax/documentation/installation>Getting Started</a><li class=footer__item><a class=footer__link-item href=/FFTjax/documentation/theorie>Theorie</a><li class=footer__item><a class=footer__link-item href=/FFTjax/documentation/examples>Examples</a><li class=footer__item><a class=footer__link-item href=/FFTjax/documentation/benchmark>Benchmark</a></ul></div><div class="theme-layout-footer-column col footer__col"><div class=footer__title>More</div><ul class="footer__items clean-list"><li class=footer__item><a href=https://github.com/choROPeNt/FFTjax target=_blank rel="noopener noreferrer" class=footer__link-item>GitHub<svg width=13.5 height=13.5 aria-label="(opens in new tab)" class=iconExternalLink_nPIU><use href=#theme-svg-external-link /></svg></a></ul></div></div><div class="footer__bottom text--center"><div class=footer__copyright>Copyright © 2026 Christian Düreth. Built with Docusaurus.</div></div></div></footer></div></body>
