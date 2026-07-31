@@ -15,11 +15,13 @@ signature of brittle fracture.
 Saves its plot to docs/static/img/pff_damage.png for the Examples page.
 Re-run this script and copy its printed output into
 docs/docs/documentation/examples/phase-field.md if the example ever changes.
+
+Run from the repo root: python examples/pff_damage.py
 """
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on TPU, no GPU prealloc)
 import jax
@@ -106,14 +108,14 @@ for k, eps_scale in enumerate(strain_levels):
         g = degradation(d_st)
         C_eff = g[None, None, None, None, :] * C_field
 
-        eps, sigma, delta, it_mech, conv_mech = solve_elastic(
+        eps, sigma, delta, conv_mech = solve_elastic(
             n, C_eff, G_glob, eps_bar, toler_lin=TOLER_LIN, maxiter=MAXITER_CG,
         )
 
         psi_pos, _ = strain_energy_amor_split(eps, lam_vox, mu_vox)
         H_field = update_history(H_field, psi_pos)
 
-        d_new, it_helm, conv_helm = solve_helmholtz_cg(
+        d_new, conv_helm = solve_helmholtz_cg(
             H_field, xi_flat, n, l0, Gc, d_prev,
             toler_cg=TOLER_HELM, maxiter=MAXITER_HELM,
         )
@@ -135,7 +137,7 @@ for k, eps_scale in enumerate(strain_levels):
     })
     print(f"step {k+1}/{len(strain_levels)}  eps11={float(eps_scale):.2e}  "
           f"sigma11_ave={sigma11_ave:8.4f} MPa  max(d)={float(jnp.max(d_field)):.4f}  "
-          f"staggered_iters={it_st:2d}  mech_cg={int(it_mech):4d}  helm_cg={int(it_helm):3d}")
+          f"staggered_iters={it_st:2d}")
 
 # Sanity checks: damage stays in [0, 1] and is monotone (irreversibility).
 assert float(jnp.min(d_field)) >= 0.0 and float(jnp.max(d_field)) <= 1.0
@@ -162,7 +164,7 @@ fig.colorbar(im, ax=axes[1], label="d")
 
 fig.tight_layout()
 
-out_path = Path(__file__).resolve().parents[1] / "static" / "img" / "pff_damage.png"
+out_path = Path(__file__).resolve().parents[1] / "docs" / "static" / "img" / "pff_damage.png"
 out_path.parent.mkdir(parents=True, exist_ok=True)
 fig.savefig(out_path, dpi=150)
 print(f"\nSaved plot to {out_path}")

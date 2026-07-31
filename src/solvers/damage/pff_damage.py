@@ -4,8 +4,34 @@ import jax
 import jax.numpy as jnp
 from functools import partial
 from math import prod
+from jax.scipy.sparse.linalg import cg as _jax_cg
 
-from utils.cg import cg_count
+
+def _cg_solve(A, b, x0, tol, maxiter, M=None):
+    """
+    Thin wrapper around jax.scipy.sparse.linalg.cg that also reports
+    convergence, since the underlying JAX version's own ``info`` return is
+    currently a permanent ``None`` placeholder (not yet implemented there).
+
+    Uses ``jax.lax.while_loop`` internally, so it stops as soon as it
+    converges rather than paying for ``maxiter`` on every call -- 3-20x
+    faster in practice than a fixed-length scan with a generous ``maxiter``
+    safety cap. The cost: this does **not** support reverse-mode autodiff
+    (``jax.grad``) through the solve -- JAX's own ``cg`` gradient rule was
+    tested against this project's FFT-based operators and found to give
+    silently incorrect results (not an error, not NaN -- a wrong gradient,
+    off by many orders of magnitude on a heterogeneous composite, and NaN
+    on a degenerate zero-residual case), traced to its implicit-diff rule
+    running an invisible internal adjoint CG solve with no way to verify it
+    actually converged. If a solve here ever needs to be differentiated
+    with ``jax.grad``, this needs a fixed-length ``jax.lax.scan``-based
+    implementation instead (verified working, just much slower per call --
+    see git history around this comment).
+    """
+    x, _ = _jax_cg(A, b, x0=x0, tol=tol, maxiter=maxiter, M=M)
+    converged = jnp.linalg.norm(b - A(x)) <= tol * jnp.linalg.norm(b)
+    return x, converged
+
 
 # Strain energy functions live in mat_models.elastic — re-exported here for
 # convenience so solver code has a single import target.
@@ -111,7 +137,7 @@ def solve_helmholtz_cg(
     maxiter:  int   = 300,
     eta:      float = 0.0,
     dt:       float = 1.0,
-) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+) -> tuple[jnp.ndarray, jnp.ndarray]:
     """
     Preconditioned CG solve of the AT2 Helmholtz damage equation with
     optional viscous regularisation (Schneider & Kästner 2025, Eq. 33).
@@ -146,7 +172,6 @@ def solve_helmholtz_cg(
     Returns
     -------
     d          : (Nv,)        updated damage field ∈ [0, 1]
-    iter_count : int array    CG iterations performed
     converged  : bool array   True if residual tolerance met
     """
     Nv      = prod(n)
@@ -177,10 +202,10 @@ def solve_helmholtz_cg(
     bb = 2.0 * L_field + eta_dt * d_prev
 
     # ── solve ─────────────────────────────────────────────────────────────────
-    d_cg, iter_count, converged = cg_count(A_op, bb, d_prev, toler_cg, maxiter, M=P_op)
+    d_cg, converged = _cg_solve(A_op, bb, d_prev, toler_cg, maxiter, M=P_op)
 
     d = jnp.maximum(d_prev, d_cg)
-    return jnp.clip(d, 0.0, 1.0), iter_count, converged
+    return jnp.clip(d, 0.0, 1.0), converged
 
 
 # ── Heterogeneous-Gc Helmholtz CG ─────────────────────────────────────────────
@@ -197,7 +222,7 @@ def solve_helmholtz_cg_het(
     maxiter:  int   = 300,
     eta:      float = 0.0,
     dt:       float = 1.0,
-) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+) -> tuple[jnp.ndarray, jnp.ndarray]:
     """
     Preconditioned CG solve for the AT2 damage equation with spatially varying
     fracture toughness Gc(x).
@@ -231,7 +256,6 @@ def solve_helmholtz_cg_het(
     Returns
     -------
     d          : (Nv,)
-    iter_count : int array
     converged  : bool array
     """
     Nv     = prod(n)
@@ -295,7 +319,7 @@ def solve_helmholtz_cg_het(
 
     bb = 2.0 * L_field + eta_dt * d_prev
 
-    d_cg, iter_count, converged = cg_count(A_op, bb, d_prev, toler_cg, maxiter, M=P_op)
+    d_cg, converged = _cg_solve(A_op, bb, d_prev, toler_cg, maxiter, M=P_op)
 
     d = jnp.maximum(d_prev, d_cg)
-    return jnp.clip(d, 0.0, 1.0), iter_count, converged
+    return jnp.clip(d, 0.0, 1.0), converged

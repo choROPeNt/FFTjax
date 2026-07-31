@@ -7,8 +7,33 @@ from math import prod
 import jax.numpy as jnp
 import numpy as np
 from jax import jit
+from jax.scipy.sparse.linalg import cg as _jax_cg
 
-from utils.cg import cg_count
+
+def _cg_solve(A, b, x0, tol, maxiter, M=None):
+    """
+    Thin wrapper around jax.scipy.sparse.linalg.cg that also reports
+    convergence, since the underlying JAX version's own ``info`` return is
+    currently a permanent ``None`` placeholder (not yet implemented there).
+
+    Uses ``jax.lax.while_loop`` internally, so it stops as soon as it
+    converges rather than paying for ``maxiter`` on every call -- 3-20x
+    faster in practice than a fixed-length scan with a generous ``maxiter``
+    safety cap. The cost: this does **not** support reverse-mode autodiff
+    (``jax.grad``) through the solve -- JAX's own ``cg`` gradient rule was
+    tested against this project's FFT-based operators and found to give
+    silently incorrect results (not an error, not NaN -- a wrong gradient,
+    off by many orders of magnitude on a heterogeneous composite, and NaN
+    on a degenerate zero-residual case), traced to its implicit-diff rule
+    running an invisible internal adjoint CG solve with no way to verify it
+    actually converged. If a solve here ever needs to be differentiated
+    with ``jax.grad``, this needs a fixed-length ``jax.lax.scan``-based
+    implementation instead (verified working, just much slower per call --
+    see git history around this comment).
+    """
+    x, _ = _jax_cg(A, b, x0=x0, tol=tol, maxiter=maxiter, M=M)
+    converged = jnp.linalg.norm(b - A(x)) <= tol * jnp.linalg.norm(b)
+    return x, converged
 
 
 @partial(jit, static_argnames=("n_i", "maxiter"))
@@ -20,7 +45,7 @@ def dstrain_nw_cg(
     stress_goal: jnp.ndarray | None = None,
     toler_lin:  float = 1e-4,
     maxiter:    int   = 1000,
-) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
     Inner CG solve for one Newton step of the variational FFT elastic solver
     (small strains, Vondrejc / Lucarini–Segurado formulation).
@@ -47,7 +72,6 @@ def dstrain_nw_cg(
     eps        : (3, 3, Nv)   updated local strain  ε = ε₀ + Δε
     sigma      : (3, 3, Nv)   updated local stress  σ = C : ε
     delta      : (3, 3, Nv)   strain correction     Δε
-    iter_count : int array    CG iterations performed
     converged  : bool array   True if residual tolerance met
     """
     Nv = prod(n_i)
@@ -77,13 +101,13 @@ def dstrain_nw_cg(
 
     # ── CG solve ──────────────────────────────────────────────────────────────
     x0 = jnp.zeros_like(bb)
-    delta_flat, iter_count, converged = cg_count(A_op, bb, x0, toler_lin, maxiter)
+    delta_flat, converged = _cg_solve(A_op, bb, x0, toler_lin, maxiter)
 
     delta = delta_flat.reshape(3, 3, Nv)
     eps   = eps0 + delta
     sigma = jnp.einsum("ijklm,klm->ijm", C_field, eps)
 
-    return eps, sigma, delta, iter_count, converged
+    return eps, sigma, delta, converged
 
 
 # simple alias — prefer dstrain_nw_cg in solver code, solve_elastic in scripts
@@ -100,7 +124,7 @@ def dstrain_nw_cg_mixed(
     stress_ave_goal: jnp.ndarray,
     toler_lin:  float = 1e-4,
     maxiter:    int   = 1000,
-) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
     Variational Newton-CG elastic solve with mixed macroscopic strain/stress
     boundary conditions (Vondrejc et al. 2014 / Lucarini & Segurado 2018,
@@ -151,7 +175,6 @@ def dstrain_nw_cg_mixed(
     delta      : (3, 3, Nv)   strain correction (fluctuation + macroscopic part)
     eps_bar_out: (3, 3)       macroscopic strain, with stress-controlled
                  entries filled in by the solve
-    iter_count : int array    CG iterations performed
     converged  : bool array   True if residual tolerance met
     """
     Nv = prod(n_i)
@@ -189,11 +212,11 @@ def dstrain_nw_cg_mixed(
 
     # ── CG solve ──────────────────────────────────────────────────────────────
     x0 = jnp.zeros_like(bb)
-    delta_flat, iter_count, converged = cg_count(A_op, bb, x0, toler_lin, maxiter)
+    delta_flat, converged = _cg_solve(A_op, bb, x0, toler_lin, maxiter)
 
     delta = delta_flat.reshape(3, 3, Nv)
     eps   = eps0 + delta
     sigma = jnp.einsum("ijklm,klm->ijm", C_field, eps)
     eps_bar_out = eps_bar * (1.0 - control_arr) + jnp.mean(delta, axis=-1) * control_arr
 
-    return eps, sigma, delta, eps_bar_out, iter_count, converged
+    return eps, sigma, delta, eps_bar_out, converged

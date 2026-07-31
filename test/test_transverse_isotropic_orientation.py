@@ -93,11 +93,11 @@ print(f"reference medium   lam0={lam0/1e3:.2f} GPa  mu0={mu0/1e3:.2f} GPa")
 print(f"applied strain     ε₁₁ = {float(eps_bar[0,0]):.2e}")
 print()
 
-eps_loc, sigma_loc, delta, iter_mech, conv_mech = solve_elastic(
+eps_loc, sigma_loc, delta, conv_mech = solve_elastic(
     n, C_field, G_glob, eps_bar, toler_lin=1e-10, maxiter=2000
 )
 
-print(f"CG iterations : {int(iter_mech)}  converged={bool(conv_mech)}")
+print(f"converged : {bool(conv_mech)}")
 
 # ── Verify field uniformity ───────────────────────────────────────────────────
 # For a spatially uniform stiffness the solution must be the uniform field

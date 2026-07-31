@@ -330,7 +330,7 @@ with IncrementalWriter(f"{output}/{jobname}", grid_shape=n, grid_spacing=dx) as 
                 C_eff = g[None, None, None, None, :] * C_field
 
                 # 2. mechanical solve
-                eps_i, sigma_i, delta_i, iter_mech, conv_mech = solve_elastic(
+                eps_i, sigma_i, delta_i, conv_mech = solve_elastic(
                     n, C_eff, G_glob, eps_bar_i,
                     toler_lin=settings.toler_lin,
                     maxiter=settings.maxiter_cg,
@@ -347,7 +347,7 @@ with IncrementalWriter(f"{output}/{jobname}", grid_shape=n, grid_spacing=dx) as 
                 H_st = update_history_hybrid(H_st, psi_pos, d_prev_st)
 
                 # 5. Helmholtz CG (heterogeneous Gc)
-                d_new, iter_helm, conv_helm = solve_helmholtz_cg_het(
+                d_new, conv_helm = solve_helmholtz_cg_het(
                     H_st, xi_flat, n, l0, Gc_field, d_prev_st,
                     toler_cg=toler_helm, maxiter=maxiter_helm,
                     eta=eta, dt=dt,
@@ -366,7 +366,7 @@ with IncrementalWriter(f"{output}/{jobname}", grid_shape=n, grid_spacing=dx) as 
                 break
 
             dt = max(dt * factor_dec, dt_min)
-            print(f"    cutback #{attempt+1}  dt → {dt:.6f}  (mech={int(iter_mech)})")
+            print(f"    cutback #{attempt+1}  dt → {dt:.6f}  (mech converged={converged_mech})")
 
         if not converged_mech:
             raise RuntimeError(
@@ -384,7 +384,7 @@ with IncrementalWriter(f"{output}/{jobname}", grid_shape=n, grid_spacing=dx) as 
             strain_ave=jnp.mean(eps_i,   axis=-1),
             stress_ave=jnp.mean(sigma_i, axis=-1),
             time=t, dtime=dt, kinc=step,
-            info=0 if converged_mech else int(iter_mech),
+            info=0 if converged_mech else 1,
         )
 
         eps_grid   = field_to_grid(state.strain_loc, n)
@@ -410,7 +410,6 @@ with IncrementalWriter(f"{output}/{jobname}", grid_shape=n, grid_spacing=dx) as 
             f"sig11={float(state.stress_ave[0,0]):.2f} MPa  "
             f"max(d)={float(jnp.max(d_field)):.4f}  "
             f"st={iter_st}  err_abs={err_abs:.1e}  err_rel={err_rel:.1e}  "
-            f"mech={int(iter_mech)}  helm={int(iter_helm)}  "
             f"time={step_time:.1f}s"
         )
 

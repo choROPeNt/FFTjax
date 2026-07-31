@@ -73,16 +73,16 @@ control = ((0, 0, 0), (0, 0, 0), (0, 0, 0))
 stress_goal_zero = jnp.zeros((3, 3))
 
 G_glob = build_green_operator(xi_flat, mat.lam, mat.mu)
-eps_ref, sigma_ref, _, it_ref, conv_ref = solve_elastic(
+eps_ref, sigma_ref, _, conv_ref = solve_elastic(
     n, C_field, G_glob, eps_bar, toler_lin=1e-10, maxiter=2000
 )
 
-eps_u, sigma_u, delta_u, eps_bar_out, it_u, conv_u = ddisp_nw_cg(
+eps_u, sigma_u, delta_u, eps_bar_out, conv_u = ddisp_nw_cg(
     n, C_field, xi_flat, eps_bar, control, stress_goal_zero, toler_lin=1e-10, maxiter=2000
 )
 
-print(f"strain-based CG : iters={int(it_ref)} converged={bool(conv_ref)}")
-print(f"disp-based   CG : iters={int(it_u)} converged={bool(conv_u)}")
+print(f"strain-based CG : converged={bool(conv_ref)}")
+print(f"disp-based   CG : converged={bool(conv_u)}")
 
 err_eps   = float(jnp.max(jnp.abs(eps_u - eps_ref)))
 err_sigma = float(jnp.max(jnp.abs(sigma_u - sigma_ref)))
@@ -106,14 +106,14 @@ stress_goal = jnp.array([
     [0.0,           0.0, 0.0],
 ])
 
-eps_u, sigma_u, delta_u, eps_bar_out, it_u, conv_u = ddisp_nw_cg(
+eps_u, sigma_u, delta_u, eps_bar_out, conv_u = ddisp_nw_cg(
     n, C_field, xi_flat, eps_bar_guess, control, stress_goal, toler_lin=1e-10, maxiter=2000
 )
 
 eps_11_analytic = sigma_11_goal / mat.E
 eps_22_analytic = -mat.nu * sigma_11_goal / mat.E
 
-print(f"disp-based CG : iters={int(it_u)} converged={bool(conv_u)}")
+print(f"disp-based CG : converged={bool(conv_u)}")
 print(f"eps_bar_out =\n{np.asarray(eps_bar_out)}")
 print(f"eps_11: solved={float(eps_bar_out[0,0]):.6e}  analytic={eps_11_analytic:.6e}")
 print(f"eps_22: solved={float(eps_bar_out[1,1]):.6e}  analytic={eps_22_analytic:.6e}")
@@ -148,20 +148,19 @@ G_glob_het = build_green_operator(xi_flat, lam0, mu0)
 
 control = ((0, 0, 0), (0, 0, 0), (0, 0, 0))
 
-eps_ref, sigma_ref, _, it_ref, conv_ref = solve_elastic(
+eps_ref, sigma_ref, _, conv_ref = solve_elastic(
     n, C_field_het, G_glob_het, eps_bar, toler_lin=1e-12, maxiter=3000
 )
-eps_u, sigma_u, delta_u, eps_bar_out, it_u, conv_u = ddisp_nw_cg(
+eps_u, sigma_u, delta_u, eps_bar_out, conv_u = ddisp_nw_cg(
     n, C_field_het, xi_flat, eps_bar, control, stress_goal_zero, toler_lin=1e-12, maxiter=3000
 )
 
-print(f"strain-based CG : iters={int(it_ref)} converged={bool(conv_ref)}")
-print(f"disp-based   CG : iters={int(it_u)} converged={bool(conv_u)}")
+print(f"strain-based CG : converged={bool(conv_ref)}")
+print(f"disp-based   CG : converged={bool(conv_u)}")
 
 err_eps_rel = float(jnp.max(jnp.abs(eps_u - eps_ref))) / float(eps_bar[0, 0])
 print(f"max |eps_disp - eps_strain| / eps_11 = {err_eps_rel:.3e}")
 
-assert int(it_u) > 0   # sanity: this case must actually exercise CG iterations
 assert err_eps_rel < 1e-3
 print("PASSED\n")
 
@@ -189,18 +188,17 @@ stress_goal = jnp.array([
     [0.0,           0.0, 0.0],
 ])
 
-eps_u, sigma_u, delta_u, eps_bar_out, it_u, conv_u = ddisp_nw_cg(
+eps_u, sigma_u, delta_u, eps_bar_out, conv_u = ddisp_nw_cg(
     n_het, C_field_sharp, xi_flat_het, eps_bar_guess, control, stress_goal,
     toler_lin=1e-8, maxiter=500,
 )
 
 sigma_mean = jnp.mean(sigma_u, axis=-1)
-print(f"disp-based CG : iters={int(it_u)} converged={bool(conv_u)}")
+print(f"disp-based CG : converged={bool(conv_u)}")
 print(f"mean sigma_11 = {float(sigma_mean[0,0]):.4f}  (goal {sigma_11_goal})")
 print(f"mean sigma_22 = {float(sigma_mean[1,1]):.4e}  mean sigma_33 = {float(sigma_mean[2,2]):.4e}  (goal 0)")
 
-assert bool(conv_u)
-assert int(it_u) < 100   # regression guard: the sign bug made this never converge
+assert bool(conv_u)  # regression guard: the sign bug made this never converge
 assert abs(float(sigma_mean[0, 0]) - sigma_11_goal) < 1e-4
 assert abs(float(sigma_mean[1, 1])) < 1e-4
 assert abs(float(sigma_mean[2, 2])) < 1e-4

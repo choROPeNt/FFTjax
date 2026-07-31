@@ -55,10 +55,10 @@ eps_bar = jnp.array([
 control_zero = ((0, 0, 0), (0, 0, 0), (0, 0, 0))
 stress_goal_zero = jnp.zeros((3, 3))
 
-eps_ref, sigma_ref, _, it_ref, conv_ref = solve_elastic(
+eps_ref, sigma_ref, _, conv_ref = solve_elastic(
     n, C_field, G_glob, eps_bar, toler_lin=1e-10, maxiter=2000
 )
-eps_m, sigma_m, delta_m, eps_bar_out, it_m, conv_m = dstrain_nw_cg_mixed(
+eps_m, sigma_m, delta_m, eps_bar_out, conv_m = dstrain_nw_cg_mixed(
     n, C_field, G_glob, eps_bar, control_zero, stress_goal_zero, toler_lin=1e-10, maxiter=2000
 )
 
@@ -80,14 +80,14 @@ stress_goal = jnp.array([
     [0.0,           0.0, 0.0],
 ])
 
-eps_m, sigma_m, delta_m, eps_bar_out, it_m, conv_m = dstrain_nw_cg_mixed(
+eps_m, sigma_m, delta_m, eps_bar_out, conv_m = dstrain_nw_cg_mixed(
     n, C_field, G_glob, eps_bar_guess, control, stress_goal, toler_lin=1e-10, maxiter=2000
 )
 
 eps_11_analytic = sigma_11_goal / mat.E
 eps_22_analytic = -mat.nu * sigma_11_goal / mat.E
 
-print(f"CG iterations : {int(it_m)} converged={bool(conv_m)}")
+print(f"converged : {bool(conv_m)}")
 print(f"eps_11: solved={float(eps_bar_out[0,0]):.6e}  analytic={eps_11_analytic:.6e}")
 print(f"eps_22: solved={float(eps_bar_out[1,1]):.6e}  analytic={eps_22_analytic:.6e}")
 

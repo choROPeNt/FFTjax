@@ -245,7 +245,7 @@ with IncrementalWriter(
                 C_eff = g[None, None, None, None, :] * C_field
 
                 # 2. mechanical solve with degraded stiffness
-                eps_i, sigma_i, delta_i, iter_mech, conv_mech = solve_elastic(
+                eps_i, sigma_i, delta_i, conv_mech = solve_elastic(
                     n, C_eff, G_glob, eps_bar_i,
                     toler_lin=settings.toler_lin,
                     maxiter=settings.maxiter_cg,
@@ -259,7 +259,7 @@ with IncrementalWriter(
                 H_st = update_history_hybrid(H_st, psi_pos, d_prev_st, d_thres=d_thres)
 
                 # 5. damage solve — Helmholtz preconditioned CG
-                d_st, iter_helm, conv_helm = solve_helmholtz_cg(
+                d_st, conv_helm = solve_helmholtz_cg(
                     H_st, xi_flat, n, l0, Gc, d_prev_st,
                     toler_cg=toler_helm,
                     maxiter=maxiter_helm,
@@ -280,7 +280,7 @@ with IncrementalWriter(
                 break
 
             dt = max(dt * factor_dec, dt_min)
-            print(f"    cutback #{attempt + 1}  dt → {dt:.6f}  (mech iter={int(iter_mech)})")
+            print(f"    cutback #{attempt + 1}  dt → {dt:.6f}  (not converged)")
 
         if not converged_mech:
             raise RuntimeError(
@@ -303,7 +303,7 @@ with IncrementalWriter(
             time=t,
             dtime=dt,
             kinc=step,
-            info=0 if converged_mech else int(iter_mech),
+            info=0 if converged_mech else 1,
         )
 
         # ── post-processing ───────────────────────────────────────────────────
@@ -330,7 +330,7 @@ with IncrementalWriter(
             f"σ₁₂={float(state.stress_ave[0,1]):.2f} MPa  "
             f"max(d)={float(jnp.max(d_field)):.4f}  "
             f"st={iter_st}  err_abs={err_abs:.1e}  err_rel={err_rel:.1e}  "
-            f"mech={int(iter_mech)}  helm={int(iter_helm)}  time={step_time:.1f}s"
+            f"time={step_time:.1f}s"
         )
 
         sa = state.strain_ave
@@ -355,8 +355,6 @@ with IncrementalWriter(
             "iter_st":    iter_st,
             "err_abs":    err_abs,
             "err_rel":    err_rel,
-            "iter_mech":  int(iter_mech),
-            "iter_helm":  int(iter_helm),
             "wall_time_s": step_time,
         })
 

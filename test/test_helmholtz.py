@@ -72,8 +72,8 @@ L0       = d_target * (Gc / l0) / (2.0 * (1.0 - d_target))
 L_uniform = jnp.full((Nv,), L0)
 d_prev    = jnp.zeros((Nv,))
 
-d_out, iter_h, conv_h = solve_helmholtz_cg(L_uniform, xi_flat, n, l0, Gc, d_prev,
-                                            toler_cg=1e-10, maxiter=500)
+d_out, conv_h = solve_helmholtz_cg(L_uniform, xi_flat, n, l0, Gc, d_prev,
+                                    toler_cg=1e-10, maxiter=500)
 
 d_anal  = 2.0 * L0 / (Gc / l0 + 2.0 * L0)
 d_mean  = float(jnp.mean(d_out))
@@ -85,7 +85,7 @@ print(f"  analytical d   = {d_anal:.6f}")
 print(f"  mean(d_CG)     = {d_mean:.6f}")
 print(f"  std(d_CG)      = {d_std:.2e}   (should be ~0)")
 print(f"  relative error = {rel_err:.2e}   (should be <1e-6)")
-print(f"  CG iterations  = {int(iter_h)}  converged={bool(conv_h)}")
+print(f"  converged      = {bool(conv_h)}")
 print()
 print("  " + ("PASS" if rel_err < 1e-6 else "FAIL"))
 print()
@@ -107,17 +107,17 @@ ms_L[20:60, j_crack, :] = L_crack_val
 L_crack     = jnp.array(ms_L.ravel())
 d_prev      = jnp.zeros((Nv,))
 
-d_out, iter_h, conv_h = solve_helmholtz_cg(L_crack, xi_flat, n, l0, Gc, d_prev,
-                                            toler_cg=1e-8, maxiter=500)
+d_out, conv_h = solve_helmholtz_cg(L_crack, xi_flat, n, l0, Gc, d_prev,
+                                    toler_cg=1e-8, maxiter=500)
 d_np = np.asarray(d_out).reshape(n)
-print(f"  CG iterations = {int(iter_h)}  converged={bool(conv_h)}")
+print(f"  converged = {bool(conv_h)}")
 print(f"  max(d)  = {float(jnp.max(d_out)):.4f}")
 print(f"  d at crack tip (x=40, y={j_crack}) = {d_np[40, j_crack, 0]:.4f}")
 
 # Irreversibility: re-solve with L = 0 — d must not decrease
-L_zero       = jnp.zeros((Nv,))
-d_irrev, _, _ = solve_helmholtz_cg(L_zero, xi_flat, n, l0, Gc, d_out,
-                                   toler_cg=1e-8, maxiter=500)
+L_zero    = jnp.zeros((Nv,))
+d_irrev, _ = solve_helmholtz_cg(L_zero, xi_flat, n, l0, Gc, d_out,
+                                 toler_cg=1e-8, maxiter=500)
 irrev_ok = bool(jnp.all(d_irrev >= d_out - 1e-12))
 print(f"  Irreversibility (d_new >= d_old): {'PASS' if irrev_ok else 'FAIL'}")
 print()
@@ -144,8 +144,8 @@ for l0 in l0_values:
     L_field = jnp.array(ms_L.ravel())
     d_prev  = jnp.zeros((Nv,))
 
-    d_out, iter_h, conv_h = solve_helmholtz_cg(L_field, xi_flat, n, l0, Gc, d_prev,
-                                               toler_cg=1e-8, maxiter=500)
+    d_out, conv_h = solve_helmholtz_cg(L_field, xi_flat, n, l0, Gc, d_prev,
+                                        toler_cg=1e-8, maxiter=500)
     d_np = np.asarray(d_out).reshape(n)
 
     # Profile perpendicular to the crack at x = 40
@@ -208,13 +208,13 @@ ms_L[20:60, n[1] // 2, :] = L_crack_val
 L_crack = jnp.array(ms_L.ravel())
 d_prev  = jnp.zeros((Nv,))
 
-d_scalar, _, _    = solve_helmholtz_cg(L_crack, xi_flat, n, l0, Gc, d_prev,
-                                        toler_cg=1e-8, maxiter=500)
-Gc_const          = jnp.full((Nv,), Gc)
-d_het,    it_h, cv_h = solve_helmholtz_cg_het(L_crack, xi_flat, n, l0, Gc_const, d_prev,
-                                               toler_cg=1e-8, maxiter=500)
+d_scalar, _  = solve_helmholtz_cg(L_crack, xi_flat, n, l0, Gc, d_prev,
+                                   toler_cg=1e-8, maxiter=500)
+Gc_const     = jnp.full((Nv,), Gc)
+d_het, cv_h  = solve_helmholtz_cg_het(L_crack, xi_flat, n, l0, Gc_const, d_prev,
+                                       toler_cg=1e-8, maxiter=500)
 
-print(f"  het   : iter={int(it_h)}  conv={bool(cv_h)}")
+print(f"  het   : conv={bool(cv_h)}")
 
 # (a) het self-residual: evaluate het operator on d_het — should be ≈ bb
 def _fft(v):  return jnp.fft.fftn(v.reshape(n)).reshape(Nv)
@@ -258,8 +258,8 @@ ms_L2[20:90, n[1] // 2, :] = L_crack_val      # long crack driving force
 L_long  = jnp.array(ms_L2.ravel())
 d_prev  = jnp.zeros((Nv,))
 
-d_arr, iter_h, conv_h = solve_helmholtz_cg_het(L_long, xi_flat, n, l0, Gc_field, d_prev,
-                                                toler_cg=1e-8, maxiter=500)
+d_arr, conv_h = solve_helmholtz_cg_het(L_long, xi_flat, n, l0, Gc_field, d_prev,
+                                        toler_cg=1e-8, maxiter=500)
 d_np = np.asarray(d_arr).reshape(n)
 
 d_before  = float(d_np[55, n[1] // 2, 0])    # just before barrier
@@ -267,7 +267,7 @@ d_inside  = float(d_np[70, n[1] // 2, 0])    # inside barrier
 d_after   = float(d_np[85, n[1] // 2, 0])    # after barrier (should be low)
 arrest_ok = d_inside < d_before              # damage dips in high-Gc zone
 
-print(f"  CG iterations  = {int(iter_h)}  converged={bool(conv_h)}")
+print(f"  converged      = {bool(conv_h)}")
 print(f"  d before barrier (x=55) = {d_before:.4f}")
 print(f"  d inside barrier (x=70) = {d_inside:.4f}  ← should be lower")
 print(f"  d after barrier  (x=85) = {d_after:.4f}")

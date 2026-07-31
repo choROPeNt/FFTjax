@@ -64,7 +64,7 @@ def bench(n, repeats=3):
 
     # first call: trace + compile + run
     t0 = time.perf_counter()
-    eps, sigma, delta, it, conv = solve_elastic(
+    eps, sigma, delta, conv = solve_elastic(
         n, C_field, G_glob, EPS_BAR, toler_lin=TOLER_LIN, maxiter=MAXITER
     )
     eps.block_until_ready()
@@ -73,7 +73,7 @@ def bench(n, repeats=3):
     # steady-state: already compiled
     t0 = time.perf_counter()
     for _ in range(repeats):
-        eps, sigma, delta, it, conv = solve_elastic(
+        eps, sigma, delta, conv = solve_elastic(
             n, C_field, G_glob, EPS_BAR, toler_lin=TOLER_LIN, maxiter=MAXITER
         )
         eps.block_until_ready()
@@ -83,7 +83,6 @@ def bench(n, repeats=3):
         "n": list(n),
         "elements": Nv,
         "volume_fraction": vf_actual,
-        "cg_iterations": int(it),
         "converged": bool(conv),
         "compile_ms": compile_ms,
         "run_ms": run_ms,
@@ -97,8 +96,7 @@ if __name__ == "__main__":
     for n in GRID_SIZES:
         r = bench((n, n, n))
         results.append(r)
-        print(f"n={n:>4}  Vf={r['volume_fraction']:.3f}  "
-              f"iters={r['cg_iterations']:>3}  converged={r['converged']}  "
+        print(f"n={n:>4}  Vf={r['volume_fraction']:.3f}  converged={r['converged']}  "
               f"compile={r['compile_ms']:8.1f}ms  run={r['run_ms']:8.1f}ms")
 
     payload = {

@@ -231,7 +231,7 @@ with IncrementalWriter(f"{output}/{jobname}", grid_shape=n, grid_spacing=dx) as 
             t_frac       = float(t + dt) / t_end
             eps_bar_i    = t_frac * eps_goal
             stress_bar_i = t_frac * stress_goal
-            eps_i, sigma_i, delta_i, eps_bar_out_i, iter_mech, conv_mech = ddisp_nw_cg(
+            eps_i, sigma_i, delta_i, eps_bar_out_i, conv_mech = ddisp_nw_cg(
                 n, C_field, xi_flat, eps_bar_i, control, stress_bar_i,
                 toler_lin=settings.toler_lin,
                 maxiter=settings.maxiter_cg,
@@ -240,7 +240,7 @@ with IncrementalWriter(f"{output}/{jobname}", grid_shape=n, grid_spacing=dx) as 
             if converged:
                 break
             dt = max(dt * factor_dec, dt_min)
-            print(f"    cutback #{attempt+1}  dt → {dt:.6f}  (CG={int(iter_mech)})")
+            print(f"    cutback #{attempt+1}  dt → {dt:.6f}  (not converged)")
 
         if not converged:
             raise RuntimeError(
@@ -260,7 +260,7 @@ with IncrementalWriter(f"{output}/{jobname}", grid_shape=n, grid_spacing=dx) as 
             time=t,
             dtime=dt,
             kinc=step,
-            info=0 if converged else int(iter_mech),
+            info=0 if converged else 1,
         )
 
         eps_grid   = field_to_grid(state.strain_loc, n)
@@ -280,7 +280,7 @@ with IncrementalWriter(f"{output}/{jobname}", grid_shape=n, grid_spacing=dx) as 
         print(f"  step {step:2d}  t={t:.4f}  dt={dt:.4f}  "
               f"eps11={float(state.strain_ave[0,0]):.4e}  "
               f"sig11={float(state.stress_ave[0,0]):.3f} MPa  "
-              f"CG={int(iter_mech)}  time={step_time:.2f}s")
+              f"time={step_time:.2f}s")
 
         dt = min(dt * factor_inc, dt_max)
 

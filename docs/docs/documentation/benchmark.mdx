@@ -53,17 +53,16 @@ solver actually iterate, so **Compile** (first call: trace + XLA compile + run) 
     {key: 'run_ms', label: 'Run (steady-state)', color: '#7c4dff'},
   ]}
   extraColumns={[
-    {key: 'cg_iterations', label: 'CG iters'},
     {key: 'volume_fraction', label: 'Vf'},
   ]}
 />
 
 :::note[How to read it]
-- CG iterations stay roughly flat (26-42) across grid sizes for this fixed contrast/volume
-  fraction — the cost growth you see is per-iteration FFT cost scaling with grid size, not more
-  iterations. See the table view (**▤**) for the exact iteration count per grid size.
+- The solver stops as soon as it converges (`jax.scipy.sparse.linalg.cg`, early-exit via
+  `jax.lax.while_loop`), so **Compile**/**Run** reflect the actual, data-dependent solve cost —
+  `maxiter` here is just a generous safety cap, not a real cost.
 - This is CPU-only data on the machine that generated it; a GPU run would shift **Run** down
-  substantially without changing iteration counts.
+  substantially.
 :::
 
 ```bash

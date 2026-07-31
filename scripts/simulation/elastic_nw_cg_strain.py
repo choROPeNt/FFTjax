@@ -222,7 +222,7 @@ with IncrementalWriter(f"{output}/{jobname}", grid_shape=n, grid_spacing=dx) as 
 
         for attempt in range(max_cutbacks + 1):
             eps_bar_i = float(t + dt) * eps_goal
-            eps_i, sigma_i, delta_i, iter_mech, conv_mech = solve_elastic(
+            eps_i, sigma_i, delta_i, conv_mech = solve_elastic(
                 n, C_field, G_glob, eps_bar_i,
                 toler_lin=settings.toler_lin,
                 maxiter=settings.maxiter_cg,
@@ -231,7 +231,7 @@ with IncrementalWriter(f"{output}/{jobname}", grid_shape=n, grid_spacing=dx) as 
             if converged:
                 break
             dt = max(dt * factor_dec, dt_min)
-            print(f"    cutback #{attempt+1}  dt → {dt:.6f}  (CG={int(iter_mech)})")
+            print(f"    cutback #{attempt+1}  dt → {dt:.6f}  (not converged)")
 
         if not converged:
             raise RuntimeError(
@@ -251,7 +251,7 @@ with IncrementalWriter(f"{output}/{jobname}", grid_shape=n, grid_spacing=dx) as 
             time=t,
             dtime=dt,
             kinc=step,
-            info=0 if converged else int(iter_mech),
+            info=0 if converged else 1,
         )
 
         eps_grid   = field_to_grid(state.strain_loc, n)
@@ -270,7 +270,7 @@ with IncrementalWriter(f"{output}/{jobname}", grid_shape=n, grid_spacing=dx) as 
         step_time = time.perf_counter() - t_step_start
         print(f"  step {step:2d}  t={t:.4f}  dt={dt:.4f}  "
               f"sig11={float(state.stress_ave[0,0]):.3f} MPa  "
-              f"CG={int(iter_mech)}  time={step_time:.2f}s")
+              f"time={step_time:.2f}s")
 
         dt = min(dt * factor_inc, dt_max)
 
