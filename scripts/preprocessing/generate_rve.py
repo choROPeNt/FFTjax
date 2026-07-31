@@ -46,10 +46,10 @@ def _square_rve(gcfg: dict):
     from generation.rve import make_square_composite_rve
 
     phase_np, _, n, L, phi_act = make_square_composite_rve(
-        phi        = float(gcfg["phi"]),
-        r_fiber_um = float(gcfg["r_fib"]),
-        spacing_um = float(gcfg["vox"]),
-        nz         = int(gcfg.get("nz", 1)),
+        phi     = float(gcfg["phi"]),
+        r_fiber = float(gcfg["r_fib"]),
+        spacing = float(gcfg["vox"]),
+        nz      = int(gcfg.get("nz", 1)),
     )
     Nv = int(np.prod(n))
 
