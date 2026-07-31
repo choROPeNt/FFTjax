@@ -132,7 +132,7 @@ def read_vtu(
     yarn_index     : (Nv,) int      raw YarnIndex (-1=matrix, >=0=yarn)
     volume_fraction: (Nv,) float    smooth φ·Vf_yarn or binary fallback
     """
-    from generation.vtu import read_texgen_vtu
+    from utils.io_texgen import read_texgen_vtu
     return read_texgen_vtu(path)
 
 

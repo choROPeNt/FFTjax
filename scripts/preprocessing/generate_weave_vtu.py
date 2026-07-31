@@ -2,7 +2,7 @@
 CLI for the biaxial plain-weave geometry generator.
 
 Geometry logic lives in src/generation/weave.py.
-VTU I/O lives in src/generation/vtu.py.
+Reading a TexGen-produced VTU back in lives in src/utils/io_texgen.py.
 
 Usage
 -----
