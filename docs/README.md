@@ -19,10 +19,12 @@ environment used to run `npm run build`/`start`:
 pip install -e "..[docs]"
 ```
 
-The example page under `docs/docs/documentation/examples/lin-elastic-strain.md` is **not** auto-generated
-(Docusaurus can't run Python) — its code/output/plot are pasted in by hand. If
-`examples_src/lin_elastic_strain.py` changes, re-run it (`npm run gen-example`) and update that
-page and `static/img/lin_elastic_strain.png` manually.
+The example pages under `docs/docs/documentation/examples/` are **not** auto-generated
+(Docusaurus can't run Python) — their code/output/plot are pasted in by hand from the generator
+scripts in the repo-root `examples/` directory (a sibling of `docs/`, alongside `notebooks/`). If
+`examples/lin_elastic_strain.py` changes, re-run it (`npm run gen-example`, or `python
+examples/pff_damage.py` for the phase-field page) and update the corresponding page and
+`static/img/*.png` manually.
 
 ## Local Development
 

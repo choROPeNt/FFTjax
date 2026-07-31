@@ -14,15 +14,17 @@ Worked examples demonstrating FFTjax in practice.
   cards={[
     {
       emoji: '⚙️',
-      title: 'Linear-Elastic Solve',
-      description: 'A minimal walkthrough of the strain-based Newton-CG elastic solver on a homogeneous, isotropic cube under a prescribed macroscopic strain, checked by hand against Hooke\'s law.',
+      title: 'Linear-Elastic Solve (shear strain)',
+      description: 'A two-phase glass-fibre/epoxy composite RVE under a prescribed macroscopic shear strain, where the ~23x stiffness contrast makes the Newton-CG solve actually iterate, redistributing stress between the stiff fibre and compliant matrix.',
       to: '/documentation/examples/lin-elastic-strain',
+      image: '/img/lin_elastic_shear_strain.png',
     },
     {
       emoji: '⚙️',
       title: 'Linear-Elastic Solve (mixed boundary conditions)',
-      description: 'A minimal walkthrough of the mixed boundary condition-based Newton-CG elastic solver on a homogeneous, isotropic cube under a prescribed macroscopic strain, checked by hand against Hooke\'s law.',
-      to: '/documentation/examples/lin-elastic-strain',
+      description: 'A two-phase composite RVE under displacement-controlled tension with free lateral surfaces, measuring the effective Poisson\'s ratios -- the mixed strain/stress boundary condition a real tensile specimen is under.',
+      to: '/documentation/examples/lin-elastic-mixed-bc',
+      image: '/img/lin_elastic_tension_mixed_bc.png',
     },
   ]}
 />
@@ -39,24 +41,6 @@ Worked examples demonstrating FFTjax in practice.
     },  
   ]}
 />
-
-
-
-## 🌡️ Diffusion  Thermal Solvers
-
-{/* <CardGrid
-  cards={[
-    {
-      emoji: '🌡️',
-      title: 'Thermal Solve',
-      description: 'A minimal walkthrough of the thermal solver on a homogeneous, isotropic cube under a prescribed macroscopic temperature gradient, checked by hand against Fourier\'s law.',
-      to: '/documentation/examples/thermal-solve',
-    },
-  ]}
-/> */}
-
-
-## 🔌 Electrical Solvers
 
 ## 🎯 Inverse Calibration
 
@@ -83,3 +67,20 @@ Worked examples demonstrating FFTjax in practice.
     },
   ]}
 /> */}
+
+## 🌡️ Diffusion  Thermal Solvers
+
+{/* <CardGrid
+  cards={[
+    {
+      emoji: '🌡️',
+      title: 'Thermal Solve',
+      description: 'A minimal walkthrough of the thermal solver on a homogeneous, isotropic cube under a prescribed macroscopic temperature gradient, checked by hand against Fourier\'s law.',
+      to: '/documentation/examples/thermal-solve',
+    },
+  ]}
+/> */}
+
+
+## 🔌 Electrical Solvers
+

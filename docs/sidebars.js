@@ -21,7 +21,7 @@ const sidebars = {
         {
           type: 'category',
           label: '⚙️ Mechanical Solvers',
-          items: ['examples/lin-elastic-strain'],
+          items: ['examples/lin-elastic-strain', 'examples/lin-elastic-mixed-bc'],
         },
         {
           type: 'category',

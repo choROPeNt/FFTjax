@@ -5,7 +5,7 @@
   "scripts": {
     "docusaurus": "docusaurus",
     "gen-api": "bash scripts/gen-api.sh",
-    "gen-example": "python3 examples_src/lin_elastic_strain.py",
+    "gen-example": "python3 ../examples/lin_elastic_strain.py",
     "prestart": "npm run gen-api",
     "prebuild": "npm run gen-api",
     "start": "docusaurus start",

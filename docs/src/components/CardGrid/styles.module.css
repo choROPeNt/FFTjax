@@ -12,3 +12,19 @@
   color: inherit;
   text-decoration: none;
 }
+
+.cardImageWrapper {
+  overflow: hidden;
+  border-radius: var(--ifm-card-border-radius);
+  background: var(--ifm-color-emphasis-100);
+  width: 40%;
+  max-width: 140px;
+  margin: 0.5rem auto 0;
+}
+
+.cardImage {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+}

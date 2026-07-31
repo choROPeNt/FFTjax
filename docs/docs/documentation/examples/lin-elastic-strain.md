@@ -1,116 +1,107 @@
-# Linear-Elastic Strain Solve
+# Two-Phase Composite RVE — Linear-Elastic Strain Solve
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/choROPeNt/FFTjax/blob/main/notebooks/lin-elastic_strain.ipynb)
 
 A minimal walkthrough of FFTjax's strain-based Newton-CG elastic solver
-(`solvers.mechanical.strain_nw_cg.solve_elastic`) on a homogeneous, isotropic cube under a
-prescribed macroscopic strain.
+(`solvers.mechanical.strain_nw_cg.solve_elastic`) on a two-phase composite: a glass-fibre
+reinforcement in an epoxy matrix, arranged in a square-packed pattern via
+`generation.rve.make_square_composite_rve`, under a prescribed macroscopic shear strain.
 
-Because the material is homogeneous and the reference medium is chosen to match it exactly, the
-correction field is exactly zero — the local strain equals the prescribed macroscopic strain
-everywhere, and the local stress follows directly from Hooke's law. This makes the result easy to
-check by hand, so this example doubles as a sanity check of the install.
-
-For a case where the solver actually iterates (a two-phase composite), see the
-[Benchmark](../benchmark.mdx) page.
+Because the two phases have a large stiffness contrast (~23x), the reference-medium correction is
+nontrivial — the Newton-CG solve actually iterates, redistributing stress between the stiff fibres
+and the compliant matrix (unlike a homogeneous material, where it wouldn't need to). Uses the
+Willot `rotated` Green's-operator discretisation, which reduces spurious oscillations at phase
+interfaces compared to the `standard` scheme.
 
 ```python
-import os
-
-os.environ["JAX_ENABLE_X64"] = "1"
-
-import jax
 import jax.numpy as jnp
 import numpy as np
-import matplotlib.pyplot as plt
 
+from generation.rve import make_square_composite_rve
 from operators.green import build_freq_grid, build_green_operator
 from mat_models.elastic import LinearElasticIsotropic, assemble_C_field
 from solvers.mechanical.strain_nw_cg import solve_elastic
+from post.fields import compute_displacement
 
-print("JAX backend:", jax.default_backend())
-print("Devices:", jax.devices())
-
-# Grid and material: a 32^3 voxel unit cube, single-phase isotropic steel.
-n = (32, 32, 32)
-L = (1.0, 1.0, 1.0)
+# Composite RVE: square-packed 2-fibre geometry (Vf~0.5, 5 um fibre radius, 10-voxel-thick slab).
+phase_np, N, n, L, phi_act = make_square_composite_rve(
+    phi=0.5, r_fiber=0.005, spacing=0.0002, N_min=32, nz=10,
+)
 Nv = int(np.prod(n))
 
-material = LinearElasticIsotropic(E=210e3, nu=0.3, name="steel")
-phase = jnp.zeros(Nv, dtype=int)  # homogeneous: single phase everywhere
-C_field = assemble_C_field([material], phase)
+# Materials: glass fibre in an epoxy matrix -- a common, high-contrast (~23x) composite.
+matrix = LinearElasticIsotropic(E=3.0e3, nu=0.35, name="epoxy matrix")
+fiber = LinearElasticIsotropic(E=70.0e3, nu=0.20, name="glass fiber")
 
-print(material)
+phase = jnp.array(phase_np.reshape(-1))  # 0 = matrix, 1 = fiber
+C_field = assemble_C_field([matrix, fiber], phase)
 
-# Frequency grid and Green's operator: the reference medium (lam0, mu0) is
-# set to the material's own Lame parameters -- exact for a homogeneous material.
-xi_flat = build_freq_grid(n, L)
-G_glob = build_green_operator(xi_flat, material.lam, material.mu)
+# Frequency grid and Green's operator: reference medium is the average of the two phases'
+# Lame parameters, a reasonable choice when neither phase dominates.
+L_mm = tuple(float(Li) for Li in L)
+dx = tuple(Li / ni for Li, ni in zip(L_mm, n))
+xi_flat = build_freq_grid(n, L_mm)
 
-print("xi_flat shape:", xi_flat.shape)
-print("G_glob shape :", G_glob.shape)
+lam0 = 0.5 * (matrix.lam + fiber.lam)
+mu0 = 0.5 * (matrix.mu + fiber.mu)
+G_glob = build_green_operator(xi_flat, lam0, mu0, scheme="rotated", dx=dx)
 
-# Prescribe a macroscopic strain and solve: a uniaxial strain of 1e-3 along x.
+# Prescribe a macroscopic shear strain in the XY plane and solve.
 eps_bar = jnp.array([
+    [0.0, 1.0e-3, 0.0],
     [1.0e-3, 0.0, 0.0],
-    [0.0, 0.0, 0.0],
     [0.0, 0.0, 0.0],
 ])
 
-eps, sigma, delta, it, converged = solve_elastic(n, C_field, G_glob, eps_bar)
-
-print("CG iterations:", int(it))
-print("converged     :", bool(converged))
-
-# Check against Hooke's law.
-sigma_analytic = material.stress_field(jnp.broadcast_to(eps_bar[:, :, None], (3, 3, Nv)))
-
-max_err_eps = float(jnp.max(jnp.abs(eps - eps_bar[:, :, None])))
-max_err_sigma = float(jnp.max(jnp.abs(sigma - sigma_analytic)))
-
-print(f"max |eps  - eps_bar|        = {max_err_eps:.3e}")
-print(f"max |sigma - C:eps_bar|     = {max_err_sigma:.3e}")
-
-assert max_err_eps < 1e-10
-assert max_err_sigma < 1e-8
-print("\nPASSED -- local fields match the analytic homogeneous solution.")
+eps, sigma, delta, converged = solve_elastic(
+    n, C_field, G_glob, eps_bar, toler_lin=1e-6, maxiter=1000,
+)
 ```
 
 ```text title="Output"
 JAX backend: cpu
 Devices: [CpuDevice(id=0)]
-LinearElasticIsotropic (steel): E=2.1e+05, nu=0.3, lam=1.21e+05, mu=8.08e+04
-xi_flat shape: (3, 32768)
-G_glob shape : (3, 3, 3, 3, 32768)
-CG iterations: 0
+grid n : (89, 89, 10)
+domain L [mm]: (0.01772453850905516, 0.01772453850905516, 0.002)
+fiber volume fraction (actual): 0.5010730968312082
+LinearElasticIsotropic (epoxy matrix): E=3e+03, nu=0.35, lam=2.59e+03, mu=1.11e+03
+LinearElasticIsotropic (glass fiber): E=7e+04, nu=0.2, lam=1.94e+04, mu=2.92e+04
 converged     : True
-max |eps  - eps_bar|        = 0.000e+00
-max |sigma - C:eps_bar|     = 0.000e+00
+tau_xy (avg) : 7.625369073063829 MPa
 
-PASSED -- local fields match the analytic homogeneous solution.
+PASSED -- Newton-CG converged on the heterogeneous composite.
 ```
 
-![Solved vs analytic diagonal stress](/img/lin_elastic_strain.png)
+![Fiber phase and resulting displacement field](/img/lin_elastic_strain.png)
+
+Unlike a homogeneous material — where the correction field is exactly zero and the reference
+medium matches the material exactly — this composite's Newton-CG correction does real work,
+because the reference medium (the average of the two phases) doesn't match either phase exactly.
+The displacement fields above show that redistribution directly: `u_x` and `u_y` both bend around
+the stiff fibre rather than following the smooth, linear pattern a homogeneous shear would produce.
 
 :::note[Reproducing]
-This page's code, output, and plot are generated by [`docs/examples_src/lin_elastic_strain.py`](https://github.com/choROPeNt/FFTjax/blob/main/docs/examples_src/lin_elastic_strain.py):
+This page's code, output, and plot are generated by [`examples/lin_elastic_strain.py`](https://github.com/choROPeNt/FFTjax/blob/main/examples/lin_elastic_strain.py):
 
 ```bash
-python docs/examples_src/lin_elastic_strain.py
+python examples/lin_elastic_strain.py
 ```
 
 If the example changes, re-run the script and update the pasted output/image above — there's no
 build-time execution here (unlike the earlier Sphinx-based docs' `sphinx-gallery` integration),
 since Docusaurus can't run Python.
 
-For an interactive follow-on that extends this to a real two-phase composite (where the CG solve
-actually iterates), run [`notebooks/lin-elastic_strain.ipynb`](https://github.com/choROPeNt/FFTjax/blob/main/notebooks/lin-elastic_strain.ipynb)
-directly in Colab via the badge above, or locally with Jupyter.
+For the full interactive version — with per-field strain/stress visualization and `.xdmf`/`.h5`
+export for ParaView — see
+[`notebooks/lin-elastic_strain.ipynb`](https://github.com/choROPeNt/FFTjax/blob/main/notebooks/lin-elastic_strain.ipynb),
+linked via the Colab badge above.
 :::
 
 ## Next steps
 
-- Swap in a two-phase `C_field` (e.g. an inclusion) to see the Newton-CG solve actually iterate —
-  the [Benchmark](../benchmark.mdx) page does exactly this and times it across grid sizes.
-- See `solvers.mechanical.strain_nw_cg.dstrain_nw_cg_mixed` for mixed strain/stress macroscopic
-  boundary conditions.
+- Sweep grid size for this composite — the [Benchmark](../benchmark.mdx) page does exactly this
+  and times it across grid sizes.
+- See [Linear-Elastic Solve (mixed boundary conditions)](./lin-elastic-mixed-bc.md) for the same
+  geometry/materials under a free-lateral-surface tension condition instead of this fully
+  strain-controlled shear — a more realistic mechanical test, measuring the effective Poisson's
+  ratios.
