@@ -6,33 +6,8 @@ from math import prod
 
 import jax.numpy as jnp
 from jax import jit
-from jax.scipy.sparse.linalg import cg as _jax_cg
 
-
-def _cg_solve(A, b, x0, tol, maxiter, M=None):
-    """
-    Thin wrapper around jax.scipy.sparse.linalg.cg that also reports
-    convergence, since the underlying JAX version's own ``info`` return is
-    currently a permanent ``None`` placeholder (not yet implemented there).
-
-    Uses ``jax.lax.while_loop`` internally, so it stops as soon as it
-    converges rather than paying for ``maxiter`` on every call -- 3-20x
-    faster in practice than a fixed-length scan with a generous ``maxiter``
-    safety cap. The cost: this does **not** support reverse-mode autodiff
-    (``jax.grad``) through the solve -- JAX's own ``cg`` gradient rule was
-    tested against this project's FFT-based operators and found to give
-    silently incorrect results (not an error, not NaN -- a wrong gradient,
-    off by many orders of magnitude on a heterogeneous composite, and NaN
-    on a degenerate zero-residual case), traced to its implicit-diff rule
-    running an invisible internal adjoint CG solve with no way to verify it
-    actually converged. If a solve here ever needs to be differentiated
-    with ``jax.grad``, this needs a fixed-length ``jax.lax.scan``-based
-    implementation instead (verified working, just much slower per call --
-    see git history around this comment).
-    """
-    x, _ = _jax_cg(A, b, x0=x0, tol=tol, maxiter=maxiter, M=M)
-    converged = jnp.linalg.norm(b - A(x)) <= tol * jnp.linalg.norm(b)
-    return x, converged
+from solvers._cg import cg_solve
 
 
 def _active_pairs(control: Tuple[Tuple[int, ...], ...]) -> Tuple[Tuple[int, int], ...]:
@@ -223,7 +198,7 @@ def ddisp_nw_cg(
 
     # ── CG solve ──────────────────────────────────────────────────────────────
     x0 = jnp.zeros_like(bb)
-    x_flat, converged = _cg_solve(A_op, bb, x0, toler_lin, maxiter, M=M)
+    x_flat, converged = cg_solve(A_op, bb, x0, toler_lin, maxiter, M=M)
 
     du_sol, sv_sol = unpack(x_flat)
     deps_bar_free  = sv2sm(sv_sol)
