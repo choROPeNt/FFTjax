@@ -12,7 +12,15 @@
 const sidebars = {
   docsSidebar: [
     'installation',
-    'theorie',
+    {
+      type: 'category',
+      label: '📖 Theorie',
+      link: {type: 'doc', id: 'theorie/index'},
+      items: [
+        'theorie/mechanical',
+        'theorie/damage',
+      ],
+    },
     {
       type: 'category',
       label: '🧪 Examples',
@@ -20,12 +28,12 @@ const sidebars = {
       items: [
         {
           type: 'category',
-          label: '⚙️ Mechanical Solvers',
+          label: 'Mechanical Solvers',
           items: ['examples/lin-elastic-strain', 'examples/lin-elastic-mixed-bc'],
         },
         {
           type: 'category',
-          label: '💥 Damage & Fracture Solvers',
+          label: 'Damage & Fracture Solvers',
           items: ['examples/phase-field'],
         },
         // Inverse Calibration and Structure-Property groups are placeholders
