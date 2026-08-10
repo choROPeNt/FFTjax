@@ -1,4 +1,4 @@
-# Two-Phase Composite RVE — Linear-Elastic Strain Solve
+# Linear-Elastic Strain Solve (Basic-Scheme)
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/choROPeNt/FFTjax/blob/main/notebooks/lin-elastic_strain.ipynb)
 

@@ -1,4 +1,4 @@
-# Two-Phase Composite RVE — Mixed Strain/Stress Boundary Conditions
+# Mixed Strain/Stress Boundary Conditions
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/choROPeNt/FFTjax/blob/main/notebooks/lin-elastic_mixed-BC.ipynb)
 
