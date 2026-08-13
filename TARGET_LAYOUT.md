@@ -77,12 +77,12 @@ src/
 ├── generation/                         # RVE/RSA/Matérn cluster generation (existing name kept over "microstructure/")
 │
 ├── post/                               # post-processing: field-space derived quantities only, no I/O
-│   └── fields.py                       ✅ field_to_grid, von_mises, compute_displacement
+│   └── fields.py                       ✅ field_to_grid, von_mises, compute_displacement, to_voigt, from_voigt
 │
 ├── utils/
 │   ├── io/
-│   │   ├── xdmf_writer.py              ⚙️ IncrementalWriter, currently in post/io.py — this is its target home
-│   │   │                               #   (a move, not new code); project-wide standard for XDMF/HDF5 output
+│   │   ├── xdmf_writer.py              ✅ IncrementalWriter — moved from post/io.py (post/io.py deleted);
+│   │   │                               #   project-wide standard for XDMF/HDF5 output
 │   │   └── checkpoint.py               # solver-state restart
 │   └── logging.py
 │

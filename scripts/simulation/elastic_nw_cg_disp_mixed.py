@@ -54,7 +54,8 @@ from mat_models.elastic    import (LinearElasticIsotropic,
                                    assemble_C_field_smooth)
 from operators.green       import build_freq_grid
 from post.fields           import field_to_grid, von_mises, compute_displacement
-from post.io               import IncrementalWriter, to_voigt
+from utils.io.xdmf_writer import IncrementalWriter
+from post.fields          import to_voigt
 from solvers.types         import SolveState, SolverSettings
 from solvers.mechanical.displacement_nw_cg import ddisp_nw_cg
 from utils.config          import load_config

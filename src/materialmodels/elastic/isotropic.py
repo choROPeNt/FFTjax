@@ -5,7 +5,7 @@ Voigt index convention (Abaqus order):
     0 = 11,  1 = 22,  2 = 33,  3 = 12,  4 = 13,  5 = 23
 
 All Voigt representations use *tensor* shear components (ε₁₂, not γ₁₂ = 2ε₁₂),
-consistent with ``post.io.to_voigt`` and the σ = C:ε einsum in the FFT solver
+consistent with ``post.fields.to_voigt`` and the σ = C:ε einsum in the FFT solver
 (see mat_models/elastic.py's module docstring for the full convention note --
 this is a port of that module's ``LinearElasticIsotropic`` onto the
 ``ConstitutiveModel`` ABC, not a reimplementation; verified bit-identical in
@@ -61,7 +61,7 @@ class LinearElasticIsotropic(ConstitutiveModel):
         ----------
         engineering : bool
             False (default) — tensor shear convention (ε₁₂, shear block = 2μ),
-            compatible with ``post.io.to_voigt`` and the FFT solver output.
+            compatible with ``post.fields.to_voigt`` and the FFT solver output.
             True — engineering / Abaqus-UMAT convention (γ₁₂ = 2ε₁₂, shear block = μ).
         """
         lam, mu = self.lam, self.mu

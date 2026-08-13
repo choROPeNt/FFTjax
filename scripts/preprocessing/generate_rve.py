@@ -34,7 +34,7 @@ import numpy as np
 
 sys.path.insert(0, "src")
 
-from post.io        import IncrementalWriter
+from utils.io.xdmf_writer import IncrementalWriter
 from utils.config   import load_config
 from utils.io_read  import read_simulation_input
 
@@ -48,7 +48,7 @@ def _square_rve(gcfg: dict):
     phase_np, _, n, L, phi_act = make_square_composite_rve(
         phi     = float(gcfg["phi"]),
         r_fiber = float(gcfg["r_fib"]),
-        spacing = float(gcfg["vox"]),
+        dx      = float(gcfg["vox"]),
         nz      = int(gcfg.get("nz", 1)),
     )
     Nv = int(np.prod(n))

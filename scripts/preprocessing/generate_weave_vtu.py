@@ -21,9 +21,7 @@ import numpy as np
 sys.path.insert(0, "src")
 
 from generation.weave import build_weave, load_db, list_materials, max_nesting
-from post.io          import IncrementalWriter
-
-
+from utils.io.xdmf_writer import IncrementalWriter
 def main():
     parser = argparse.ArgumentParser(description='Generate two-layer biaxial weave VTU')
     parser.add_argument('--material',      type=str,   default=None,

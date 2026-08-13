@@ -3,11 +3,76 @@ Post-processing field utilities for FFTjax.
 
 All functions accept the solver's native layout — fields with shape
 ``(3, 3, Nv)`` or ``(3, 3, 3, 3, Nv)`` — and return arrays reshaped to
-``(*grid_n, ...)`` suitable for ParaView export via ``post.io``.
+``(*grid_n, ...)`` suitable for ParaView export via ``utils.io.xdmf_writer``.
 """
 
 import numpy as np
 import jax.numpy as jnp
+
+# Voigt index pairs — Abaqus convention: [11, 22, 33, 12, 13, 23]
+_VOIGT_IJ = ((0, 0), (1, 1), (2, 2), (0, 1), (0, 2), (1, 2))
+
+
+def to_voigt(tensor: np.ndarray, mandel: bool = False) -> np.ndarray:
+    """
+    Convert a symmetric 3×3 tensor field to Voigt notation.
+
+    Parameters
+    ----------
+    tensor : array (..., 3, 3)
+        Full tensor field. Leading dimensions are arbitrary (grid voxels).
+    mandel : bool
+        If True, apply Mandel scaling (√2 on shear components).
+        Use this when you need energy-consistent norm preservation,
+        e.g. for strain fields used in further computation.
+        For stress fields, keep mandel=False.
+
+    Returns
+    -------
+    array (..., 6)
+        Voigt vector. Index order: [σ11, σ22, σ33, σ12, σ13, σ23]  (Abaqus convention)
+    """
+    tensor = np.asarray(tensor)
+    if tensor.shape[-2:] != (3, 3):
+        raise ValueError(f"Expected (..., 3, 3), got {tensor.shape}")
+
+    voigt = np.stack([tensor[..., i, j] for i, j in _VOIGT_IJ], axis=-1)
+
+    if mandel:
+        voigt[..., 3:] *= np.sqrt(2.0)
+
+    return voigt
+
+
+def from_voigt(voigt: np.ndarray, mandel: bool = False) -> np.ndarray:
+    """
+    Convert a Voigt-notation field back to a full symmetric 3×3 tensor.
+
+    Parameters
+    ----------
+    voigt : array (..., 6)
+        Voigt field. Index order: [xx, yy, zz, yz, xz, xy]  (11,22,33,23,13,12)
+    mandel : bool
+        If True, undo Mandel scaling (divide shear by √2).
+
+    Returns
+    -------
+    array (..., 3, 3)
+    """
+    voigt = np.asarray(voigt, dtype=float)
+    if voigt.shape[-1] != 6:
+        raise ValueError(f"Expected (..., 6), got {voigt.shape}")
+
+    if mandel:
+        voigt = voigt.copy()
+        voigt[..., 3:] /= np.sqrt(2.0)
+
+    out = np.zeros(voigt.shape[:-1] + (3, 3), dtype=voigt.dtype)
+    for k, (i, j) in enumerate(_VOIGT_IJ):
+        out[..., i, j] = voigt[..., k]
+        out[..., j, i] = voigt[..., k]  # symmetry
+
+    return out
 
 
 def field_to_grid(arr_33_nv: jnp.ndarray, grid_n: tuple) -> np.ndarray:

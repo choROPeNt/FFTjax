@@ -15,12 +15,11 @@ Examples
         }, point_fields={"displacement"})
     writer.close()
 
+``to_voigt``/``from_voigt`` live in ``post.fields`` (field-space conversions, not I/O) --
+import them from there when preparing data for ``write_increment``.
+
 Notes
 -----
-Voigt convention (symmetric tensors) index mapping: 0=11 1=22 2=33 3=12 4=13 5=23
-(Abaqus convention). Strain factor: stress -> factor 1, strain -> factor 2 on shear
-components (Mandel).
-
 Every field is written voxel-centered (XDMF ``Center="Cell"``) by default, matching
 the FFT/voxel discretization this project uses throughout (strain, stress, and
 damage are naturally per-voxel state variables). Pass a field's name in
@@ -267,76 +266,6 @@ class IncrementalWriter:
                 f'{dz} {dy} {dx}</DataItem>'
                 f"</Geometry>"
             )
-
-
-# ------------------------------------------------------------------
-# Public Voigt helpers
-# ------------------------------------------------------------------
-
-# Voigt index pairs — Abaqus convention: [11, 22, 33, 12, 13, 23]
-_VOIGT_IJ = ((0, 0), (1, 1), (2, 2), (0, 1), (0, 2), (1, 2))
-
-
-def to_voigt(tensor: np.ndarray, mandel: bool = False) -> np.ndarray:
-    """
-    Convert a symmetric 3×3 tensor field to Voigt notation.
-
-    Parameters
-    ----------
-    tensor : array (..., 3, 3)
-        Full tensor field. Leading dimensions are arbitrary (grid voxels).
-    mandel : bool
-        If True, apply Mandel scaling (√2 on shear components).
-        Use this when you need energy-consistent norm preservation,
-        e.g. for strain fields used in further computation.
-        For stress fields, keep mandel=False.
-
-    Returns
-    -------
-    array (..., 6)
-        Voigt vector. Index order: [σ11, σ22, σ33, σ12, σ13, σ23]  (Abaqus convention)
-    """
-    tensor = np.asarray(tensor)
-    if tensor.shape[-2:] != (3, 3):
-        raise ValueError(f"Expected (..., 3, 3), got {tensor.shape}")
-
-    voigt = np.stack([tensor[..., i, j] for i, j in _VOIGT_IJ], axis=-1)
-
-    if mandel:
-        voigt[..., 3:] *= np.sqrt(2.0)
-
-    return voigt
-
-
-def from_voigt(voigt: np.ndarray, mandel: bool = False) -> np.ndarray:
-    """
-    Convert a Voigt-notation field back to a full symmetric 3×3 tensor.
-
-    Parameters
-    ----------
-    voigt : array (..., 6)
-        Voigt field. Index order: [xx, yy, zz, yz, xz, xy]  (11,22,33,23,13,12)
-    mandel : bool
-        If True, undo Mandel scaling (divide shear by √2).
-
-    Returns
-    -------
-    array (..., 3, 3)
-    """
-    voigt = np.asarray(voigt, dtype=float)
-    if voigt.shape[-1] != 6:
-        raise ValueError(f"Expected (..., 6), got {voigt.shape}")
-
-    if mandel:
-        voigt = voigt.copy()
-        voigt[..., 3:] /= np.sqrt(2.0)
-
-    out = np.zeros(voigt.shape[:-1] + (3, 3), dtype=voigt.dtype)
-    for k, (i, j) in enumerate(_VOIGT_IJ):
-        out[..., i, j] = voigt[..., k]
-        out[..., j, i] = voigt[..., k]  # symmetry
-
-    return out
 
 
 # ------------------------------------------------------------------

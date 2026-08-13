@@ -36,7 +36,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from operators.green    import build_freq_grid
-from post.io            import IncrementalWriter
+from utils.io.xdmf_writer import IncrementalWriter
 from solvers.damage.pff_damage  import solve_helmholtz_cg, solve_helmholtz_cg_het
 
 jax.config.update("jax_enable_x64", True)
