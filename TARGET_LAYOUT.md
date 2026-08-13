@@ -27,12 +27,15 @@ src/
 │   ├── __init__.py
 │   ├── base.py                             # shared convergence criteria, iteration bookkeeping
 │   ├── krylov/
-│   │   └── cg.py                           ⚙️ operator-agnostic (P)CG driver, shared by every elliptic PDE-type
+│   │   └── cg.py                           ✅ operator-agnostic (P)CG driver, shared by every elliptic PDE-type
 │   ├── elliptic/
 │   │   ├── scalar.py                       # thermal, diffusion (Fickian), phase-field φ-subproblem
 │   │   └── vector/
 │   │       ├── base.py                     ⚙️ ElasticitySolver ABC, ElasticitySolution dataclass
-│   │       ├── lippmann_schwinger.py       ⚙️ strain-based, periodic (extend for DCT/DST non-periodic — TO DISCUSS)
+│   │       ├── lippmann_schwinger.py       ✅ solve_lippmann_schwinger: strain-based, periodic, built on
+│   │       │                              #   GreenOperatorBasic/Willot + Gamma0Operator + krylov/cg.py;
+│   │       │                              #   not yet jit-compiled at this level (LinearOperator isn't a
+│   │       │                              #   registered pytree yet) — extend for DCT/DST non-periodic — TO DISCUSS
 │   │       └── displacement_based.py       # direct u-solve via ∇/∇·, mixed BC via boundary.py, penalty enforcement
 │   ├── parabolic/
 │   │   └── reaction_diffusion.py           # Allen-Cahn / Cahn-Hilliard time-stepping over elliptic.scalar
