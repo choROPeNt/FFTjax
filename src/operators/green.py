@@ -4,6 +4,9 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from operators.base import LinearOperator
+from operators.general_functions import ddot42
+
 
 # ---------------------------------------------------------------------------
 # Full-spectrum frequency grid  (for fftn / ifftn solvers)
@@ -148,6 +151,48 @@ def build_green_operator(
     )                                                  # (3,3,3,3,Nv)
     return jnp.where(safe[None, None, None, None, :], Gamma, 0.0)
 
+
+# ---------------------------------------------------------------------------
+# LinearOperator wrappers around build_green_operator
+# ---------------------------------------------------------------------------
+
+class GreenOperatorBasic(LinearOperator):
+    """
+    Γ̂₀ reference-medium Green's operator, 'standard' (Moulinec–Suquet)
+    discretisation — continuous DFT frequencies, no Willot correction.
+
+    Self-adjoint (major-symmetric: Γ_ijkl = Γ_klij), so ``.T`` returns self
+    (the ``LinearOperator`` default).
+    """
+
+    def __init__(self, n: tuple[int, ...], L: tuple[float, ...], lam0: float, mu0: float):
+        self.n, self.L, self.lam0, self.mu0 = n, L, lam0, mu0
+        xi_flat = build_freq_grid(n, L)
+        self.G = build_green_operator(xi_flat, lam0, mu0, scheme='standard')
+
+    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
+        """x, result: (3, 3, Nv) — e.g. a strain or stress field in Fourier space."""
+        return ddot42(self.G, x)
+
+
+class GreenOperatorWillot(GreenOperatorBasic):
+    """
+    Γ̂₀ with Willot (2015) rotated-scheme effective frequencies — removes the
+    45° anisotropy bias of the standard scheme and converges better under
+    high stiffness contrast. Requires the voxel spacing ``dx``.
+    """
+
+    def __init__(
+        self,
+        n: tuple[int, ...],
+        L: tuple[float, ...],
+        lam0: float,
+        mu0: float,
+        dx: tuple[float, ...],
+    ):
+        self.n, self.L, self.lam0, self.mu0, self.dx = n, L, lam0, mu0, dx
+        xi_flat = build_freq_grid(n, L)
+        self.G = build_green_operator(xi_flat, lam0, mu0, scheme='rotated', dx=dx)
 
 
 def set_freq_jax(ndim: int, n: tuple[int, ...], L: tuple[float, ...]):
