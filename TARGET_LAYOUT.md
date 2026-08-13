@@ -122,7 +122,10 @@ src/
 │   ├── diffusion.py
 │   └── fracture.py                         # staggered mechanics + phase-field
 │
-├── microstructure/                         # RVE/RSA/Matérn cluster generation (existing) — only if generating own RVEs
+├── generation/                              # RVE/RSA/Matérn cluster generation (existing, keeping this name --
+│                                            #   working, unique code with 11 live importers incl. several
+│                                            #   already-verified notebooks/tests; a rename to "microstructure/"
+│                                            #   would be pure churn with no functional gain, decided 2026-08-13)
 │
 ├── utils/
 │   ├── io/
