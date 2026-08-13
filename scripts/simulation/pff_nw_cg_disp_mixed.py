@@ -95,7 +95,6 @@ n, L, phase_np, orientations_np, _, vf_np, d_init_np, H_init_np = \
     read_simulation_input(cfg["input"])
 
 Nv   = int(np.prod(n))
-dx   = tuple(Li / ni for Li, ni in zip(L, n))
 # ── Fill fiber orientations when not stored in the file ───────────────────────
 _fiber_phase_cfg = int(cfg.get("fiber_phase", 1))
 if not np.any(orientations_np != 0) and "fibre_dir" in cfg:
@@ -298,7 +297,7 @@ zero_grid   = np.zeros((*n, 6), dtype=np.float64)
 zero_scal   = np.zeros(n,       dtype=np.float64)
 zero_u      = np.zeros((*n, 3), dtype=np.float64)
 
-with IncrementalWriter(f"{output}/{jobname}", grid_shape=n, grid_spacing=dx) as w:
+with IncrementalWriter(f"{output}/{jobname}", grid_shape=n, grid_length=L) as w:
 
     w.write_increment(0, {
         "phase":             phase_vis,

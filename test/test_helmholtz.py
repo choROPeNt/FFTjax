@@ -164,7 +164,7 @@ for l0 in l0_values:
     # ── write output ─────────────────────────────────────────────────────────
     jobname = f"test_helmholtz_l0_{str(l0).replace('.', 'p')}"
 
-    with IncrementalWriter(f"output/{jobname}", grid_shape=n, grid_spacing=dx) as w:
+    with IncrementalWriter(f"output/{jobname}", grid_shape=n, grid_length=L) as w:
         w.write_increment(0, {
             "driving_force": ms_L.astype(np.float64),
             "damage":        np.zeros(n, dtype=np.float64),
@@ -273,7 +273,7 @@ print(f"  d inside barrier (x=70) = {d_inside:.4f}  ← should be lower")
 print(f"  d after barrier  (x=85) = {d_after:.4f}")
 print("  Crack-arrest check: " + ("PASS" if arrest_ok else "FAIL"))
 
-with IncrementalWriter("output/test_helmholtz_het", grid_shape=n, grid_spacing=dx) as w:
+with IncrementalWriter("output/test_helmholtz_het", grid_shape=n, grid_length=L) as w:
     w.write_increment(0, {
         "Gc_field":      Gc_field_np.astype(np.float64),
         "driving_force": ms_L2.astype(np.float64),

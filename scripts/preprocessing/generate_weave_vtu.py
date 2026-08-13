@@ -111,9 +111,8 @@ def main():
 
     # ── XDMF/HDF5 (only output format) ───────────────────────────────────────
     import h5py
-    dx_grid   = tuple(Li / ni for Li, ni in zip(L, n))
     xdmf_stem = str(out_stem)
-    with IncrementalWriter(xdmf_stem, grid_shape=n, grid_spacing=dx_grid) as w:
+    with IncrementalWriter(xdmf_stem, grid_shape=n, grid_length=L) as w:
         w.write_increment(0, {
             "yarn_index":      yarn_index.reshape(n).astype(np.float32),
             "phase":           phase.reshape(n).astype(np.float32),

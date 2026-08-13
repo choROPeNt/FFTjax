@@ -81,7 +81,6 @@ print(f"Output   : {cfg['output']}/{cfg['jobname']}")
 n, L, phase_np, orientations_np, _, vf_np, _, _ = read_simulation_input(cfg["input"])
 
 Nv   = int(np.prod(n))
-dx   = tuple(Li / ni for Li, ni in zip(L, n))
 phi_ = float(np.mean(phase_np == 1))   # fraction of fibre voxels (binary)
 
 print(f"Using jax-device : {jax.devices()[0].device_kind}")
@@ -209,7 +208,7 @@ zero_grid   = np.zeros((*n, 6), dtype=np.float64)
 zero_scal   = np.zeros(n,       dtype=np.float64)
 zero_u      = np.zeros((*n, 3), dtype=np.float64)
 
-with IncrementalWriter(f"{output}/{jobname}", grid_shape=n, grid_spacing=dx) as w:
+with IncrementalWriter(f"{output}/{jobname}", grid_shape=n, grid_length=L) as w:
 
     w.write_increment(0, {
         "phase":        phase_vis,

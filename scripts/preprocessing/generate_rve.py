@@ -146,7 +146,7 @@ def main():
 
     Path(output).mkdir(parents=True, exist_ok=True)
 
-    with IncrementalWriter(stem, grid_shape=n, grid_spacing=dx) as w:
+    with IncrementalWriter(stem, grid_shape=n, grid_length=L) as w:
         w.write_increment(0, {
             "phase":            phase.reshape(n).astype(np.float32),
             "orientation":      orientations.T.reshape(*n, 3).astype(np.float64),

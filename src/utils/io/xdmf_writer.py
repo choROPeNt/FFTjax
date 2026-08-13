@@ -5,7 +5,7 @@ Examples
 --------
 ::
 
-    writer = IncrementalWriter("results/sim", grid_shape=(32, 32, 32), grid_spacing=(1.0, 1.0, 1.0))
+    writer = IncrementalWriter("results/sim", grid_shape=(32, 32, 32), grid_length=(1.0, 1.0, 1.0))
     for inc, data in enumerate(simulation):
         writer.write_increment(inc, {
             "stress":       to_voigt(stress),   # (nx, ny, nz, 3, 3) -> (nx, ny, nz, 6)
@@ -68,8 +68,13 @@ class IncrementalWriter:
         Creates  <base_path>.h5  and  <base_path>.xdmf.
     grid_shape : tuple[int, ...]
         Number of voxels per dimension, e.g. (nx, ny) or (nx, ny, nz).
-    grid_spacing : tuple[float, ...]
-        Physical size of one voxel per dimension (dx, dy) or (dx, dy, dz).
+    grid_length : tuple[float, ...]
+        Physical domain size per dimension (Lx, Ly) or (Lx, Ly, Lz) -- same
+        ``(n, L)`` convention used everywhere else in this project
+        (``GreenOperatorBasic``/``Willot``, ``solve_mechanics``,
+        ``compute_displacement``, ...). Per-voxel spacing (what XDMF's
+        ``ORIGIN_DXDY``/``ORIGIN_DXDYDZ`` geometry actually wants) is derived
+        internally as ``grid_length / grid_shape``.
     origin : tuple[float, ...] | None
         Physical origin of the grid. Defaults to all zeros.
     """
@@ -78,17 +83,18 @@ class IncrementalWriter:
         self,
         base_path: str,
         grid_shape: tuple[int, ...],
-        grid_spacing: tuple[float, ...],
+        grid_length: tuple[float, ...],
         origin: tuple[float, ...] | None = None,
     ):
         if len(grid_shape) not in (2, 3):
             raise ValueError("grid_shape must be 2-D or 3-D")
-        if len(grid_spacing) != len(grid_shape):
-            raise ValueError("grid_spacing must have the same length as grid_shape")
+        if len(grid_length) != len(grid_shape):
+            raise ValueError("grid_length must have the same length as grid_shape")
 
         self.ndim = len(grid_shape)
         self.grid_shape = grid_shape
-        self.grid_spacing = grid_spacing
+        self.grid_length = grid_length
+        self.grid_spacing = tuple(Li / ni for Li, ni in zip(grid_length, grid_shape))
         self.origin = origin if origin is not None else tuple(0.0 for _ in grid_shape)
 
         os.makedirs(os.path.dirname(base_path) or ".", exist_ok=True)

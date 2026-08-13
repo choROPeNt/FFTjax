@@ -209,7 +209,7 @@ zero_u     = np.zeros((*n, 3), dtype=np.float64)
 history: list[dict] = []
 
 with IncrementalWriter(
-    f"{settings.output}/{settings.jobname}", grid_shape=n, grid_spacing=dx
+    f"{settings.output}/{settings.jobname}", grid_shape=n, grid_length=L
 ) as w:
 
     w.write_increment(0, {

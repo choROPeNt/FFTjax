@@ -204,7 +204,7 @@ zero_grid   = np.zeros((*n, 6), dtype=np.float64)
 zero_scal   = np.zeros(n,       dtype=np.float64)
 zero_u      = np.zeros((*n, 3), dtype=np.float64)
 
-with IncrementalWriter(f"{output}/{jobname}", grid_shape=n, grid_spacing=dx) as w:
+with IncrementalWriter(f"{output}/{jobname}", grid_shape=n, grid_length=L) as w:
 
     w.write_increment(0, {
         "phase":        phase_vis,

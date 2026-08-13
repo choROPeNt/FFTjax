@@ -167,7 +167,7 @@ R_ply   = jnp.array([[ ca, -sa, 0.0],
 sigma_ply_loc  = jnp.einsum("ai,abm,bj->ijm", R_ply, sigma_loc, R_ply)  # (3,3,Nv)
 sigma_ply_grid = field_to_grid(sigma_ply_loc, n)                         # (*n,3,3)
 
-with IncrementalWriter(f"{output_dir}/{jobname}", grid_shape=n, grid_spacing=dx) as w:
+with IncrementalWriter(f"{output_dir}/{jobname}", grid_shape=n, grid_length=L) as w:
 
     # ── write undeformed initial state at t = 0 ───────────────────────────────
     zero_grid = np.zeros((*n, 6), dtype=np.float64)

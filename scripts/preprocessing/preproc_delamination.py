@@ -165,10 +165,9 @@ def main():
     args.out.mkdir(parents=True, exist_ok=True)
     stem      = args.xdmf.stem + "_delam_preproc"
     xdmf_stem = str(args.out / stem)
-    dx_new    = tuple(Li / ni for Li, ni in zip(L_new, n_new))
 
     import h5py
-    with IncrementalWriter(xdmf_stem, grid_shape=n_new, grid_spacing=dx_new) as w:
+    with IncrementalWriter(xdmf_stem, grid_shape=n_new, grid_length=L_new) as w:
         w.write_increment(0, {
             "phase":       phase_new.reshape(n_new).astype(np.float32),
             "yarn_index":  yarn_new.reshape(n_new).astype(np.float32),
