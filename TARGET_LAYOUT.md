@@ -69,21 +69,28 @@ src/
 │
 ├── materialmodels/
 │   ├── base.py                             ✅ ConstitutiveModel ABC (thin — just enough to hold C)
+│   ├── assembly.py                         ✅ assemble_C_field(materials, phase) -- hard/sharp-interface
+│   │                                       #   per-voxel field, generic over any ConstitutiveModel; built
+│   │                                       #   fresh (not ported) once problems/mechanics.py needed it.
+│   │                                       #   No smooth/oriented assembler yet (those stay deferred).
 │   ├── elastic/
 │   │   ├── isotropic.py                    ✅ LinearElasticIsotropic on ConstitutiveModel. mat_models/ (the
 │   │   │                                  #   whole package -- elastic.py incl. TransverseIsotropicFibre +
-│   │   │                                  #   assemble_C_field/_oriented/_smooth, plastic.py, micromechanics.py)
+│   │   │                                  #   assemble_C_field_oriented/_smooth, plastic.py, micromechanics.py)
 │   │   │                                  #   is DELETED, explicit user choice, "build from scratch not port" --
 │   │   │                                  #   see CLAUDE.md. materialmodels/elastic/ is isotropic-only for now;
-│   │   │                                  #   TransverseIsotropicFibre + assemble_C_field* have NO new-layout
-│   │   │                                  #   home yet. KNOWN BREAKAGE from this (on top of the solvers/
-│   │   │                                  #   breakage above): src/problems/mechanics.py (assemble_C_field),
-│   │   │                                  #   scripts/simulation/elastic_nw_cg_strain.py, test/test_problems_
-│   │   │                                  #   mechanics.py, test/test_materialmodels_elastic_isotropic.py,
-│   │   │                                  #   test/test_transverse_isotropic_orientation.py,
-│   │   │                                  #   test/test_elliptic_vector_lippmann_schwinger.py (its composite-RVE
-│   │   │                                  #   check imports mat_models.elastic directly -- missed on first pass,
-│   │   │                                  #   caught rechecking before this commit),
+│   │   │                                  #   TransverseIsotropicFibre has NO new-layout home yet.
+│   │   │                                  #   src/problems/mechanics.py FIXED (assemble_C_field rebuilt, verified
+│   │   │                                  #   end-to-end with a synthetic two-phase problem). Still KNOWN BROKEN
+│   │   │                                  #   (need TransverseIsotropicFibre and/or smooth/oriented assembly,
+│   │   │                                  #   not yet rebuilt): scripts/simulation/elastic_nw_cg_strain.py,
+│   │   │                                  #   test/test_transverse_isotropic_orientation.py. Trivially fixable
+│   │   │                                  #   now but NOT yet touched (stayed scoped to what was asked):
+│   │   │                                  #   test/test_problems_mechanics.py (only needs LinearElasticIsotropic's
+│   │   │                                  #   import path swapped). test/test_materialmodels_elastic_isotropic.py
+│   │   │                                  #   and test/test_elliptic_vector_lippmann_schwinger.py's composite-RVE
+│   │   │                                  #   check both compared against mat_models as ground truth -- that
+│   │   │                                  #   premise is gone with the module; need repurposing, not a swap.
 │   │   │                                  #   notebooks/lin-elastic_strain.ipynb (outputs still display fine,
 │   │   │                                  #   breaks on next run)
 │   │   ├── orthotropic.py

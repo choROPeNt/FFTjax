@@ -24,7 +24,7 @@ from typing import Tuple
 
 import jax.numpy as jnp
 
-from mat_models.elastic import assemble_C_field
+from materialmodels.assembly import assemble_C_field
 from operators.green import GreenOperatorBasic, GreenOperatorWillot
 from solvers.elliptic.vector.base import ElasticitySolution
 from solvers.elliptic.vector.lippmann_schwinger import LippmannSchwingerSolver
@@ -51,7 +51,7 @@ def solve_mechanics(
     n, L        : grid shape and physical domain size
     phase       : (Nv,) int      phase index per voxel (0-based)
     materials   : list           each implements .stiffness_tensor(), .lam, .mu
-                  (see mat_models.elastic.LinearElasticIsotropic)
+                  (see materialmodels.elastic.isotropic.LinearElasticIsotropic)
     eps_bar     : (3, 3)         prescribed macroscopic strain
     formulation : "lippmann_schwinger" (only option implemented so far)
     scheme      : "standard" (GreenOperatorBasic) or "rotated" (GreenOperatorWillot)
