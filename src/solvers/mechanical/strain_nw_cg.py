@@ -23,7 +23,13 @@ def dstrain_nw_cg(
 ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
     Inner CG solve for one Newton step of the variational FFT elastic solver
-    (small strains, Vondrejc / Lucarini–Segurado formulation).
+    (small strains, Vondrejc / Lucarini–Segurado formulation) -- the
+    Krylov-based (CG-accelerated) Lippmann-Schwinger scheme: trigonometric
+    collocation (Zeman et al 2010; Vondrejc et al 2012, electrostatics) of
+    Moulinec & Suquet's (1994, 1998) Lippmann-Schwinger equation, solved by
+    CG instead of their original fixed-point "basic scheme". Extended to
+    elasticity by Vondrejc et al (2014) -- matching this solver -- and
+    further by Lucarini & Segurado (2018).
 
     Solves the linear system
         A(Δε) = b
