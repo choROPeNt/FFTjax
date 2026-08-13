@@ -105,7 +105,7 @@ print("effective nu_xz = -eps33/eps11 :", nu_xz)
 
 # Visualize: fiber phase and the resulting in-plane displacement field.
 eps_grid = field_to_grid(eps, n)
-u_grid = compute_displacement(eps, eps_bar_out, xi_flat, n, dx)
+u_grid = compute_displacement(eps, eps_bar_out, n, dx)
 
 extent = [0.0, n[0] * dx[0], 0.0, n[1] * dx[1]]  # physical [mm] extent
 

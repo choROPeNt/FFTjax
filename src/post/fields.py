@@ -9,6 +9,8 @@ All functions accept the solver's native layout — fields with shape
 import numpy as np
 import jax.numpy as jnp
 
+from operators.green import build_freq_grid
+
 # Voigt index pairs — Abaqus convention: [11, 22, 33, 12, 13, 23]
 _VOIGT_IJ = ((0, 0), (1, 1), (2, 2), (0, 1), (0, 2), (1, 2))
 
@@ -118,7 +120,6 @@ def von_mises(sigma_grid: np.ndarray) -> np.ndarray:
 def compute_displacement(
     eps: jnp.ndarray,
     eps_bar: jnp.ndarray,
-    xi_flat: jnp.ndarray,
     grid_n: tuple,
     grid_dx: tuple,
 ) -> np.ndarray:
@@ -137,11 +138,15 @@ def compute_displacement(
 
     Total displacement  =  macroscopic part (ε̄_ij x_j)  +  periodic fluctuation.
 
+    Builds its own frequency grid from ``grid_n``/``grid_dx`` (domain size
+    ``L = grid_n * grid_dx``) rather than taking ``xi_flat`` as a parameter --
+    this is the only thing here that needs it, so there's nothing to gain by
+    pushing that construction onto every caller.
+
     Parameters
     ----------
     eps     : (3, 3, Nv)   total strain field (solver layout)
     eps_bar : (3, 3)        macroscopic strain tensor
-    xi_flat : (3, Nv)       angular-frequency grid from ``operators.green.build_freq_grid``
     grid_n  : tuple          grid shape (nx, ny, nz)
     grid_dx : tuple          voxel spacing per dimension (dx, dy, dz)  [µm]
 
@@ -152,6 +157,9 @@ def compute_displacement(
     ndim     = len(grid_n)
     fft_axes = tuple(range(-ndim, 0))
     Nv       = int(np.prod(grid_n))
+
+    grid_L  = tuple(ni * dxi for ni, dxi in zip(grid_n, grid_dx))
+    xi_flat = build_freq_grid(grid_n, grid_L)
 
     xi_sq = jnp.sum(xi_flat ** 2, axis=0)
     safe  = xi_sq > 0
