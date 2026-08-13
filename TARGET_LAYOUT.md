@@ -19,7 +19,9 @@ src/
 │   │                                       #   no separate ∇ LinearOperator: Γ0 is degree-0 homogeneous in ξ,
 │   │                                       #   so G0∘∇ is already fully fused into green.py's G via n_hat
 │   ├── boundary.py                         # BCType, FaceBC, BoundaryConditions — periodic/Dirichlet/Neumann/mixed, masks + values
-│   └── fft_utils.py                        ⚙️ util: rfftn/irfftn wrappers, raw k-vector construction (no physics, no scheme choice)
+│   └── fft_utils.py                        # util: rfftn/irfftn wrappers, raw k-vector construction (no physics, no scheme choice)
+│                                            #   not needed yet — build_freq_grid (green.py) and Gamma0Operator's
+│                                            #   inline fftn/ifftn (projection.py) already cover current use
 │
 ├── solvers/
 │   ├── __init__.py
