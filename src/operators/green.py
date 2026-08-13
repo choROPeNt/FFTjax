@@ -161,8 +161,7 @@ class GreenOperatorBasic(LinearOperator):
     Γ̂₀ reference-medium Green's operator, 'standard' (Moulinec–Suquet)
     discretisation — continuous DFT frequencies, no Willot correction.
 
-    Self-adjoint (major-symmetric: Γ_ijkl = Γ_klij), so ``.T`` returns self
-    (the ``LinearOperator`` default).
+    Self-adjoint (major-symmetric: Γ_ijkl = Γ_klij), so ``.T`` returns self.
     """
 
     def __init__(self, n: tuple[int, ...], L: tuple[float, ...], lam0: float, mu0: float):
@@ -173,6 +172,10 @@ class GreenOperatorBasic(LinearOperator):
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
         """x, result: (3, 3, Nv) — e.g. a strain or stress field in Fourier space."""
         return ddot42(self.G, x)
+
+    @property
+    def T(self) -> LinearOperator:
+        return self
 
 
 class GreenOperatorWillot(GreenOperatorBasic):

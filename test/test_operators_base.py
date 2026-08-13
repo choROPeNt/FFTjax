@@ -51,6 +51,10 @@ class _Scale(LinearOperator):
     def __call__(self, x):
         return self.a * x
 
+    @property
+    def T(self):
+        return self
+
 
 class _Shift(LinearOperator):
     """Non-self-adjoint toy: right-multiply by a fixed matrix M along the last axis."""
@@ -78,6 +82,20 @@ assert jnp.allclose(composed(x), A(B(x))), "A @ B must equal A(B(x))"
 
 adjoint = composed.T
 assert jnp.allclose(adjoint(x), B.T(A.T(x))), "(A @ B).T must equal B.T @ A.T"
+
+
+class _NoAdjoint(LinearOperator):
+    """Toy operator that forgets to override .T."""
+
+    def __call__(self, x):
+        return x
+
+
+try:
+    _NoAdjoint().T
+    raise AssertionError("LinearOperator.T must raise NotImplementedError when not overridden")
+except NotImplementedError:
+    pass
 
 
 # ── 2. GreenOperatorBasic / GreenOperatorWillot parity with the functional path ──

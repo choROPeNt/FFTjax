@@ -14,10 +14,10 @@ class LinearOperator(ABC):
     """
     A linear map acting on per-voxel tensor fields (real or Fourier space).
 
-    Concrete operators implement ``__call__``. Composition via ``@`` builds a
-    new ``LinearOperator`` without evaluating either side, and ``.T`` returns
-    the adjoint — so e.g. ``Gamma0 = G0 @ grad`` is itself a ``LinearOperator``
-    that can be further composed or transposed.
+    Concrete operators implement ``__call__`` and ``.T``. Composition via ``@``
+    builds a new ``LinearOperator`` without evaluating either side, and ``.T``
+    returns the adjoint — so e.g. ``Gamma0 = G0 @ grad`` is itself a
+    ``LinearOperator`` that can be further composed or transposed.
     """
 
     @abstractmethod
@@ -26,8 +26,13 @@ class LinearOperator(ABC):
 
     @property
     def T(self) -> "LinearOperator":
-        """Adjoint operator. Self-adjoint by default — override where A != A.T."""
-        return self
+        # No self-adjoint default: a forgotten override on a non-self-adjoint
+        # operator (e.g. grad, whose adjoint is -div) would silently give the
+        # wrong adjoint instead of failing loudly. Self-adjoint operators
+        # (e.g. GreenOperatorBasic) must return `self` explicitly.
+        raise NotImplementedError(
+            f"{type(self).__name__} does not define its adjoint (.T)"
+        )
 
     def __matmul__(self, other: "LinearOperator") -> "LinearOperator":
         return _Composed(self, other)
