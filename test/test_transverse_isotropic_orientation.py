@@ -28,10 +28,10 @@ import jax.numpy as jnp
 import numpy as np
 
 from mat_models.elastic    import TransverseIsotropicFibre, assemble_C_field_oriented
-from operators.green       import build_freq_grid, build_green_operator
+from operators.green       import build_freq_grid, GreenOperatorBasic
 from post.fields           import field_to_grid, von_mises, compute_displacement
 from post.io               import IncrementalWriter, to_voigt
-from solvers.mechanical.strain_nw_cg import solve_elastic
+from solvers.elliptic.vector.lippmann_schwinger import solve_lippmann_schwinger
 
 jax.config.update("jax_enable_x64", True)
 
@@ -76,7 +76,7 @@ def _lame(E, nu):
 lam0, mu0 = _lame(mat.E_T, mat.nu_TT)
 
 xi_flat = build_freq_grid(n, L)
-G_glob  = build_green_operator(xi_flat, lam0, mu0)
+green_op = GreenOperatorBasic(n, L, lam0, mu0)
 
 # ── Macroscopic strain — uniaxial in X ───────────────────────────────────────
 eps_bar = jnp.array([
@@ -93,8 +93,8 @@ print(f"reference medium   lam0={lam0/1e3:.2f} GPa  mu0={mu0/1e3:.2f} GPa")
 print(f"applied strain     ε₁₁ = {float(eps_bar[0,0]):.2e}")
 print()
 
-eps_loc, sigma_loc, delta, conv_mech = solve_elastic(
-    n, C_field, G_glob, eps_bar, toler_lin=1e-10, maxiter=2000
+eps_loc, sigma_loc, delta, conv_mech = solve_lippmann_schwinger(
+    n, C_field, green_op, eps_bar, toler_lin=1e-10, maxiter=2000
 )
 
 print(f"converged : {bool(conv_mech)}")

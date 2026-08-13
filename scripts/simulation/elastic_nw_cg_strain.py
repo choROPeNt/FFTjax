@@ -36,11 +36,11 @@ from pathlib import Path
 from mat_models.elastic    import (LinearElasticIsotropic,
                                    TransverseIsotropicFibre,
                                    assemble_C_field_smooth)
-from operators.green       import build_freq_grid, build_green_operator
+from operators.green       import build_freq_grid, GreenOperatorBasic, GreenOperatorWillot
 from post.fields           import field_to_grid, von_mises, compute_displacement
 from post.io               import IncrementalWriter, to_voigt
 from solvers.types         import SolveState, SolverSettings
-from solvers.mechanical.strain_nw_cg import solve_elastic
+from solvers.elliptic.vector.lippmann_schwinger import solve_lippmann_schwinger
 from utils.config          import load_config
 from utils.io_read         import read_simulation_input
 
@@ -114,11 +114,13 @@ print(f"Reference : lam0={lam0/1e3:.2f} GPa  mu0={mu0/1e3:.2f} GPa")
 
 slv  = cfg["solver"]
 xi_flat = build_freq_grid(n, L)
-G_glob  = build_green_operator(
-    xi_flat, lam0, mu0,
-    scheme=slv.get("scheme", "rotated"),
-    dx=dx,
-)
+scheme = slv.get("scheme", "rotated")
+if scheme == "rotated":
+    green_op = GreenOperatorWillot(n, L, lam0, mu0, dx)
+elif scheme in ("standard", "continuous"):
+    green_op = GreenOperatorBasic(n, L, lam0, mu0)
+else:
+    raise ValueError(f"unknown scheme {scheme!r}, expected 'rotated' or 'standard'/'continuous'")
 
 # ── Loading ───────────────────────────────────────────────────────────────────
 
@@ -222,8 +224,8 @@ with IncrementalWriter(f"{output}/{jobname}", grid_shape=n, grid_spacing=dx) as 
 
         for attempt in range(max_cutbacks + 1):
             eps_bar_i = float(t + dt) * eps_goal
-            eps_i, sigma_i, delta_i, conv_mech = solve_elastic(
-                n, C_field, G_glob, eps_bar_i,
+            eps_i, sigma_i, delta_i, conv_mech = solve_lippmann_schwinger(
+                n, C_field, green_op, eps_bar_i,
                 toler_lin=settings.toler_lin,
                 maxiter=settings.maxiter_cg,
             )

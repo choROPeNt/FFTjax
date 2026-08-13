@@ -2,17 +2,24 @@
 Standalone test for solve_lippmann_schwinger
 (solvers/elliptic/vector/lippmann_schwinger.py).
 
-Four checks
------------
-1. Parity with dstrain_nw_cg on a synthetic random problem, standard scheme
-   (GreenOperatorBasic) -- eps/sigma/delta/converged must match exactly,
-   since both build the identical linear system, just via different
-   plumbing (LinearOperator composition vs. hand-rolled einsum/FFT).
-2. Same, rotated scheme (GreenOperatorWillot).
-3. Real composite RVE (glass fiber / epoxy, same setup as
+Three checks
+------------
+1. Correctness invariants on a synthetic random heterogeneous problem, both
+   Green's-operator schemes -- independent of any other solver
+   implementation (solvers.mechanical.strain_nw_cg, this module's former
+   parity reference, is retired):
+   (a) mean(eps) == eps_bar exactly. Gamma0Operator is zero at the DC
+       (zero-frequency) mode by construction (see green.py's n_hat comment),
+       so A(v) can't see v's DC component at all -- CG starts at x0=0 and
+       never moves in that direction, so delta's mean is exactly 0.
+   (b) the returned delta actually solves A(delta) = b to toler_lin,
+       recomputed independently of cg_solve's own internal convergence
+       tracking -- this would catch a bug where the returned value doesn't
+       correspond to what was actually fed into the CG solve.
+2. Real composite RVE (glass fiber / epoxy, same setup as
    notebooks/lin-elastic_strain.ipynb) -- converges, and reproduces the
-   known tau_xy (avg) = 7.625 MPa result.
-4. LippmannSchwingerSolver (the ElasticitySolver wrapper) reproduces
+   known tau_xy (avg) = 7.625369 MPa result.
+3. LippmannSchwingerSolver (the ElasticitySolver wrapper) reproduces
    solve_lippmann_schwinger's own output exactly -- it's a thin wrapper,
    this is a trivial-but-real check that it doesn't lose or reorder fields.
 
@@ -31,8 +38,9 @@ import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on 
 import jax.numpy as jnp
 import numpy as np
 
+from operators.general_functions import ddot42
 from operators.green import GreenOperatorBasic, GreenOperatorWillot
-from solvers.mechanical.strain_nw_cg import dstrain_nw_cg
+from operators.projection import Gamma0Operator
 from solvers.elliptic.vector.lippmann_schwinger import solve_lippmann_schwinger, LippmannSchwingerSolver
 
 
@@ -64,41 +72,27 @@ eps_bar = jnp.array([
 toler_lin, maxiter = 1e-8, 1000
 
 
-# ── 1. parity, standard scheme ───────────────────────────────────────────────
+# ── 1. correctness invariants, both schemes ──────────────────────────────────
 
-green_op = GreenOperatorBasic(n, L, lam0, mu0)
+for green_op in (GreenOperatorBasic(n, L, lam0, mu0), GreenOperatorWillot(n, L, lam0, mu0, dx)):
+    eps, sigma, delta, converged = solve_lippmann_schwinger(
+        n, C_field, green_op, eps_bar, None, toler_lin, maxiter,
+    )
+    tag = type(green_op).__name__
 
-eps_ref, sigma_ref, delta_ref, conv_ref = dstrain_nw_cg(
-    n, C_field, green_op.G, eps_bar, None, toler_lin, maxiter,
-)
-eps_new, sigma_new, delta_new, conv_new = solve_lippmann_schwinger(
-    n, C_field, green_op, eps_bar, None, toler_lin, maxiter,
-)
+    assert bool(converged), f"{tag}: solve must converge"
+    assert jnp.allclose(jnp.mean(eps, axis=-1), eps_bar, atol=1e-10), \
+        f"{tag}: mean(eps) must equal eps_bar exactly (Gamma0 is zero at DC)"
 
-assert bool(conv_ref) and bool(conv_new), "both solves must converge"
-assert jnp.allclose(eps_new, eps_ref, atol=1e-10), "eps mismatch (standard scheme)"
-assert jnp.allclose(sigma_new, sigma_ref, atol=1e-6), "sigma mismatch (standard scheme)"
-assert jnp.allclose(delta_new, delta_ref, atol=1e-10), "delta mismatch (standard scheme)"
-
-
-# ── 2. parity, rotated (Willot) scheme ───────────────────────────────────────
-
-green_op_w = GreenOperatorWillot(n, L, lam0, mu0, dx)
-
-eps_ref, sigma_ref, delta_ref, conv_ref = dstrain_nw_cg(
-    n, C_field, green_op_w.G, eps_bar, None, toler_lin, maxiter,
-)
-eps_new, sigma_new, delta_new, conv_new = solve_lippmann_schwinger(
-    n, C_field, green_op_w, eps_bar, None, toler_lin, maxiter,
-)
-
-assert bool(conv_ref) and bool(conv_new), "both solves must converge (rotated)"
-assert jnp.allclose(eps_new, eps_ref, atol=1e-10), "eps mismatch (rotated scheme)"
-assert jnp.allclose(sigma_new, sigma_ref, atol=1e-6), "sigma mismatch (rotated scheme)"
-assert jnp.allclose(delta_new, delta_ref, atol=1e-10), "delta mismatch (rotated scheme)"
+    gamma0 = Gamma0Operator(n, green_op)
+    Adelta = gamma0(ddot42(C_field, delta)).reshape(-1)
+    eps0 = jnp.ones((3, 3, Nv)) * eps_bar[:, :, None]
+    bb = -gamma0(ddot42(C_field, eps0)).reshape(-1)
+    resid = float(jnp.linalg.norm(Adelta - bb) / jnp.linalg.norm(bb))
+    assert resid < toler_lin * 10, f"{tag}: A(delta) != b, relative residual {resid:.3e}"
 
 
-# ── 3. real composite RVE (matches notebooks/lin-elastic_strain.ipynb) ──────
+# ── 2. real composite RVE (matches notebooks/lin-elastic_strain.ipynb) ──────
 
 from generation.rve import make_square_composite_rve
 from mat_models.elastic import LinearElasticIsotropic, assemble_C_field
@@ -126,7 +120,7 @@ assert bool(converged), "composite RVE solve must converge"
 assert abs(tau_xy - 7.625369073063829) < 1e-6, f"tau_xy mismatch: got {tau_xy}, expected ~7.625369"
 
 
-# ── 4. LippmannSchwingerSolver wraps solve_lippmann_schwinger exactly ───────
+# ── 3. LippmannSchwingerSolver wraps solve_lippmann_schwinger exactly ───────
 
 solver = LippmannSchwingerSolver(n_rve, green_op_rve, toler_lin=1e-6, maxiter=1000)
 result = solver.solve(C_field_rve, eps_bar)

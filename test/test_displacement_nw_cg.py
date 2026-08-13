@@ -7,8 +7,8 @@ material the solution must be a uniform field, so we can check against
 closed-form elasticity results.
 
 Case 1 — pure strain BC (control all zero): compare against the existing
-strain-based solver ``solvers.mechanical.strain_nw_cg.solve_elastic`` for the same
-prescribed macroscopic strain. Both solve the same physical problem through
+strain-based solver ``solvers.elliptic.vector.lippmann_schwinger.solve_lippmann_schwinger``
+for the same prescribed macroscopic strain. Both solve the same physical problem through
 different unknowns (displacement vs. strain), so the resulting fields must
 agree.
 
@@ -45,8 +45,8 @@ import jax.numpy as jnp
 import numpy as np
 
 from mat_models.elastic     import LinearElasticIsotropic, assemble_C_field
-from operators.green        import build_freq_grid, build_green_operator
-from solvers.mechanical.strain_nw_cg  import solve_elastic
+from operators.green        import build_freq_grid, GreenOperatorBasic
+from solvers.elliptic.vector.lippmann_schwinger import solve_lippmann_schwinger
 from solvers.mechanical.displacement_nw_cg import ddisp_nw_cg
 
 jax.config.update("jax_enable_x64", True)
@@ -72,9 +72,9 @@ eps_bar = jnp.array([
 control = ((0, 0, 0), (0, 0, 0), (0, 0, 0))
 stress_goal_zero = jnp.zeros((3, 3))
 
-G_glob = build_green_operator(xi_flat, mat.lam, mat.mu)
-eps_ref, sigma_ref, _, conv_ref = solve_elastic(
-    n, C_field, G_glob, eps_bar, toler_lin=1e-10, maxiter=2000
+green_op = GreenOperatorBasic(n, L, mat.lam, mat.mu)
+eps_ref, sigma_ref, _, conv_ref = solve_lippmann_schwinger(
+    n, C_field, green_op, eps_bar, toler_lin=1e-10, maxiter=2000
 )
 
 eps_u, sigma_u, delta_u, eps_bar_out, conv_u = ddisp_nw_cg(
@@ -144,12 +144,12 @@ C_field_het = (
 
 lam0 = 0.5 * (mat.lam + mat2.lam)
 mu0  = 0.5 * (mat.mu + mat2.mu)
-G_glob_het = build_green_operator(xi_flat, lam0, mu0)
+green_op_het = GreenOperatorBasic(n, L, lam0, mu0)
 
 control = ((0, 0, 0), (0, 0, 0), (0, 0, 0))
 
-eps_ref, sigma_ref, _, conv_ref = solve_elastic(
-    n, C_field_het, G_glob_het, eps_bar, toler_lin=1e-12, maxiter=3000
+eps_ref, sigma_ref, _, conv_ref = solve_lippmann_schwinger(
+    n, C_field_het, green_op_het, eps_bar, toler_lin=1e-12, maxiter=3000
 )
 eps_u, sigma_u, delta_u, eps_bar_out, conv_u = ddisp_nw_cg(
     n, C_field_het, xi_flat, eps_bar, control, stress_goal_zero, toler_lin=1e-12, maxiter=3000

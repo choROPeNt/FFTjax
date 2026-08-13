@@ -38,7 +38,14 @@ src/
 │   │       │                              #   strain-based, periodic, built on GreenOperatorBasic/Willot +
 │   │       │                              #   Gamma0Operator + krylov/cg.py; not yet jit-compiled at this level
 │   │       │                              #   (LinearOperator isn't a registered pytree yet) — extend for
-│   │       │                              #   DCT/DST non-periodic — TO DISCUSS
+│   │       │                              #   DCT/DST non-periodic — TO DISCUSS. solvers/mechanical/strain_nw_cg.py
+│   │       │                              #   (the function this replaces) is deleted -- all pure-elasticity
+│   │       │                              #   callers migrated + verified (identical output). KNOWN BREAKAGE:
+│   │       │                              #   scripts/simulation/pff_nw_cg_strain.py, benchmark/single_notch_plate/
+│   │       │                              #   pff_{tension,shear}.py, examples/pff_damage.py still import the
+│   │       │                              #   deleted module (ImportError) -- explicitly deferred, not migrated;
+│   │       │                              #   the staggered mechanics+damage loop needs solvers/coupling/
+│   │       │                              #   staggered.py + elliptic/scalar.py first, not just a solver swap
 │   │       └── displacement_based.py       # direct u-solve via ∇/∇·, mixed BC via boundary.py, penalty enforcement
 │   ├── parabolic/
 │   │   └── reaction_diffusion.py           # Allen-Cahn / Cahn-Hilliard time-stepping over elliptic.scalar
