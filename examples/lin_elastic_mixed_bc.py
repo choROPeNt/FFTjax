@@ -41,7 +41,7 @@ print("Devices:", jax.devices())
 # Composite RVE: square-packed 2-fibre geometry, same as lin_elastic_strain.py's
 # composite section, so the two examples are directly comparable.
 phase_np, N, n, L, phi_act = make_square_composite_rve(
-    phi=0.5, r_fiber=0.005, spacing=0.0002, N_min=32, nz=10,
+    phi=0.5, r_fiber=0.005, dx=0.0002, N_min=32, nz=10,
 )
 Nv = int(np.prod(n))
 

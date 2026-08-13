@@ -98,7 +98,7 @@ from generation.rve import make_square_composite_rve
 from mat_models.elastic import LinearElasticIsotropic, assemble_C_field
 
 phase_np, N, n_rve, L_rve, phi_act = make_square_composite_rve(
-    phi=0.5, r_fiber=0.005, spacing=0.0002, N_min=32, nz=10,
+    phi=0.5, r_fiber=0.005, dx=0.0002, N_min=32, nz=10,
 )
 dx_rve = tuple(Li / ni for Li, ni in zip(L_rve, n_rve))
 phase = jnp.array(phase_np.reshape(-1))
