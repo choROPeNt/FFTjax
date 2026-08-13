@@ -68,7 +68,10 @@ src/
 │   └── utils.py                            # phase-fraction computation, raw geometry measurement (true utils)
 │
 ├── problems/                               # thin wiring layer: pick strategies, build C(x), average, solve, unpack
-│   ├── mechanics.py                        ⚙️ formulation="lippmann_schwinger" | "displacement"
+│   ├── mechanics.py                        ✅ solve_mechanics: formulation="lippmann_schwinger" done,
+│   │                                       #   "displacement" raises NotImplementedError (no solver yet);
+│   │                                       #   reference-medium averaging is a plain Lame-parameter mean,
+│   │                                       #   placeholder for materialmodels/averaging.py
 │   ├── thermal.py
 │   ├── diffusion.py
 │   └── fracture.py                         # staggered mechanics + phase-field
