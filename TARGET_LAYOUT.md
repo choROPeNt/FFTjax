@@ -45,7 +45,16 @@ src/
 │   │       │                              #   pff_{tension,shear}.py, examples/pff_damage.py still import the
 │   │       │                              #   deleted module (ImportError) -- explicitly deferred, not migrated;
 │   │       │                              #   the staggered mechanics+damage loop needs solvers/coupling/
-│   │       │                              #   staggered.py + elliptic/scalar.py first, not just a solver swap
+│   │       │                              #   staggered.py + elliptic/scalar.py first, not just a solver swap.
+│   │       │                              #   solvers/mechanical/ and solvers/damage/ (the WHOLE packages --
+│   │       │                              #   displacement_nw_cg.py, displacement_nw_plastic.py, pff_damage.py,
+│   │       │                              #   anderson.py) are ALSO deleted, explicit user choice, with NO
+│   │       │                              #   replacement anywhere yet. Additional KNOWN BREAKAGE from that:
+│   │       │                              #   test/test_displacement_nw_cg.py, test/test_helmholtz.py (both
+│   │       │                              #   were passing before), examples/lin_elastic_mixed_bc.py,
+│   │       │                              #   notebooks/lin-elastic_mixed-BC.ipynb, notebooks/j2-plasticity.ipynb,
+│   │       │                              #   scripts/simulation/elastic_nw_cg_disp_mixed.py,
+│   │       │                              #   scripts/simulation/pff_nw_cg_disp_mixed.py
 │   │       └── displacement_based.py       # direct u-solve via ∇/∇·, mixed BC via boundary.py, penalty enforcement
 │   ├── parabolic/
 │   │   └── reaction_diffusion.py           # Allen-Cahn / Cahn-Hilliard time-stepping over elliptic.scalar

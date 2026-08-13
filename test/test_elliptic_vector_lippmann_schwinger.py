@@ -121,14 +121,20 @@ assert abs(tau_xy - 7.625369073063829) < 1e-6, f"tau_xy mismatch: got {tau_xy}, 
 
 
 # ── 3. LippmannSchwingerSolver wraps solve_lippmann_schwinger exactly ───────
+#
+# allclose, not array_equal: these are two independent CG solves of the same
+# problem, not two reads of one cached result -- bit-identical floats aren't
+# guaranteed across separate calls on a multi-threaded CPU backend (verified
+# flaky with array_equal: ~1/3 standalone runs differed at the ULP level).
+# Numerical agreement well inside toler_lin is the real invariant.
 
 solver = LippmannSchwingerSolver(n_rve, green_op_rve, toler_lin=1e-6, maxiter=1000)
 result = solver.solve(C_field_rve, eps_bar)
 
 assert bool(result.converged) == bool(converged)
-assert jnp.array_equal(result.eps, eps), "LippmannSchwingerSolver.eps must match solve_lippmann_schwinger exactly"
-assert jnp.array_equal(result.sigma, sigma), "LippmannSchwingerSolver.sigma must match solve_lippmann_schwinger exactly"
-assert jnp.array_equal(result.delta, delta), "LippmannSchwingerSolver.delta must match solve_lippmann_schwinger exactly"
+assert jnp.allclose(result.eps, eps, atol=1e-12), "LippmannSchwingerSolver.eps must match solve_lippmann_schwinger"
+assert jnp.allclose(result.sigma, sigma, atol=1e-8), "LippmannSchwingerSolver.sigma must match solve_lippmann_schwinger"
+assert jnp.allclose(result.delta, delta, atol=1e-12), "LippmannSchwingerSolver.delta must match solve_lippmann_schwinger"
 
 print("test_elliptic_vector_lippmann_schwinger: all checks passed")
 print(f"  composite RVE tau_xy (avg) = {tau_xy:.6f} MPa")
