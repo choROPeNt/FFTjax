@@ -12,9 +12,10 @@ and solvers/ stacks so far:
   does by hand). This is a placeholder for materialmodels/averaging.py's
   VoxelAveraging ABC, which doesn't exist yet either -- swap it in here
   once built, this function's signature shouldn't need to change.
-- No ElasticitySolution dataclass yet (solvers/elliptic/vector/base.py is
-  still not built) -- returns the same (eps, sigma, delta, converged)
-  4-tuple solve_lippmann_schwinger does.
+- Builds a LippmannSchwingerSolver (ElasticitySolver) and calls .solve() --
+  not the plain solve_lippmann_schwinger function -- so the ABC actually
+  gets exercised by the one real caller it exists to serve, instead of
+  sitting unused until displacement_based.py shows up.
 """
 
 import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on TPU, no GPU prealloc)
@@ -25,7 +26,8 @@ import jax.numpy as jnp
 
 from mat_models.elastic import assemble_C_field
 from operators.green import GreenOperatorBasic, GreenOperatorWillot
-from solvers.elliptic.vector.lippmann_schwinger import solve_lippmann_schwinger
+from solvers.elliptic.vector.base import ElasticitySolution
+from solvers.elliptic.vector.lippmann_schwinger import LippmannSchwingerSolver
 
 
 def solve_mechanics(
@@ -39,7 +41,7 @@ def solve_mechanics(
     stress_goal: jnp.ndarray | None = None,
     toler_lin:   float = 1e-6,
     maxiter:     int = 1000,
-) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+) -> ElasticitySolution:
     """
     Solve the mechanical equilibrium problem on a phase-labelled periodic
     voxel grid under a prescribed macroscopic strain.
@@ -58,7 +60,8 @@ def solve_mechanics(
 
     Returns
     -------
-    eps, sigma, delta, converged -- see solve_lippmann_schwinger
+    ElasticitySolution(eps, sigma, delta, converged) -- a NamedTuple, so it
+    still unpacks as a plain 4-tuple for existing callers.
     """
     C_field = assemble_C_field(materials, phase)
 
@@ -76,9 +79,8 @@ def solve_mechanics(
         raise ValueError(f"unknown scheme {scheme!r}, expected 'standard' or 'rotated'")
 
     if formulation == "lippmann_schwinger":
-        return solve_lippmann_schwinger(
-            n, C_field, green_op, eps_bar, stress_goal, toler_lin, maxiter,
-        )
+        solver = LippmannSchwingerSolver(n, green_op, toler_lin, maxiter)
+        return solver.solve(C_field, eps_bar, stress_goal)
     elif formulation == "displacement":
         raise NotImplementedError(
             "formulation='displacement' needs solvers/elliptic/vector/displacement_based.py, "

@@ -34,7 +34,11 @@ src/
 │   │       ├── base.py                     ✅ ElasticitySolver ABC (.solve()), ElasticitySolution —
 │   │       │                              #   NamedTuple not dataclass (pytree-safe for jit/grad, matches
 │   │       │                              #   solvers.types.SolveState's own convention/rationale)
-│   │       ├── lippmann_schwinger.py       ✅ solve_lippmann_schwinger + LippmannSchwingerSolver(ElasticitySolver):
+│   │       ├── lippmann_schwinger.py       ✅ solve_lippmann_schwinger + LippmannSchwingerSolver(ElasticitySolver);
+│   │       │                              #   problems/mechanics.py builds a LippmannSchwingerSolver and calls
+│   │       │                              #   .solve() (not the bare function) so the ABC is actually exercised by
+│   │       │                              #   its one real caller, not just its own tests -- checked and fixed
+│   │       │                              #   2026-08-13 after confirming nothing used the class before.
 │   │       │                              #   strain-based, periodic, built on GreenOperatorBasic/Willot +
 │   │       │                              #   Gamma0Operator + krylov/cg.py; not yet jit-compiled at this level
 │   │       │                              #   (LinearOperator isn't a registered pytree yet) — extend for
@@ -66,11 +70,25 @@ src/
 ├── materialmodels/
 │   ├── base.py                             ✅ ConstitutiveModel ABC (thin — just enough to hold C)
 │   ├── elastic/
-│   │   ├── isotropic.py                    ✅ LinearElasticIsotropic — port of mat_models/elastic.py's class
-│   │   │                                  #   onto ConstitutiveModel, verified bit-identical; old class/module
-│   │   │                                  #   untouched (~24 importers, not migrated yet)
+│   │   ├── isotropic.py                    ✅ LinearElasticIsotropic on ConstitutiveModel. mat_models/ (the
+│   │   │                                  #   whole package -- elastic.py incl. TransverseIsotropicFibre +
+│   │   │                                  #   assemble_C_field/_oriented/_smooth, plastic.py, micromechanics.py)
+│   │   │                                  #   is DELETED, explicit user choice, "build from scratch not port" --
+│   │   │                                  #   see CLAUDE.md. materialmodels/elastic/ is isotropic-only for now;
+│   │   │                                  #   TransverseIsotropicFibre + assemble_C_field* have NO new-layout
+│   │   │                                  #   home yet. KNOWN BREAKAGE from this (on top of the solvers/
+│   │   │                                  #   breakage above): src/problems/mechanics.py (assemble_C_field),
+│   │   │                                  #   scripts/simulation/elastic_nw_cg_strain.py, test/test_problems_
+│   │   │                                  #   mechanics.py, test/test_materialmodels_elastic_isotropic.py,
+│   │   │                                  #   test/test_transverse_isotropic_orientation.py,
+│   │   │                                  #   test/test_elliptic_vector_lippmann_schwinger.py (its composite-RVE
+│   │   │                                  #   check imports mat_models.elastic directly -- missed on first pass,
+│   │   │                                  #   caught rechecking before this commit),
+│   │   │                                  #   notebooks/lin-elastic_strain.ipynb (outputs still display fine,
+│   │   │                                  #   breaks on next run)
 │   │   ├── orthotropic.py
-│   │   ├── transversely_isotropic.py
+│   │   ├── transversely_isotropic.py       # NOT built -- was about to be a verbatim port, explicitly rejected;
+│   │   │                                  #   next attempt should derive fresh, not copy mat_models/elastic.py
 │   │   └── anisotropic.py
 │   ├── inelastic/
 │   │   ├── plasticity_j2.py
