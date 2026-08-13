@@ -27,9 +27,8 @@ def make_square_composite_rve(phi, r_fiber, dx, N_min=32, nz=1):
     Returns
     -------
     phase_np  : ndarray (N, N, nz), int   0 = matrix, 1 = fibre
-    Nv        : int                       total number of voxels
     n         : tuple                     (N, N, nz)
-    L         : tuple                     (L_side, L_side, nz * dx) [same length unit]
+    L         : tuple                     (L_x, L_y, L_z) [same length unit]
     phi_act   : float                     actual volume fraction on the mesh
     """
     if nz < 1:
@@ -41,7 +40,6 @@ def make_square_composite_rve(phi, r_fiber, dx, N_min=32, nz=1):
     L_side = r_fiber * np.sqrt(2 * np.pi / phi)       # in-plane cell side [length unit]
     N      = max(N_min, int(np.ceil(L_side / dx)))
     n      = (N, N, nz)
-    Nv     = int(np.prod(n))
     L      = (L_side, L_side, nz * dx)
 
     xs = (np.arange(N) + 0.5) / N * L_side
@@ -56,4 +54,4 @@ def make_square_composite_rve(phi, r_fiber, dx, N_min=32, nz=1):
     phase_np = np.repeat(phase_2d[:, :, np.newaxis], nz, axis=2)  # (N, N, nz)
     phi_act  = float(phase_np.mean())
 
-    return phase_np, Nv, n, L, phi_act
+    return phase_np, n, L, phi_act
