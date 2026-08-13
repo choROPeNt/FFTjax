@@ -15,7 +15,9 @@ src/
 │   ├── differential.py                     # ∇, ∇· — rank-aware (scalar grad vs. sym grad for elasticity)
 │   ├── green.py                            ✅ GreenOperatorBasic, GreenOperatorWillot — swappable discretization;
 │   │                                       #   transform type (DFT/DCT/DST) sets periodic vs. non-periodic BC — TO DISCUSS
-│   ├── projection.py                       ⚙️ Γ0 = G0 ∘ ∇ — Lippmann-Schwinger fixed-point operator
+│   ├── projection.py                       ✅ Γ0 fixed-point operator — real-space FFT↔green_op↔IFFT wrapper;
+│   │                                       #   no separate ∇ LinearOperator: Γ0 is degree-0 homogeneous in ξ,
+│   │                                       #   so G0∘∇ is already fully fused into green.py's G via n_hat
 │   ├── boundary.py                         # BCType, FaceBC, BoundaryConditions — periodic/Dirichlet/Neumann/mixed, masks + values
 │   └── fft_utils.py                        ⚙️ util: rfftn/irfftn wrappers, raw k-vector construction (no physics, no scheme choice)
 │
@@ -81,7 +83,11 @@ src/
     │   ├── elliptic/vector/                ⚙️ validate against known analytical case (e.g. two-phase laminate bound)
     │   └── adjoint/                        # jax.grad vs. finite-difference
     ├── materialmodels/
-    │   ├── elastic/  inelastic/  thermal/  diffusion/  phasefield/
-    │   └── tensors/                        ⚙️ Voigt round-trip tests
+    │   ├── elastic/  
+    │   ├── inelastic/  
+    │   ├── thermal/  
+    │   ├── diffusion/  
+    │   └── phasefield/
+    │       └── tensors/                        ⚙️ Voigt round-trip tests
     └── utils/io/
 ```

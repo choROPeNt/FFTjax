@@ -130,6 +130,12 @@ def build_green_operator(
     else:
         xi = xi_flat
 
+    # n_hat (direction only), not xi (direction * magnitude): Gamma0 is exactly
+    # degree-0 homogeneous in xi for an isotropic reference medium -- the |xi|^2
+    # from the two gradients in Gamma0 = sym(grad) : G0 : sym(grad) exactly
+    # cancels the 1/|xi|^2 in G0 itself. Using xi here instead of n_hat would
+    # silently reintroduce a spurious dependence on domain length L (since
+    # |xi| ~ 1/L but direction doesn't), not just a stylistic difference.
     xi_sq = jnp.sum(xi ** 2, axis=0)                  # (Nv,)
     safe  = xi_sq > 0
     xi_s  = jnp.where(safe, xi_sq, 1.0)
