@@ -132,12 +132,12 @@ def cg_solve_scan(A, b, x0, tol, maxiter, M=None):
 
         Ap = A(p)
         pAp = jnp.dot(p, Ap)
-        alpha = rz / jnp.where(pAp != 0.0, pAp, 1.0)
+        alpha = rz / jnp.asarray(jnp.where(pAp != 0.0, pAp, 1.0))
         x_new = x + alpha * p
         r_new = r - alpha * Ap
         z_new = M_op(r_new)
         rz_new = jnp.dot(r_new, z_new)
-        beta = rz_new / jnp.where(rz != 0.0, rz, 1.0)
+        beta = rz_new / jnp.asarray(jnp.where(rz != 0.0, rz, 1.0))
         p_new = z_new + beta * p
         conv_new = jnp.linalg.norm(r_new) <= atol
 
