@@ -45,9 +45,11 @@ src/
 │       └── implicit_diff.py                # custom_vjp via implicit function theorem — differentiable solve() for free
 │
 ├── materialmodels/
-│   ├── base.py                             ⚙️ ConstitutiveModel ABC (thin — just enough to hold C)
+│   ├── base.py                             ✅ ConstitutiveModel ABC (thin — just enough to hold C)
 │   ├── elastic/
-│   │   ├── isotropic.py                    ⚙️ start with one symmetry class
+│   │   ├── isotropic.py                    ✅ LinearElasticIsotropic — port of mat_models/elastic.py's class
+│   │   │                                  #   onto ConstitutiveModel, verified bit-identical; old class/module
+│   │   │                                  #   untouched (~24 importers, not migrated yet)
 │   │   ├── orthotropic.py
 │   │   ├── transversely_isotropic.py
 │   │   └── anisotropic.py
