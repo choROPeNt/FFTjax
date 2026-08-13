@@ -36,7 +36,7 @@ sys.path.insert(0, "src")
 
 from utils.io.xdmf_writer import IncrementalWriter
 from utils.config   import load_config
-from utils.io_read  import read_simulation_input
+from utils.io.reader  import SimulationReader
 
 
 # ── mode handlers ─────────────────────────────────────────────────────────────
@@ -76,7 +76,7 @@ def _textile(gcfg: dict):
     """
     src = gcfg["source"]
     print(f"Source : {src}")
-    n, L, phase, orientations, _, vf, _, _ = read_simulation_input(src)
+    n, L, phase, orientations, _, vf, _, _ = SimulationReader(src).read()
     print(f"phi_yarn  = {float(np.mean(phase == 1)):.3f}")
     print(f"phi_fibre = {float(np.mean(vf)):.3f}  (mean VolumeFraction)")
 

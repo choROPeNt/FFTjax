@@ -59,7 +59,7 @@ from post.fields          import to_voigt
 from solvers.types         import SolveState, SolverSettings
 from solvers.mechanical.displacement_nw_cg import ddisp_nw_cg
 from utils.config          import load_config
-from utils.io_read         import read_simulation_input
+from utils.io.reader         import SimulationReader
 
 jax.config.update("jax_enable_x64", True)
 
@@ -78,7 +78,7 @@ print(f"Output   : {cfg['output']}/{cfg['jobname']}")
 
 # ── Load geometry ─────────────────────────────────────────────────────────────
 
-n, L, phase_np, orientations_np, _, vf_np, _, _ = read_simulation_input(cfg["input"])
+n, L, phase_np, orientations_np, _, vf_np, _, _ = SimulationReader(cfg["input"]).read()
 
 Nv   = int(np.prod(n))
 phi_ = float(np.mean(phase_np == 1))   # fraction of fibre voxels (binary)

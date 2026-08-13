@@ -1,5 +1,5 @@
 """
-Readers for the three file formats used in FFTjax.
+Readers for the file formats used in FFTjax.
 
     read_xdmf  — load field arrays from an HDF5/XDMF simulation output
     read_vtu   — load a TexGen (or generate_weave_vtu) voxel mesh
@@ -9,7 +9,7 @@ All functions return plain numpy arrays in FFTjax C-order (X slowest).
 
 Quick reference
 ---------------
->>> from utils.io_read import read_xdmf, read_vtu, read_npz
+>>> from utils.io.reader import read_xdmf, read_vtu, read_npz
 
 # simulation output
 >>> n, L, fields = read_xdmf("output/simulation/myrun.h5")
@@ -25,8 +25,8 @@ Quick reference
 
 from __future__ import annotations
 
+import xml.etree.ElementTree as ET  # used for VTU parsing
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 
@@ -106,6 +106,90 @@ def read_xdmf(
 
 # ── VTU ──────────────────────────────────────────────────────────────────────
 
+def _read_texgen_vtu(
+    path: str | Path,
+) -> tuple[
+    tuple[int, int, int],
+    tuple[float, float, float],
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+]:
+    """
+    Parse a TexGen voxel VTU (UnstructuredGrid of hexahedral cells).
+
+    Also accepts VTU files produced by ``generate_weave_vtu.py``; those
+    contain a ``VolumeFraction`` field with smooth SDF-based phi values.
+
+    Parameters
+    ----------
+    path : str or Path
+
+    Returns
+    -------
+    n              : (nx, ny, nz)
+    L              : (Lx, Ly, Lz)  mm
+    phase          : (Nv,) int      0=matrix, 1=yarn  (C-order)
+    orientations   : (3, Nv) float  YarnTangent per voxel
+    yarn_index     : (Nv,) int      raw YarnIndex (-1=matrix, >=0=yarn number)
+    volume_fraction: (Nv,) float    smooth phi if present, binary fallback otherwise
+    """
+    tree  = ET.parse(str(path))
+    piece = tree.getroot().find('UnstructuredGrid/Piece')
+    assert piece is not None, f"No <UnstructuredGrid/Piece> found in {path}"
+
+    pts_node  = piece.find('Points/DataArray')
+    conn_node = piece.find('Cells/DataArray[@Name="connectivity"]')
+    assert pts_node  is not None, "No Points/DataArray in VTU"
+    assert conn_node is not None, "No connectivity DataArray in VTU"
+
+    pts  = np.fromstring(pts_node.text  or "", sep=' ').reshape(-1, 3)
+    conn = np.fromstring(conn_node.text or "", sep=' ').astype(int).reshape(-1, 8)
+
+    centroids = pts[conn].mean(axis=1)
+
+    xu = np.unique(np.round(centroids[:, 0], 8))
+    yu = np.unique(np.round(centroids[:, 1], 8))
+    zu = np.unique(np.round(centroids[:, 2], 8))
+    nx, ny, nz = len(xu), len(yu), len(zu)
+    dx = float(xu[1] - xu[0])
+    dy = float(yu[1] - yu[0])
+    dz = float(zu[1] - zu[0])
+    Lx, Ly, Lz = nx * dx, ny * dy, nz * dz
+
+    ix_arr  = np.round((centroids[:, 0] - xu[0]) / dx).astype(int)
+    iy_arr  = np.round((centroids[:, 1] - yu[0]) / dy).astype(int)
+    iz_arr  = np.round((centroids[:, 2] - zu[0]) / dz).astype(int)
+    fft_idx = ix_arr * (ny * nz) + iy_arr * nz + iz_arr
+
+    cd = piece.find('CellData')
+    assert cd is not None, f"No <CellData> block found in {path}"
+    arrays = {a.attrib['Name']: a for a in cd.findall('DataArray')}
+
+    yarn_vtk = np.fromstring(arrays['YarnIndex'].text   or "", sep=' ').astype(int)
+    tang_vtk = np.fromstring(arrays['YarnTangent'].text or "", sep=' ').reshape(-1, 3)
+
+    Nv           = nx * ny * nz
+    phase_flat   = np.empty(Nv, dtype=int)
+    tangent_flat = np.zeros((Nv, 3))
+    vf_flat      = np.zeros(Nv)
+
+    phase_flat[fft_idx]   = yarn_vtk
+    tangent_flat[fft_idx] = tang_vtk
+
+    if 'VolumeFraction' in arrays:
+        vf_raw = np.fromstring(arrays['VolumeFraction'].text or "", sep=' ')
+        vf_flat[fft_idx] = vf_raw
+    else:
+        vf_flat = np.where(phase_flat >= 0, 1.0, 0.0)
+
+    phase        = np.where(phase_flat >= 0, 1, 0).astype(np.int32)
+    orientations = tangent_flat.T.copy()   # (3, Nv)
+
+    return (nx, ny, nz), (Lx, Ly, Lz), phase, orientations, phase_flat, vf_flat
+
+
 def read_vtu(
     path: str | Path,
 ) -> tuple[
@@ -132,14 +216,12 @@ def read_vtu(
     yarn_index     : (Nv,) int      raw YarnIndex (-1=matrix, >=0=yarn)
     volume_fraction: (Nv,) float    smooth φ·Vf_yarn or binary fallback
     """
-    from utils.io_texgen import read_texgen_vtu
-    return read_texgen_vtu(path)
+    return _read_texgen_vtu(path)
 
 
 # ── NPZ ──────────────────────────────────────────────────────────────────────
 
 def read_npz(path: str | Path) -> dict[str, np.ndarray]:
-
     """
     Load a numpy .npz archive (e.g. preproc_delamination output).
 
@@ -163,25 +245,20 @@ def read_npz(path: str | Path) -> dict[str, np.ndarray]:
 
 # ── Unified simulation input loader ──────────────────────────────────────────
 
-def read_simulation_input(
-    path: str | Path,
-) -> tuple[
-    tuple[int, ...],
-    tuple[float, ...],
-    np.ndarray,
-    np.ndarray,
-    np.ndarray,
-    np.ndarray,
-    np.ndarray,
-    np.ndarray,
-]:
+class SimulationReader:
     """
     Load geometry + optional pre-crack state from any supported format.
 
-    Accepts ``.vtu``, ``.h5``, ``.xdmf``, or ``.npz``.
+    Dispatches by file suffix — ``.vtu`` → read_vtu, ``.h5``/``.xdmf`` →
+    read_xdmf, ``.npz`` → read_npz — then normalizes each format's fields
+    into one common set of arrays.
 
-    Returns
-    -------
+    >>> n, L, phase, orientations, yarn_index, vf, d_init, H_init = (
+    ...     SimulationReader(path).read()
+    ... )
+
+    Returns (from ``.read()``)
+    ---------------------------
     n              : (nx, ny, nz)
     L              : (Lx, Ly, Lz)  mm
     phase          : (Nv,) int      0=matrix, 1=yarn, 2=void/crack
@@ -191,9 +268,28 @@ def read_simulation_input(
     d_init         : (Nv,) float    initial damage  (zeros unless stored in npz)
     H_init         : (Nv,) float    initial history (zeros unless stored in npz)
     """
-    path   = Path(path)
-    suffix = path.suffix.lower()
 
+    _DISPATCH = {
+        ".vtu":  "_from_vtu",
+        ".h5":   "_from_xdmf",
+        ".xdmf": "_from_xdmf",
+        ".npz":  "_from_npz",
+    }
+
+    def __init__(self, path: str | Path):
+        self.path = Path(path)
+        suffix = self.path.suffix.lower()
+        if suffix not in self._DISPATCH:
+            raise ValueError(
+                f"Unsupported file format '{suffix}'. "
+                "Use .vtu, .h5, .xdmf, or .npz."
+            )
+        self._method_name = self._DISPATCH[suffix]
+
+    def read(self):
+        return getattr(self, self._method_name)()
+
+    @staticmethod
     def _defaults(n: tuple, phase: np.ndarray):
         """Fallback values for optional fields."""
         Nv = int(np.prod(n))
@@ -205,16 +301,16 @@ def read_simulation_input(
             np.zeros(Nv),                     # H_init
         )
 
-    if suffix == ".vtu":
-        n, L, phase, orientations, yarn_index, vf = read_vtu(path)
+    def _from_vtu(self):
+        n, L, phase, orientations, yarn_index, vf = read_vtu(self.path)
         Nv = int(np.prod(n))
         return n, L, phase, orientations, yarn_index, vf, np.zeros(Nv), np.zeros(Nv)
 
-    if suffix in (".h5", ".xdmf"):
-        n, L, fields = read_xdmf(path)
+    def _from_xdmf(self):
+        n, L, fields = read_xdmf(self.path)
         Nv    = int(np.prod(n))
         phase = fields.get("phase", np.zeros(Nv)).ravel().astype(int)
-        ori_def, yi_def, vf_def, d_def, H_def = _defaults(n, phase)
+        ori_def, yi_def, vf_def, d_def, H_def = self._defaults(n, phase)
         _ori = fields.get("orientation")
         orientations = (_ori.reshape(-1, 3).T if _ori is not None
                         else ori_def)
@@ -224,15 +320,15 @@ def read_simulation_input(
         vf           = _vf.ravel() if _vf is not None else vf_def
         return n, L, phase, orientations, yarn_index, vf, d_def, H_def
 
-    if suffix == ".npz":
-        data  = read_npz(path)
+    def _from_npz(self):
+        data  = read_npz(self.path)
         n_raw = tuple(int(v) for v in data["n"])
         L_raw = tuple(float(v) for v in data["L"])
         # promote 2-D grids to 3-D (nz = 1)
         n = n_raw if len(n_raw) == 3 else (*n_raw, 1)
         L = L_raw if len(L_raw) == 3 else (*L_raw, min(L_raw) / n_raw[0])
         phase = data["phase"].ravel().astype(int)
-        ori_def, yi_def, vf_def, d_def, H_def = _defaults(n, phase)
+        ori_def, yi_def, vf_def, d_def, H_def = self._defaults(n, phase)
         # accept both "orientations" (3, Nv) and "orientation" (*spatial, 3)
         _ori = data.get("orientations") or data.get("orientation")
         if _ori is not None:
@@ -250,8 +346,3 @@ def read_simulation_input(
         _Hi  = data.get("H_init")
         H_init  = _Hi.ravel()  if _Hi is not None else H_def
         return n, L, phase, orientations, yarn_index, vf, d_init, H_init
-
-    raise ValueError(
-        f"Unsupported file format '{suffix}'. "
-        "Use .vtu, .h5, .xdmf, or .npz."
-    )

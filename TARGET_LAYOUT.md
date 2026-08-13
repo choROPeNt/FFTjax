@@ -62,9 +62,7 @@ src/
 │   ├── phasefield/
 │   │   ├── degradation.py              # g(φ) AT1/AT2, spatially varying Gc
 │   │   └── regularization.py           # ℓ-dependent gradient-energy term
-│   ├── averaging.py                    ⚙️ VoxelAveraging ABC: at minimum ArithmeticAveraging (needed at interfaces)
-│   ├── tensors.py                      ⚙️ Voigt/Mandel ↔ tensor (4th-order C, 2nd-order ε/σ), rotation, symmetry checks
-│   └── utils.py                        # phase-fraction computation, raw geometry measurement (true utils)
+│   └── tensors.py                      ⚙️ Voigt/Mandel ↔ tensor (4th-order C, 2nd-order ε/σ), rotation, symmetry checks
 │
 ├── problems/                           # thin wiring layer: pick strategies, build C(x), average, solve, unpack
 │   ├── mechanics.py                    ✅ solve_mechanics: formulation="lippmann_schwinger" done, "displacement"
@@ -76,6 +74,10 @@ src/
 │
 ├── generation/                         # RVE/RSA/Matérn cluster generation (existing name kept over "microstructure/")
 │
+├── preprocessing/
+│   └── averaging.py                    ✅ VoxelAveraging ABC, ArithmeticAveraging — smooths C at interface
+│                                        #   voxels using a partial volume_fraction (vs. assembly.py's hard phase index)
+│
 ├── post/                               # post-processing: field-space derived quantities only, no I/O
 │   └── fields.py                       ✅ field_to_grid, von_mises, compute_displacement, to_voigt, from_voigt
 │
@@ -83,8 +85,12 @@ src/
 │   ├── io/
 │   │   ├── xdmf_writer.py              ✅ IncrementalWriter — moved from post/io.py (post/io.py deleted);
 │   │   │                               #   project-wide standard for XDMF/HDF5 output
+│   │   ├── reader.py                   ✅ read_xdmf, read_vtu, read_npz, SimulationReader —
+│   │   │                               #   merged from io_read.py + io_texgen.py (both deleted)
 │   │   └── checkpoint.py               # solver-state restart
-│   └── logging.py
+│   ├── logging.py
+│   ├── precision.py                    ✅ float64/GPU-memory setup — import first in every entry-point module
+│   └── geometry.py                     ✅ phase_fraction (arbitrary N classes, jnp.bincount-based)
 │
 └── tests/
     ├── operators/

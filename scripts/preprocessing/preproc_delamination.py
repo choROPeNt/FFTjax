@@ -38,7 +38,7 @@ import numpy as np
 
 sys.path.insert(0, "src")
 
-from utils.io_read import read_xdmf
+from utils.io.reader import read_xdmf
 from utils.io.xdmf_writer import IncrementalWriter
 def _read_input(path: str):
     """Read voxel geometry from an XDMF/HDF5 file, return 3-D arrays."""

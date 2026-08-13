@@ -49,7 +49,7 @@ import time
 from pathlib import Path
 
 from utils.config              import load_config
-from utils.io_read              import read_simulation_input
+from utils.io.reader              import SimulationReader
 from mat_models.elastic        import (LinearElasticIsotropic,
                                        TransverseIsotropicFibre,
                                        assemble_C_field_smooth,
@@ -92,7 +92,7 @@ print(f"Output  : {cfg['output']}/{cfg['jobname']}")
 # ── Load geometry ─────────────────────────────────────────────────────────────
 
 n, L, phase_np, orientations_np, _, vf_np, d_init_np, H_init_np = \
-    read_simulation_input(cfg["input"])
+    SimulationReader(cfg["input"]).read()
 
 Nv   = int(np.prod(n))
 # ── Fill fiber orientations when not stored in the file ───────────────────────
