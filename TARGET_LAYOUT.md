@@ -31,11 +31,14 @@ src/
 │   ├── elliptic/
 │   │   ├── scalar.py                       # thermal, diffusion (Fickian), phase-field φ-subproblem
 │   │   └── vector/
-│   │       ├── base.py                     ⚙️ ElasticitySolver ABC, ElasticitySolution dataclass
-│   │       ├── lippmann_schwinger.py       ✅ solve_lippmann_schwinger: strain-based, periodic, built on
-│   │       │                              #   GreenOperatorBasic/Willot + Gamma0Operator + krylov/cg.py;
-│   │       │                              #   not yet jit-compiled at this level (LinearOperator isn't a
-│   │       │                              #   registered pytree yet) — extend for DCT/DST non-periodic — TO DISCUSS
+│   │       ├── base.py                     ✅ ElasticitySolver ABC (.solve()), ElasticitySolution —
+│   │       │                              #   NamedTuple not dataclass (pytree-safe for jit/grad, matches
+│   │       │                              #   solvers.types.SolveState's own convention/rationale)
+│   │       ├── lippmann_schwinger.py       ✅ solve_lippmann_schwinger + LippmannSchwingerSolver(ElasticitySolver):
+│   │       │                              #   strain-based, periodic, built on GreenOperatorBasic/Willot +
+│   │       │                              #   Gamma0Operator + krylov/cg.py; not yet jit-compiled at this level
+│   │       │                              #   (LinearOperator isn't a registered pytree yet) — extend for
+│   │       │                              #   DCT/DST non-periodic — TO DISCUSS
 │   │       └── displacement_based.py       # direct u-solve via ∇/∇·, mixed BC via boundary.py, penalty enforcement
 │   ├── parabolic/
 │   │   └── reaction_diffusion.py           # Allen-Cahn / Cahn-Hilliard time-stepping over elliptic.scalar

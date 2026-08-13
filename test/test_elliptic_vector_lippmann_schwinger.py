@@ -2,8 +2,8 @@
 Standalone test for solve_lippmann_schwinger
 (solvers/elliptic/vector/lippmann_schwinger.py).
 
-Three checks
-------------
+Four checks
+-----------
 1. Parity with dstrain_nw_cg on a synthetic random problem, standard scheme
    (GreenOperatorBasic) -- eps/sigma/delta/converged must match exactly,
    since both build the identical linear system, just via different
@@ -12,6 +12,9 @@ Three checks
 3. Real composite RVE (glass fiber / epoxy, same setup as
    notebooks/lin-elastic_strain.ipynb) -- converges, and reproduces the
    known tau_xy (avg) = 7.625 MPa result.
+4. LippmannSchwingerSolver (the ElasticitySolver wrapper) reproduces
+   solve_lippmann_schwinger's own output exactly -- it's a thin wrapper,
+   this is a trivial-but-real check that it doesn't lose or reorder fields.
 
 Usage
 -----
@@ -30,7 +33,7 @@ import numpy as np
 
 from operators.green import GreenOperatorBasic, GreenOperatorWillot
 from solvers.mechanical.strain_nw_cg import dstrain_nw_cg
-from solvers.elliptic.vector.lippmann_schwinger import solve_lippmann_schwinger
+from solvers.elliptic.vector.lippmann_schwinger import solve_lippmann_schwinger, LippmannSchwingerSolver
 
 
 rng = np.random.default_rng(2)
@@ -121,6 +124,17 @@ eps, sigma, delta, converged = solve_lippmann_schwinger(
 tau_xy = float(jnp.mean(sigma[1, 0]))
 assert bool(converged), "composite RVE solve must converge"
 assert abs(tau_xy - 7.625369073063829) < 1e-6, f"tau_xy mismatch: got {tau_xy}, expected ~7.625369"
+
+
+# ── 4. LippmannSchwingerSolver wraps solve_lippmann_schwinger exactly ───────
+
+solver = LippmannSchwingerSolver(n_rve, green_op_rve, toler_lin=1e-6, maxiter=1000)
+result = solver.solve(C_field_rve, eps_bar)
+
+assert bool(result.converged) == bool(converged)
+assert jnp.array_equal(result.eps, eps), "LippmannSchwingerSolver.eps must match solve_lippmann_schwinger exactly"
+assert jnp.array_equal(result.sigma, sigma), "LippmannSchwingerSolver.sigma must match solve_lippmann_schwinger exactly"
+assert jnp.array_equal(result.delta, delta), "LippmannSchwingerSolver.delta must match solve_lippmann_schwinger exactly"
 
 print("test_elliptic_vector_lippmann_schwinger: all checks passed")
 print(f"  composite RVE tau_xy (avg) = {tau_xy:.6f} MPa")

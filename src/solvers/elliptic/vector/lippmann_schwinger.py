@@ -8,6 +8,7 @@ import jax.numpy as jnp
 from operators.base import LinearOperator
 from operators.general_functions import ddot42
 from operators.projection import Gamma0Operator
+from solvers.elliptic.vector.base import ElasticitySolver, ElasticitySolution
 from solvers.krylov.cg import cg_solve
 
 
@@ -32,7 +33,7 @@ def solve_lippmann_schwinger(
     Solves the linear system
         A(Δε) = b
     where
-        A(v)  = Gamma0(C:v)                    [Green-stiffness operator]
+        A(v)  = Gamma0(C:v)                     [Green-stiffness operator]
         b     = -Gamma0(C:ε₀ - σ_goal)          [projected residual]
         ε₀    = eps_bar broadcast to all voxels [uniform initial guess]
 
@@ -86,3 +87,35 @@ def solve_lippmann_schwinger(
     sigma = ddot42(C_field, eps)
 
     return eps, sigma, delta, converged
+
+
+class LippmannSchwingerSolver(ElasticitySolver):
+    """
+    ElasticitySolver wrapping solve_lippmann_schwinger: strain-based,
+    periodic. Formulation-specific setup (grid shape, Green's operator, CG
+    tolerance) lives here in __init__; solve() takes only what's common to
+    every ElasticitySolver.
+    """
+
+    def __init__(
+        self,
+        n:         Tuple[int, ...],
+        green_op:  LinearOperator,
+        toler_lin: float = 1e-4,
+        maxiter:   int = 1000,
+    ):
+        self.n = n
+        self.green_op = green_op
+        self.toler_lin = toler_lin
+        self.maxiter = maxiter
+
+    def solve(
+        self,
+        C_field:     jnp.ndarray,
+        eps_bar:     jnp.ndarray,
+        stress_goal: jnp.ndarray | None = None,
+    ) -> ElasticitySolution:
+        eps, sigma, delta, converged = solve_lippmann_schwinger(
+            self.n, C_field, self.green_op, eps_bar, stress_goal, self.toler_lin, self.maxiter,
+        )
+        return ElasticitySolution(eps, sigma, delta, converged)
