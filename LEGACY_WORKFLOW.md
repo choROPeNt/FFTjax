@@ -223,9 +223,29 @@ unimplemented placeholder at the time.
 
 ## 7. Status on `refactor/target-layout`
 
-Superseded, not deleted-without-trace: `solvers/elliptic/vector/lippmann_schwinger.py`'s
-`solve_lippmann_schwinger`/`LippmannSchwingerSolver` implement the identical algorithm above on a
-`LinearOperator`-composed stack (`GreenOperatorBasic`/`GreenOperatorWillot` +
-`Gamma0Operator`), verified bit-identical to `dstrain_nw_cg` before the latter was retired. See
-`TARGET_LAYOUT.md` for the current module layout and what remains unbuilt (displacement-based
-formulation, mixed BC, phase-field damage).
+Superseded, not deleted-without-trace. The new-layout entry point for this whole workflow is
+`problems.mechanics.solve_mechanics(n, L, phase, materials, eps_bar, ...)` — the thin wiring layer
+that does everything Section 4's algorithm lists in one call (assemble `C(x)`, pick the reference
+medium, build the Green's operator, solve, return the fields):
+
+```python
+from materialmodels.elastic.isotropic import LinearElasticIsotropic
+from problems.mechanics import solve_mechanics
+
+matrix = LinearElasticIsotropic(E=3.0e3,  nu=0.35, name="epoxy matrix")
+fiber  = LinearElasticIsotropic(E=70.0e3, nu=0.20, name="glass fiber")
+
+eps, sigma, delta, converged = solve_mechanics(
+    n, L, phase, [matrix, fiber], eps_bar, scheme="rotated", toler_lin=1e-6, maxiter=1000,
+)
+```
+
+Underneath, `solve_mechanics` builds a `GreenOperatorBasic`/`GreenOperatorWillot`
+(`LinearOperator`-composed, standard/rotated scheme per Section 2) and a `LippmannSchwingerSolver`
+(`ElasticitySolver`), then calls `.solve()` — implementing the identical algorithm above via
+`solvers/elliptic/vector/lippmann_schwinger.py`'s `Gamma0Operator`-based CG reduction, verified
+bit-identical to `dstrain_nw_cg` before the latter was retired. Reach for the lower-level pieces
+(`GreenOperatorWillot`, `LippmannSchwingerSolver` directly) only when something below
+`solve_mechanics`'s current scope is needed — e.g. a stress-controlled/mixed BC, which
+`solve_mechanics` doesn't expose yet. See `TARGET_LAYOUT.md` for the current module layout and
+what remains unbuilt (displacement-based formulation, mixed BC, phase-field damage).
