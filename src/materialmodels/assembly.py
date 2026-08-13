@@ -5,13 +5,15 @@ elastic-specific -- the same pattern applies to a conductivity or diffusivity
 field once those model types exist.
 """
 
+from collections.abc import Sequence
+
 import jax.numpy as jnp
 
 from materialmodels.base import ConstitutiveModel
 
 
 def assemble_C_field(
-    materials: list[ConstitutiveModel],
+    materials: Sequence[ConstitutiveModel],
     phase: jnp.ndarray,
 ) -> jnp.ndarray:
     """
@@ -35,7 +37,7 @@ def assemble_C_field(
     return C_stack[..., phase]  # (3,3,3,3,Nv) -- gather by phase index
 
 
-def describe_materials(materials: list[ConstitutiveModel]) -> None:
+def describe_materials(materials: Sequence[ConstitutiveModel]) -> None:
     """Print each material next to the phase index assemble_C_field/solve_mechanics assign it."""
     for i, m in enumerate(materials):
         print(f"phase {i}: {m}")
