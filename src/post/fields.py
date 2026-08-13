@@ -121,7 +121,7 @@ def compute_displacement(
     eps: jnp.ndarray,
     eps_bar: jnp.ndarray,
     grid_n: tuple,
-    grid_dx: tuple,
+    grid_L: tuple,
 ) -> np.ndarray:
     """
     Recover the displacement field from a compatible strain field via Fourier
@@ -138,27 +138,28 @@ def compute_displacement(
 
     Total displacement  =  macroscopic part (ε̄_ij x_j)  +  periodic fluctuation.
 
-    Builds its own frequency grid from ``grid_n``/``grid_dx`` (domain size
-    ``L = grid_n * grid_dx``) rather than taking ``xi_flat`` as a parameter --
-    this is the only thing here that needs it, so there's nothing to gain by
-    pushing that construction onto every caller.
+    Takes ``(n, L)``, matching the convention used everywhere else in this
+    project (``GreenOperatorBasic``/``Willot``, ``solve_mechanics``, ...)
+    rather than ``(n, dx)`` -- builds its own frequency grid and voxel
+    spacing internally, so there's nothing to gain by pushing either
+    construction onto every caller.
 
     Parameters
     ----------
     eps     : (3, 3, Nv)   total strain field (solver layout)
     eps_bar : (3, 3)        macroscopic strain tensor
     grid_n  : tuple          grid shape (nx, ny, nz)
-    grid_dx : tuple          voxel spacing per dimension (dx, dy, dz)  [µm]
+    grid_L  : tuple          physical domain size per dimension  [µm]
 
     Returns
     -------
-    u : (*grid_n, 3)   displacement field in physical units (same as grid_dx)
+    u : (*grid_n, 3)   displacement field in physical units (same as grid_L)
     """
     ndim     = len(grid_n)
     fft_axes = tuple(range(-ndim, 0))
     Nv       = int(np.prod(grid_n))
 
-    grid_L  = tuple(ni * dxi for ni, dxi in zip(grid_n, grid_dx))
+    grid_dx = tuple(Li / ni for Li, ni in zip(grid_L, grid_n))
     xi_flat = build_freq_grid(grid_n, grid_L)
 
     xi_sq = jnp.sum(xi_flat ** 2, axis=0)

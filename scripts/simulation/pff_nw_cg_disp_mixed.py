@@ -394,7 +394,7 @@ with IncrementalWriter(f"{output}/{jobname}", grid_shape=n, grid_spacing=dx) as 
 
         eps_grid   = field_to_grid(state.strain_loc, n)
         sigma_grid = field_to_grid(state.stress_loc, n)
-        u_grid     = compute_displacement(state.strain_loc, state.strain_ave, n, dx)
+        u_grid     = compute_displacement(state.strain_loc, state.strain_ave, n, L)
         d_grid     = np.asarray(d_field).reshape(n)
         psi_grid   = np.asarray(psi_pos).reshape(n)
 

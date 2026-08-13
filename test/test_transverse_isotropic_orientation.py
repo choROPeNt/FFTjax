@@ -151,7 +151,7 @@ os.makedirs(output_dir, exist_ok=True)
 
 eps_grid    = field_to_grid(eps_loc,   n)       # (*n, 3, 3)
 sigma_grid  = field_to_grid(sigma_loc, n)       # (*n, 3, 3)
-u_grid      = compute_displacement(eps_loc, eps_bar, n, dx)  # (*n, 3)
+u_grid      = compute_displacement(eps_loc, eps_bar, n, L)  # (*n, 3)
 orient_grid = np.asarray(orientations).T.reshape(*n, 3).astype(np.float32)
 
 # ── Ply-frame stress  σ_ply = R_ply^T · σ_global · R_ply ─────────────────────

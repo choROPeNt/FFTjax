@@ -259,7 +259,7 @@ with IncrementalWriter(f"{output}/{jobname}", grid_shape=n, grid_spacing=dx) as 
 
         eps_grid   = field_to_grid(state.strain_loc, n)
         sigma_grid = field_to_grid(state.stress_loc, n)
-        u_grid     = compute_displacement(state.strain_loc, eps_bar_i, n, dx)
+        u_grid     = compute_displacement(state.strain_loc, eps_bar_i, n, L)
 
         w.write_increment(step, {
             "phase":        phase_vis,
