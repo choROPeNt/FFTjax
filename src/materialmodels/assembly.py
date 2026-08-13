@@ -33,3 +33,9 @@ def assemble_C_field(
     """
     C_stack = jnp.stack([m.stiffness_tensor() for m in materials], axis=-1)  # (3,3,3,3,n_mats)
     return C_stack[..., phase]  # (3,3,3,3,Nv) -- gather by phase index
+
+
+def describe_materials(materials: list[ConstitutiveModel]) -> None:
+    """Print each material next to the phase index assemble_C_field/solve_mechanics assign it."""
+    for i, m in enumerate(materials):
+        print(f"phase {i}: {m}")
