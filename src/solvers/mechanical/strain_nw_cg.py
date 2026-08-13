@@ -8,7 +8,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax import jit
 
-from solvers._cg import cg_solve
+from solvers.krylov.cg import cg_solve
 
 
 @partial(jit, static_argnames=("n_i", "maxiter"))

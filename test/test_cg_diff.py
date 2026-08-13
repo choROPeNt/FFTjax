@@ -1,5 +1,5 @@
 """
-Validation script for the differentiable CG variants in ``solvers._cg``.
+Validation script for the differentiable CG variants in ``solvers.krylov.cg``.
 
 ``cg_solve_scan`` (lax.scan-based, ordinary autodiff) is checked against a
 dense/finite-difference ground truth on the real, heterogeneous
@@ -33,7 +33,7 @@ import numpy as np
 
 from operators.green import build_freq_grid, build_green_operator
 from generation.rve import make_square_composite_rve
-from solvers._cg import cg_solve_diff, cg_solve_scan
+from solvers.krylov.cg import cg_solve_diff, cg_solve_scan
 
 
 print("── Case A: cg_solve_diff fixes the symmetry-assumption bug ──────────")

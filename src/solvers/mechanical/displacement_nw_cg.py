@@ -7,7 +7,7 @@ from math import prod
 import jax.numpy as jnp
 from jax import jit
 
-from solvers._cg import cg_solve
+from solvers.krylov.cg import cg_solve
 
 
 def _active_pairs(control: Tuple[Tuple[int, ...], ...]) -> Tuple[Tuple[int, int], ...]:

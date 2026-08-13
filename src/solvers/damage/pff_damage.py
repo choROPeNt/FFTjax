@@ -5,7 +5,7 @@ import jax.numpy as jnp
 from functools import partial
 from math import prod
 
-from solvers._cg import cg_solve
+from solvers.krylov.cg import cg_solve
 
 
 # Strain energy functions live in mat_models.elastic — re-exported here for

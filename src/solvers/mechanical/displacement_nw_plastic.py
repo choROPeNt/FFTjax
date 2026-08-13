@@ -27,7 +27,7 @@ from math import prod
 import jax.numpy as jnp
 from jax import jit
 
-from solvers._cg import cg_solve
+from solvers.krylov.cg import cg_solve
 from mat_models.plastic import J2Plasticity, j2_return_map_field
 
 
