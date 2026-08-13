@@ -1,8 +1,6 @@
 import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on TPU, no GPU prealloc)
 
-import jax
 import jax.numpy as jnp
-import numpy as np
 
 from operators.base import LinearOperator
 from operators.general_functions import ddot42
@@ -166,8 +164,11 @@ class GreenOperatorBasic(LinearOperator):
 
     def __init__(self, n: tuple[int, ...], L: tuple[float, ...], lam0: float, mu0: float):
         self.n, self.L, self.lam0, self.mu0 = n, L, lam0, mu0
-        xi_flat = build_freq_grid(n, L)
-        self.G = build_green_operator(xi_flat, lam0, mu0, scheme='standard')
+        self.G = self._build_G()
+
+    def _build_G(self) -> jnp.ndarray:
+        xi_flat = build_freq_grid(self.n, self.L)
+        return build_green_operator(xi_flat, self.lam0, self.mu0, scheme='standard')
 
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
         """x, result: (3, 3, Nv) — e.g. a strain or stress field in Fourier space."""
@@ -193,71 +194,9 @@ class GreenOperatorWillot(GreenOperatorBasic):
         mu0: float,
         dx: tuple[float, ...],
     ):
-        self.n, self.L, self.lam0, self.mu0, self.dx = n, L, lam0, mu0, dx
-        xi_flat = build_freq_grid(n, L)
-        self.G = build_green_operator(xi_flat, lam0, mu0, scheme='rotated', dx=dx)
+        self.dx = dx
+        super().__init__(n, L, lam0, mu0)
 
-
-def set_freq_jax(ndim: int, n: tuple[int, ...], L: tuple[float, ...]):
-    # n and L are STATIC python values here
-    if ndim == 2:
-        nx, ny = n
-        Lx, Ly = L
-
-        kx = nx * jnp.fft.fftfreq(nx, d=Lx)
-        ky = ny * jnp.fft.fftfreq(ny, d=Ly)[: ny // 2 + 1]
-
-        mg = jnp.array(jnp.meshgrid(kx, ky, indexing="ij"))  # (2, nx, nyh)
-        return (2.0j * jnp.pi) * mg.reshape(2, nx * (ny // 2 + 1))
-
-    elif ndim == 3:
-        nx, ny, nz = n
-        Lx, Ly, Lz = L
-
-        kx = jnp.fft.fftfreq(nx, d=Lx)
-        ky = jnp.fft.fftfreq(ny, d=Ly)
-        kz = jnp.fft.fftfreq(nz, d=Lz)[: nz // 2 + 1]
-
-        mg = jnp.array(jnp.meshgrid(kx, ky, kz, indexing="ij"))  # (3, nx, ny, nzh)
-        # match FFTMAD scaling by n[i]
-        nvec = jnp.array([nx, ny, nz], dtype=mg.dtype)[:, None]
-        return (2.0j * jnp.pi) * (nvec * mg.reshape(3, nx * ny * (nz // 2 + 1)))
-
-    else:
-        raise ValueError("ndim must be 2 or 3")
-
-
-# mark ALL shape-relevant args as static IMPORTANT for JIT compilation and performance
-set_freq_jax_jit = jax.jit(set_freq_jax, static_argnames=("ndim", "n", "L"))
-
-
-
-## Old NumPy version for benchmarking
-def set_freq_np(ndim, n, L):
-    n = np.asarray(n)
-    L = np.asarray(L)
-
-    if ndim == 2:
-        kk_glob = 2.0j * np.pi * np.array(
-            np.meshgrid(
-                n[0] * np.fft.fftfreq(n[0], L[0]),
-                n[1] * np.fft.fftfreq(n[1], L[1])[0 : n[1] // 2 + 1],
-                indexing="ij",
-            )
-        ).reshape(2, n[0] * (n[1] // 2 + 1))
-    elif ndim == 3:
-        kk_glob = 2.0j * np.pi * np.einsum(
-            "i,ix->ix",
-            n,
-            np.array(
-                np.meshgrid(
-                    np.fft.fftfreq(n[0], L[0]),
-                    np.fft.fftfreq(n[1], L[1]),
-                    np.fft.fftfreq(n[2], L[2])[0 : n[2] // 2 + 1],
-                    indexing="ij",
-                )
-            ).reshape(3, n[0] * n[1] * (n[2] // 2 + 1)),
-        )
-    else:
-        raise ValueError("ndim must be 2 or 3")
-    return kk_glob
+    def _build_G(self) -> jnp.ndarray:
+        xi_flat = build_freq_grid(self.n, self.L)
+        return build_green_operator(xi_flat, self.lam0, self.mu0, scheme='rotated', dx=self.dx)
