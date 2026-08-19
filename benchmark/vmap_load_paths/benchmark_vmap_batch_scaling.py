@@ -41,7 +41,7 @@ from generation.rve import make_square_composite_rve
 from materialmodels.elastic.isotropic import LinearElasticIsotropic
 from problems.mechanics import solve_mechanics
 
-BATCH_SIZES = [1, 2, 4, 8, 16, 32]
+BATCH_SIZES = [1, 2, 4, 8, 16, 32, 64 , 128, 256, 512, 1024, 2048, 4096, 4608, 5120,5632, 6144]
 REPEATS     = 5
 OUT_DIR     = "output/benchmark/vmap_load_paths"
 
