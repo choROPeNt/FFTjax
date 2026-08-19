@@ -206,3 +206,39 @@ class GreenOperatorWillot(GreenOperatorBasic):
     def _build_G(self) -> jnp.ndarray:
         xi_flat = build_freq_grid(self.n, self.L)
         return build_green_operator(xi_flat, self.lam0, self.mu0, scheme='rotated', dx=self.dx)
+
+
+def build_reference_green_operator(
+    n: tuple[int, ...],
+    L: tuple[float, ...],
+    materials: list,
+    scheme: str = 'rotated',
+) -> LinearOperator:
+    """
+    Build a GreenOperatorBasic/Willot for the arithmetic-mean-Lame reference
+    medium of ``materials``. Shared by every problems/ wiring layer that
+    needs a Green's operator for a phase-labelled voxel grid (elasticity,
+    staggered fracture, ...) so the reference-medium averaging and
+    scheme-selection logic lives in exactly one place.
+
+    Parameters
+    ----------
+    n, L       : grid shape and physical domain size
+    materials  : list, each exposing .lam and .mu (see
+                 materialmodels.elastic.isotropic.LinearElasticIsotropic)
+    scheme     : 'standard' (GreenOperatorBasic) or 'rotated' (GreenOperatorWillot)
+
+    Returns
+    -------
+    green_op : GreenOperatorBasic or GreenOperatorWillot
+    """
+    lam0 = sum(m.lam for m in materials) / len(materials)
+    mu0 = sum(m.mu for m in materials) / len(materials)
+
+    if scheme == 'standard':
+        return GreenOperatorBasic(n, L, lam0, mu0)
+    elif scheme == 'rotated':
+        dx = tuple(Li / ni for Li, ni in zip(L, n))
+        return GreenOperatorWillot(n, L, lam0, mu0, dx)
+    else:
+        raise ValueError(f"unknown scheme {scheme!r}, expected 'standard' or 'rotated'")

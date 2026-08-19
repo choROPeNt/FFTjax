@@ -24,17 +24,26 @@ class LinearElasticIsotropic(ConstitutiveModel):
 
     Parameters
     ----------
-    E    : float  Young's modulus (any consistent unit, e.g. MPa)
-    nu   : float  Poisson's ratio  (−1 < ν < 0.5)
-    name : str    Optional label for display.
+    E      : float  Young's modulus (any consistent unit, e.g. MPa)
+    nu     : float  Poisson's ratio  (−1 < ν < 0.5)
+    name   : str    Optional label for display.
+    k_res  : float  AT2 phase-field residual stiffness for this material
+                     (see materialmodels.phasefield.degradation.degradation_at2).
+                     Only read by fracture problems (problems.fracture.solve_fracture
+                     gathers it per-phase); elasticity-only solves ignore it. Default
+                     1e-6 matches the historical single-material benchmark value.
+                     Set to 1.0 for a phase that must never lose stiffness under
+                     damage (g(d) ≡ 1 regardless of d) -- e.g. a damage-immune
+                     fiber inclusion.
     """
 
-    def __init__(self, E: float, nu: float, name: str = ""):
-        self.E    = float(E)
-        self.nu   = float(nu)
-        self.name = name
-        self.lam  = E * nu / ((1.0 + nu) * (1.0 - 2.0 * nu))
-        self.mu   = E / (2.0 * (1.0 + nu))
+    def __init__(self, E: float, nu: float, name: str = "", k_res: float = 1e-6):
+        self.E     = float(E)
+        self.nu    = float(nu)
+        self.name  = name
+        self.k_res = float(k_res)
+        self.lam   = E * nu / ((1.0 + nu) * (1.0 - 2.0 * nu))
+        self.mu    = E / (2.0 * (1.0 + nu))
 
     # ------------------------------------------------------------------
     # Stiffness representations

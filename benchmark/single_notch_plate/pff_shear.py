@@ -13,16 +13,15 @@ PFF params  : l₀ = 1.0 mm,  Gc = 2.7 MPa·mm
 Pre-crack   : x ∈ [5, 15) mm  (i=[25,75) at 250² grid),  y = 125 (centre)
 Load        : shear strain ramp  ε₁₂ = ε₂₁ → 1.0 × 10⁻³,  100 equal increments
 
-Staggered scheme per increment
--------------------------------
-    for each staggered iteration:
-        1. Degrade stiffness:     C_eff = g(d) · C_field
-        2. Mechanical solve:      (ε, σ) = solve_elastic(C_eff, G_glob, ε̄)
-        3. Crack driving force:   ψ⁺ from undegraded Amor dev/vol
-        4. Update history:        hybrid irreversibility (Steinke & Kaliske 2019) —
-                                   H = max(H_prev, ψ⁺) if d ≥ d_thres, else H = ψ⁺
-        5. Damage solve:          d = solve_helmholtz_cg(H, ...)
-        6. Converged?             max|d_new − d_old| < toler_st
+Staggered scheme per increment (problems.fracture.solve_fracture, one call
+per cutback attempt) -- see solvers.coupling.staggered for the loop itself:
+    1. Degrade stiffness:     C_eff = g(d) · C_field
+    2. Mechanical solve:      (ε, σ) = solve_lippmann_schwinger(C_eff, ...)
+    3. Crack driving force:   ψ⁺ from undegraded Amor dev/vol split
+    4. Update history:        hybrid irreversibility (Steinke & Kaliske 2019) —
+                               H = max(H_prev, ψ⁺) if d ≥ d_thres, else H = ψ⁺
+    5. Damage solve:          d = solve_damage_helmholtz_cg(H, ...)
+    6. Converged?             max|d_new − d_old| < toler_st
 
 Usage
 -----
@@ -45,15 +44,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 import time
 
-from mat_models.elastic    import (LinearElasticIsotropic, assemble_C_field,
-                                   strain_energy_amor_split,strain_energy_miehe_split, lame_from_C_field)
-from operators.green       import build_freq_grid, build_green_operator
-from post.fields           import field_to_grid, von_mises, compute_displacement
-from utils.io.xdmf_writer import IncrementalWriter
-from post.fields          import to_voigt
-from solvers.mechanical.strain_nw_cg import solve_elastic
-from solvers.damage.pff_damage    import degradation, update_history_hybrid, solve_helmholtz_cg
-from solvers.types         import SolveState, SolverSettings
+from materialmodels.elastic.isotropic import LinearElasticIsotropic
+from post.fields              import field_to_grid, von_mises, compute_displacement, to_voigt
+from utils.io.xdmf_writer     import IncrementalWriter
+from problems.fracture        import solve_fracture
 
 jax.config.update("jax_enable_x64", True)
 
@@ -86,20 +80,6 @@ print(f"Grid     : {n}  (Nv = {Nv})")
 print(f"Domain   : {L} mm")
 print(f"Crack    : x=[{x_crack[0]},{x_crack[1]}) mm  i=[{i_start},{i_end})  y={j_crack}  ({int((ms==1).sum())} voxels)")
 
-# ── Stiffness field (undegraded) ──────────────────────────────────────────────
-
-C_field         = assemble_C_field(materials, phase)          # (3,3,3,3, Nv)
-lam_vox, mu_vox = lame_from_C_field(C_field)                 # undegraded λ, μ — fixed
-
-# ── Reference medium — undegraded steel (G_glob stays fixed throughout) ───────
-
-lam0 = materials[0].lam
-mu0  = materials[0].mu
-print(f"Reference: lam0={lam0/1e3:.2f} GPa  mu0={mu0/1e3:.2f} GPa")
-
-xi_flat = build_freq_grid(n, L)
-G_glob  = build_green_operator(xi_flat, lam0, mu0, scheme='rotated', dx=dx)
-
 # ── PFF parameters ────────────────────────────────────────────────────────────
 
 l0 = 1.0        # mm  — phase-field length scale
@@ -122,64 +102,22 @@ eps_goal = jnp.array([
     [0.0,  0.0,  0.0],
 ])
 
-settings = SolverSettings(
-    ndim=3,
-    n=n,
-    L=L,
-    toler_lin=1e-2,
-    toler_nw=1e-2,
-    maxiter_cg=500,
-    maxiter_nw=300,
-    jobname="benchmark_pff_shear",
-    output="output/benchmark",
-)
+toler_lin    = 1e-2
+toler_helm   = 1e-3
+maxiter_cg   = 500
+maxiter_helm = 300
+jobname      = "benchmark_pff_shear"
+output       = "output/benchmark"
 
-settings.add_load_step(
-    control=jnp.zeros((3, 3)),
-    strain_ave_goal=eps_goal,
-    stress_ave_goal=jnp.zeros((3, 3)),
-    timer=(0.01, 1.0, 0.01, 0.01),
-)
-
-dt_init, t_end, dt_min, dt_max = settings.timer[0]
+dt_init, t_end, dt_min, dt_max = 0.01, 1.0, 0.01, 0.01
 
 # Staggered scheme parameters — Schneider & Kästner (2025)
 toler_st_abs  = 1e-2
 toler_st_rel  = 1e-3
 maxiter_st    = 200
-toler_helm    = 1e-3
-maxiter_helm  = 300
 eta = 1e-6
 print(f"Viscosity: η = {eta:.1e}  →  η/Δt = {eta/dt_init:.1e} MPa  "
       f"(Gc/l₀ = {Gc/l0:.4g} MPa)")
-
-# ── Initial mechanical state ──────────────────────────────────────────────────
-
-zero33 = jnp.zeros((3, 3))
-zero_v = jnp.zeros((3, 3, Nv))
-
-state = SolveState(
-    strain_loc=zero_v,
-    stress_loc=zero_v,
-    tangent_glob=C_field,
-    strain_ave=zero33,
-    stress_ave=zero33,
-    strain_ave_inc_goal=zero33,
-    stress_ave_inc_goal=zero33,
-    Deltastrain_loc=zero_v,
-    Deltastress_loc=zero_v,
-    stress_loc_goal=zero_v,
-    deltastrain_loc=zero_v,
-    time=0.0,
-    dtime=dt_init,
-    kinc=0,
-    kstep=1,
-    iter_nw=0,
-    iter_cg=0,
-    info=0,
-    bb0n=1.0,
-    pnewdt=1.0,
-)
 
 # ── Initial damage and history ────────────────────────────────────────────────
 
@@ -195,11 +133,11 @@ max_steps    = 1000
 
 # ── Load-stepping loop ────────────────────────────────────────────────────────
 
-os.makedirs(settings.output, exist_ok=True)
+os.makedirs(output, exist_ok=True)
 
-dt   = state.dtime
-t    = state.time
-step = state.kinc
+dt   = dt_init
+t    = 0.0
+step = 0
 
 phase_grid = ms.astype(np.float32)
 zero_grid  = np.zeros((*n, 6), dtype=np.float64)
@@ -209,7 +147,7 @@ zero_u     = np.zeros((*n, 3), dtype=np.float64)
 history: list[dict] = []
 
 with IncrementalWriter(
-    f"{settings.output}/{settings.jobname}", grid_shape=n, grid_length=L
+    f"{output}/{jobname}", grid_shape=n, grid_length=L
 ) as w:
 
     w.write_increment(0, {
@@ -234,48 +172,17 @@ with IncrementalWriter(
         # ── cutback loop (mechanical convergence) ────────────────────────────
         for attempt in range(max_cutbacks + 1):
 
-            # ── staggered iteration ──────────────────────────────────────────
-            d_st   = d_field
-            H_st   = H_field
+            sol = solve_fracture(
+                n, L, phase, materials, eps_bar_i,
+                l0, Gc, d_field, H_field,
+                scheme="rotated",
+                toler_lin=toler_lin, maxiter_cg=maxiter_cg,
+                toler_helm=toler_helm, maxiter_helm=maxiter_helm,
+                eta=eta, dt=dt, d_thres=d_thres,
+                toler_st_abs=toler_st_abs, toler_st_rel=toler_st_rel, maxiter_st=maxiter_st,
+            )
 
-            for iter_st in range(1, maxiter_st + 1):
-                d_prev_st = d_st
-
-                # 1. degrade stiffness with current damage
-                g     = degradation(d_st)
-                C_eff = g[None, None, None, None, :] * C_field
-
-                # 2. mechanical solve with degraded stiffness
-                eps_i, sigma_i, delta_i, conv_mech = solve_elastic(
-                    n, C_eff, G_glob, eps_bar_i,
-                    toler_lin=settings.toler_lin,
-                    maxiter=settings.maxiter_cg,
-                )
-
-                # 3. crack driving force from undegraded Miehe spectral split
-                psi_pos, _ = strain_energy_amor_split(eps_i, lam_vox, mu_vox)
-
-                # 4. update history variable — hybrid damage-/crack-like
-                #    irreversibility, gated on the current damage estimate
-                H_st = update_history_hybrid(H_st, psi_pos, d_prev_st, d_thres=d_thres)
-
-                # 5. damage solve — Helmholtz preconditioned CG
-                d_st, conv_helm = solve_helmholtz_cg(
-                    H_st, xi_flat, n, l0, Gc, d_prev_st,
-                    toler_cg=toler_helm,
-                    maxiter=maxiter_helm,
-                    eta=eta,
-                    dt=dt,
-                )
-
-                # 6. staggered convergence — either absolute or relative criterion
-                diff      = jnp.max(jnp.abs(d_st - d_prev_st))
-                err_abs   = float(diff)
-                err_rel   = float(diff / (jnp.max(jnp.abs(d_st)) + 1e-30))
-                if err_abs < toler_st_abs or err_rel < toler_st_rel:
-                    break
-
-            converged_mech = bool(conv_mech)
+            converged_mech = bool(sol.converged_mech)
 
             if converged_mech:
                 break
@@ -292,27 +199,18 @@ with IncrementalWriter(
         # ── accept increment ──────────────────────────────────────────────────
         t       += dt
         step    += 1
-        d_field  = d_st
-        H_field  = H_st
+        d_field  = sol.d
+        H_field  = sol.H
 
-        state = state._replace(
-            strain_loc=eps_i,
-            stress_loc=sigma_i,
-            deltastrain_loc=delta_i,
-            strain_ave=jnp.mean(eps_i,   axis=-1),
-            stress_ave=jnp.mean(sigma_i, axis=-1),
-            time=t,
-            dtime=dt,
-            kinc=step,
-            info=0 if converged_mech else 1,
-        )
+        strain_ave = jnp.mean(sol.eps,   axis=-1)
+        stress_ave = jnp.mean(sol.sigma, axis=-1)
 
         # ── post-processing ───────────────────────────────────────────────────
-        eps_grid   = field_to_grid(state.strain_loc, n)
-        sigma_grid = field_to_grid(state.stress_loc, n)
-        u_grid     = compute_displacement(state.strain_loc, eps_bar_i, n, L)
-        d_grid     = np.asarray(d_field).reshape(n)
-        psi_grid   = np.asarray(psi_pos).reshape(n)
+        eps_grid   = field_to_grid(sol.eps, n)
+        sigma_grid = field_to_grid(sol.sigma, n)
+        u_grid     = compute_displacement(sol.eps, eps_bar_i, n, L)
+        d_grid     = np.asarray(sol.d).reshape(n)
+        psi_grid   = np.asarray(sol.psi_pos).reshape(n)
 
         w.write_increment(step, {
             "phase":             phase_grid,
@@ -327,47 +225,45 @@ with IncrementalWriter(
         step_time = time.perf_counter() - t_step_start
         print(
             f"  step {step:2d}  t={t:.3f}  "
-            f"ε₁₂={float(state.strain_ave[0,1]):.2e}  "
-            f"σ₁₂={float(state.stress_ave[0,1]):.2f} MPa  "
+            f"ε₁₂={float(strain_ave[0,1]):.2e}  "
+            f"σ₁₂={float(stress_ave[0,1]):.2f} MPa  "
             f"max(d)={float(jnp.max(d_field)):.4f}  "
-            f"st={iter_st}  err_abs={err_abs:.1e}  err_rel={err_rel:.1e}  "
+            f"st={sol.iter_staggered}  err_abs={sol.err_abs:.1e}  err_rel={sol.err_rel:.1e}  "
             f"time={step_time:.1f}s"
         )
 
-        sa = state.strain_ave
-        ss = state.stress_ave
         history.append({
             "step":       step,
             "time":       float(t),
             "dt":         float(dt),
-            "eps_11":     float(sa[0, 0]),
-            "eps_22":     float(sa[1, 1]),
-            "eps_33":     float(sa[2, 2]),
-            "eps_12":     float(sa[0, 1]),
-            "eps_13":     float(sa[0, 2]),
-            "eps_23":     float(sa[1, 2]),
-            "sig_11":     float(ss[0, 0]),
-            "sig_22":     float(ss[1, 1]),
-            "sig_33":     float(ss[2, 2]),
-            "sig_12":     float(ss[0, 1]),
-            "sig_13":     float(ss[0, 2]),
-            "sig_23":     float(ss[1, 2]),
+            "eps_11":     float(strain_ave[0, 0]),
+            "eps_22":     float(strain_ave[1, 1]),
+            "eps_33":     float(strain_ave[2, 2]),
+            "eps_12":     float(strain_ave[0, 1]),
+            "eps_13":     float(strain_ave[0, 2]),
+            "eps_23":     float(strain_ave[1, 2]),
+            "sig_11":     float(stress_ave[0, 0]),
+            "sig_22":     float(stress_ave[1, 1]),
+            "sig_33":     float(stress_ave[2, 2]),
+            "sig_12":     float(stress_ave[0, 1]),
+            "sig_13":     float(stress_ave[0, 2]),
+            "sig_23":     float(stress_ave[1, 2]),
             "max_d":      float(jnp.max(d_field)),
-            "iter_st":    iter_st,
-            "err_abs":    err_abs,
-            "err_rel":    err_rel,
+            "iter_st":    sol.iter_staggered,
+            "err_abs":    sol.err_abs,
+            "err_rel":    sol.err_rel,
             "wall_time_s": step_time,
         })
 
         dt = min(dt * factor_inc, dt_max)
 
-print(f"\nWritten → {settings.output}/{settings.jobname}.h5")
-print(f"          {settings.output}/{settings.jobname}.xdmf")
+print(f"\nWritten → {output}/{jobname}.h5")
+print(f"          {output}/{jobname}.xdmf")
 print("Open the .xdmf in ParaView with the 'Xdmf3ReaderT' reader.")
 
 # ── CSV history ────────────────────────────────────────────────────────────────
 
-csv_path = f"{settings.output}/{settings.jobname}_history.csv"
+csv_path = f"{output}/{jobname}_history.csv"
 with open(csv_path, "w", newline="") as fh:
     writer = csv.DictWriter(fh, fieldnames=history[0].keys())
     writer.writeheader()
@@ -392,6 +288,6 @@ ax.set_title("Mode-II shear — single edge notch plate")
 ax.legend()
 ax.grid(True, linewidth=0.5, alpha=0.6)
 fig.tight_layout()
-plot_path = f"{settings.output}/{settings.jobname}_comparison.png"
+plot_path = f"{output}/{jobname}_comparison.png"
 fig.savefig(plot_path, dpi=150)
 print(f"Written → {plot_path}")
