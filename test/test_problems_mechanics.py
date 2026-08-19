@@ -31,7 +31,7 @@ import jax.numpy as jnp
 import pytest
 
 from generation.rve import make_square_composite_rve
-from mat_models.elastic import LinearElasticIsotropic
+from materialmodels.elastic.isotropic import LinearElasticIsotropic
 from problems.mechanics import solve_mechanics
 
 
