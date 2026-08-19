@@ -43,8 +43,8 @@ def degrade_stiffness_field(
     """
     Apply AT2 degradation to an already-assembled undegraded stiffness
     field: ``C_eff = g(d) * C_field``. Kept in materialmodels/ (rather than
-    inlined at the call site in solvers/coupling/staggered.py) so the
-    materials layer owns how degradation combines with stiffness -- the
+    inlined at the call site in problems/fracture.py's staggered loop) so
+    the materials layer owns how degradation combines with stiffness -- the
     caller only needs to know it *does*, not the broadcast shape.
 
     Deliberately takes the already-assembled ``C_field`` (from

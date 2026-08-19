@@ -14,7 +14,7 @@ Pre-crack   : x ∈ [5, 15) mm  (i=[25,75) at 250² grid),  y = 125 (centre)
 Load        : shear strain ramp  ε₁₂ = ε₂₁ → 1.0 × 10⁻³,  100 equal increments
 
 Staggered scheme per increment (problems.fracture.solve_fracture, one call
-per cutback attempt) -- see solvers.coupling.staggered for the loop itself:
+per cutback attempt, staggered loop lives inside solve_fracture itself):
     1. Degrade stiffness:     C_eff = g(d) · C_field
     2. Mechanical solve:      (ε, σ) = solve_lippmann_schwinger(C_eff, ...)
     3. Crack driving force:   ψ⁺ from undegraded Amor dev/vol split

@@ -21,13 +21,18 @@ src/
 │   ├── boundary.py                     # BCType, FaceBC, BoundaryConditions — periodic/Dirichlet/Neumann/mixed
 │   └── fft_utils.py                    # rfftn/irfftn wrappers, raw k-vector construction — not needed yet
 │
-├── solvers/
+├── solvers/                            # numerics only: operate on prepared arrays/operators (C_field, green_op,
+│   │                                   #   xi_flat, ...) — never import materialmodels/ or know about phase/
+│   │                                   #   materials/"which degradation law". Multi-physics coupling (staggered
+│   │                                   #   loops etc.) lives in problems/ instead, one driver per problem file —
+│   │                                   #   see problems/fracture.py's module docstring for the reasoning
 │   ├── __init__.py
 │   ├── base.py                         # shared convergence criteria, iteration bookkeeping
 │   ├── krylov/
 │   │   └── cg.py                       ✅ operator-agnostic (P)CG driver, shared by every elliptic PDE-type
 │   ├── elliptic/
-│   │   ├── scalar.py                   # thermal, diffusion (Fickian), phase-field φ-subproblem
+│   │   ├── scalar.py                   ✅ solve_damage_helmholtz_cg — AT2 phase-field damage sub-problem, incl.
+│   │   │                               #   per-voxel k_res scaling; thermal, diffusion (Fickian) not built yet
 │   │   └── vector/
 │   │       ├── base.py                 ✅ ElasticitySolver ABC (.solve()), ElasticitySolution
 │   │       │                           #   (NamedTuple, not dataclass — pytree-safe for jit/grad)
@@ -36,8 +41,6 @@ src/
 │   │       └── displacement_based.py   # direct u-solve via ∇/∇·, mixed BC via boundary.py, penalty enforcement
 │   ├── parabolic/
 │   │   └── reaction_diffusion.py       # Allen-Cahn / Cahn-Hilliard time-stepping over elliptic.scalar
-│   ├── coupling/
-│   │   └── staggered.py                # generic staggered driver (mechanics ↔ phase-field, thermal ↔ diffusion, ...)
 │   └── adjoint/
 │       └── implicit_diff.py            # custom_vjp via implicit function theorem — differentiable solve() for free
 │
@@ -60,17 +63,26 @@ src/
 │   │   ├── fickian.py                  # linear Fick's law, isotropic/orthotropic D
 │   │   └── nonlinear.py                # concentration-dependent D(c) — needs Newton-outer/CG-inner, not drop-in linear
 │   ├── phasefield/
-│   │   ├── degradation.py              # g(φ) AT1/AT2, spatially varying Gc
+│   │   ├── degradation.py              ✅ degradation_at2 g(d), degrade_stiffness_field, k_res_field (per-phase
+│   │   │                               #   residual stiffness, incl. k_res=1 damage-immune); AT1, spatially
+│   │   │                               #   varying Gc not built yet
+│   │   ├── driving_force.py            ✅ lame_field, strain_energy_amor_split, update_history_hybrid (hybrid
+│   │   │                               #   irreversibility, Steinke & Kaliske 2019); Miehe/spectral split not
+│   │   │                               #   built yet
 │   │   └── regularization.py           # ℓ-dependent gradient-energy term
 │   └── tensors.py                      ⚙️ Voigt/Mandel ↔ tensor (4th-order C, 2nd-order ε/σ), rotation, symmetry checks
 │
-├── problems/                           # thin wiring layer: pick strategies, build C(x), average, solve, unpack
+├── problems/                           # thin wiring layer: pick strategies, build C(x), average, solve, unpack —
+│   │                                   #   AND, per fracture.py, owns any staggered/multi-physics loop for that
+│   │                                   #   problem (solvers/ stays numerics-only, see its note above)
 │   ├── mechanics.py                    ✅ solve_mechanics: formulation="lippmann_schwinger" done, "displacement"
 │   │                                   #   raises NotImplementedError; reference-medium averaging is a plain
 │   │                                   #   Lame-parameter mean, placeholder for materialmodels/averaging.py
 │   ├── thermal.py
 │   ├── diffusion.py
-│   └── fracture.py                     # staggered mechanics + phase-field
+│   └── fracture.py                     ✅ solve_fracture: staggered mechanics<->AT2 phase-field, one call per
+│                                       #   time increment; formulation="lippmann_schwinger" only (mirrors
+│                                       #   mechanics.py); the staggered loop itself lives here, not in solvers/
 │
 ├── generation/                         # RVE/RSA/Matérn cluster generation (existing name kept over "microstructure/")
 │
