@@ -66,7 +66,7 @@ dx = tuple(Li / ni for Li, ni in zip(L, n))
 
 materials = [
     LinearElasticIsotropic(E=210e3, nu=0.3, name="steel"),
-    LinearElasticIsotropic(E=1e-6,  nu=0.3, name="void"),
+    LinearElasticIsotropic(E=1e-6*230e3,  nu=0.3, name="void"),
 ]
 
 # ── Microstructure ────────────────────────────────────────────────────────────
