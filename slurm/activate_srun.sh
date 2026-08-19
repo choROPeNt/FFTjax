@@ -1,17 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PARTITION="capella"
-ACCOUNT="p_haftfaeden"
-TIME="06:00:00"
-CPUS=6
-MEM_PER_CPU="10G"
-GPUS=1
-NODES=1
-NTASKS=1
+# Site-/account-specific settings -- not committed, see slurm/.env.example
+ENV_FILE="$(dirname "${BASH_SOURCE[0]}")/.env"
+if [[ ! -f "$ENV_FILE" ]]; then
+    echo "Missing $ENV_FILE -- copy slurm/.env.example to slurm/.env and fill in your own values." >&2
+    exit 1
+fi
+source "$ENV_FILE"
+: "${ACCOUNT:?Set ACCOUNT in $ENV_FILE}"
+: "${PROJECT_DIR:?Set PROJECT_DIR in $ENV_FILE}"
 
-PROJECT_DIR="$HOME/projects/alpha-capella/FFTjax"
-VENV_PATH=".venv"
+PARTITION="${PARTITION:-capella}"
+TIME="${TIME:-06:00:00}"
+CPUS="${CPUS:-6}"
+MEM_PER_CPU="${MEM_PER_CPU:-10G}"
+GPUS="${GPUS:-1}"
+NODES="${NODES:-1}"
+NTASKS="${NTASKS:-1}"
+VENV_PATH="${VENV_PATH:-.venv}"
 
 srun \
   -p "$PARTITION" \
