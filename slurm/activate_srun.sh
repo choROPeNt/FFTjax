@@ -33,7 +33,7 @@ srun \
   --pty bash -lc "
     cd '$PROJECT_DIR'
 
-    ml release/24.10 GCC/13.3.0 Python/3.12.3 CUDA/12.8.0
+    ml release/2026  GCC/14.3.0 Python/3.13.5 OpenMPI/5.0.8 CUDA/13.2.0
     source '$VENV_PATH/bin/activate'
 
     echo '--- Capella interactive session ready ---'
