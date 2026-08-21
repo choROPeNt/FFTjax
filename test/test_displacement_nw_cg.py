@@ -1,6 +1,6 @@
 """
 Validation script for the displacement-based Newton-CG solver
-(``solvers.mechanical.displacement_nw_cg.ddisp_nw_cg``).
+(``solvers.elliptic.vector.displacement_based.solve_displacement_based``).
 
 Single-phase, homogeneous, isotropic 16x16x16 RVE — for a spatially uniform
 material the solution must be a uniform field, so we can check against
@@ -28,6 +28,13 @@ strain-based (Lippmann-Schwinger / Green's-operator) schemes are expected to
 disagree at the level of a few percent — a well-known discretization
 difference between the two families of FFT homogenization schemes, not a bug.
 
+Case 4 — heterogeneous (sharp interface), mixed BC: the du<->sv cross-coupling
+terms only enter the operator for *heterogeneous* materials (they vanish
+identically for homogeneous C, which is why cases 1-2 above cannot catch a
+sign error in that coupling). A random per-voxel two-phase field with high
+stiffness contrast is a worst-case (sharp-interface) exercise of that
+coupling.
+
 Usage
 -----
     python test/test_displacement_nw_cg.py
@@ -44,10 +51,11 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from mat_models.elastic     import LinearElasticIsotropic, assemble_C_field
+from materialmodels.elastic.isotropic import LinearElasticIsotropic
+from materialmodels.assembly import assemble_C_field
 from operators.green        import build_freq_grid, GreenOperatorBasic
 from solvers.elliptic.vector.lippmann_schwinger import solve_lippmann_schwinger
-from solvers.mechanical.displacement_nw_cg import ddisp_nw_cg
+from solvers.elliptic.vector.displacement_based import solve_displacement_based
 
 jax.config.update("jax_enable_x64", True)
 
@@ -77,7 +85,7 @@ eps_ref, sigma_ref, _, conv_ref = solve_lippmann_schwinger(
     n, C_field, green_op, eps_bar, toler_lin=1e-10, maxiter=2000
 )
 
-eps_u, sigma_u, delta_u, eps_bar_out, conv_u = ddisp_nw_cg(
+eps_u, sigma_u, delta_u, eps_bar_out, conv_u = solve_displacement_based(
     n, C_field, xi_flat, eps_bar, control, stress_goal_zero, toler_lin=1e-10, maxiter=2000
 )
 
@@ -106,7 +114,7 @@ stress_goal = jnp.array([
     [0.0,           0.0, 0.0],
 ])
 
-eps_u, sigma_u, delta_u, eps_bar_out, conv_u = ddisp_nw_cg(
+eps_u, sigma_u, delta_u, eps_bar_out, conv_u = solve_displacement_based(
     n, C_field, xi_flat, eps_bar_guess, control, stress_goal, toler_lin=1e-10, maxiter=2000
 )
 
@@ -151,7 +159,7 @@ control = ((0, 0, 0), (0, 0, 0), (0, 0, 0))
 eps_ref, sigma_ref, _, conv_ref = solve_lippmann_schwinger(
     n, C_field_het, green_op_het, eps_bar, toler_lin=1e-12, maxiter=3000
 )
-eps_u, sigma_u, delta_u, eps_bar_out, conv_u = ddisp_nw_cg(
+eps_u, sigma_u, delta_u, eps_bar_out, conv_u = solve_displacement_based(
     n, C_field_het, xi_flat, eps_bar, control, stress_goal_zero, toler_lin=1e-12, maxiter=3000
 )
 
@@ -188,7 +196,7 @@ stress_goal = jnp.array([
     [0.0,           0.0, 0.0],
 ])
 
-eps_u, sigma_u, delta_u, eps_bar_out, conv_u = ddisp_nw_cg(
+eps_u, sigma_u, delta_u, eps_bar_out, conv_u = solve_displacement_based(
     n_het, C_field_sharp, xi_flat_het, eps_bar_guess, control, stress_goal,
     toler_lin=1e-8, maxiter=500,
 )

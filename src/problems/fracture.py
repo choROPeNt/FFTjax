@@ -15,7 +15,6 @@ allowed to know about them.
 
 Scope of this first pass, matching what's actually built on the
 materialmodels/ and solvers/ stacks so far:
-- formulation="lippmann_schwinger" only, mirroring problems/mechanics.py.
 - Amor driving-force split, AT2 degradation, hybrid irreversibility,
   homogeneous Gc -- the two single-notch-plate benchmarks' scheme
   (Schneider & Kaestner 2025, doi:10.1111/ffe.14553).
@@ -23,6 +22,9 @@ materialmodels/ and solvers/ stacks so far:
   (this function takes d_init/H_init and returns d/H, it doesn't own the
   time-stepping loop) -- same division of responsibility as solve_mechanics
   not owning load-stepping either.
+- ``control`` (mixed macroscopic strain/stress BC) only has meaning for
+  formulation="displacement", mirroring problems/mechanics.py -- see that
+  module's docstring for why lippmann_schwinger can't do it.
 """
 
 import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on TPU, no GPU prealloc)
@@ -36,7 +38,10 @@ from materialmodels.phasefield.degradation import degrade_stiffness_field, k_res
 from materialmodels.phasefield.driving_force import lame_field, strain_energy_amor_split, update_history_hybrid
 from operators.green import build_freq_grid, build_reference_green_operator
 from solvers.elliptic.scalar import solve_damage_helmholtz_cg
+from solvers.elliptic.vector.displacement_based import solve_displacement_based
 from solvers.elliptic.vector.lippmann_schwinger import solve_lippmann_schwinger
+
+_ZERO_CONTROL = ((0, 0, 0), (0, 0, 0), (0, 0, 0))
 
 
 class FractureSolution(NamedTuple):
@@ -58,6 +63,10 @@ class FractureSolution(NamedTuple):
     iter_staggered:      int          # staggered iterations actually run
     err_abs:             float        # max|d_new - d_old| at the last iteration
     err_rel:             float        # err_abs / max|d_new|
+    eps_bar:             jnp.ndarray | None = None  # (3, 3) macroscopic strain with
+                                                     # any stress-controlled entries
+                                                     # filled in -- None unless
+                                                     # formulation="displacement"
 
 
 def solve_fracture(
@@ -72,6 +81,8 @@ def solve_fracture(
     H_init:       jnp.ndarray,
     formulation:  str = "lippmann_schwinger",
     scheme:       str = "rotated",
+    control:      Tuple[Tuple[int, ...], ...] | None = None,
+    stress_goal:  jnp.ndarray | None = None,
     toler_lin:    float = 1e-6,
     maxiter_cg:   int = 1000,
     toler_helm:   float = 1e-4,
@@ -86,12 +97,14 @@ def solve_fracture(
 ) -> FractureSolution:
     """
     Solve one staggered mechanics<->phase-field increment under a
-    prescribed macroscopic strain.
+    prescribed macroscopic strain (and, for formulation="displacement",
+    optionally mixed strain/stress control).
 
     Per staggered iteration
     ------------------------
         1. Degrade stiffness:  C_eff = g(d) * C_field   (g = AT2 degradation)
         2. Mechanical solve:   (eps, sigma) = solve_lippmann_schwinger(C_eff, ...)
+                                or solve_displacement_based(C_eff, ...)
         3. Driving force:      psi+ from the undegraded Amor split
         4. History update:     hybrid irreversibility (Steinke & Kaliske 2019)
         5. Damage solve:       d = solve_damage_helmholtz_cg(H, ...)
@@ -103,12 +116,21 @@ def solve_fracture(
     phase       : (Nv,) int      phase index per voxel (0-based)
     materials   : list           each implements .stiffness_tensor(), .lam, .mu
                   (see materialmodels.elastic.isotropic.LinearElasticIsotropic)
-    eps_bar     : (3, 3)         prescribed macroscopic strain for this increment
+    eps_bar     : (3, 3)         prescribed macroscopic strain for this increment;
+                  entries where ``control == 1`` are ignored (solved for instead)
     l0, Gc      : phase-field length scale and critical energy release rate
     d_init      : (Nv,)          damage carried in from the previous increment
     H_init      : (Nv,)          history variable carried in from the previous increment
-    formulation : "lippmann_schwinger" (only option implemented so far)
+    formulation : "lippmann_schwinger" (reference-medium, strain BC only) or
+                  "displacement" (true heterogeneous tangent, supports mixed BC)
     scheme      : "standard" (GreenOperatorBasic) or "rotated" (GreenOperatorWillot)
+                  -- only used by formulation="lippmann_schwinger"
+    control     : (3, 3) 0/1 mask, 1 = stress-controlled, 0 = strain-controlled.
+                  None (default) = pure strain BC (all zero). Only
+                  formulation="displacement" can have any nonzero entries.
+    stress_goal : (3, 3) macroscopic target stress, used only on
+                  ``control``-marked entries -- only meaningful for
+                  formulation="displacement"
     toler_lin, maxiter_cg     : mechanical CG tolerance / iteration cap
     toler_helm, maxiter_helm  : damage CG tolerance / iteration cap
     eta, dt                  : viscous regularisation of the damage equation
@@ -125,32 +147,52 @@ def solve_fracture(
     Returns
     -------
     FractureSolution(eps, sigma, delta, d, H, psi_pos, converged_mech,
-    converged_helm, converged_staggered, iter_staggered, err_abs, err_rel)
+    converged_helm, converged_staggered, iter_staggered, err_abs, err_rel,
+    eps_bar)
     """
-    if formulation != "lippmann_schwinger":
-        raise NotImplementedError(
-            f"formulation={formulation!r} not implemented -- "
-            "use formulation='lippmann_schwinger'"
+    if formulation not in ("lippmann_schwinger", "displacement"):
+        raise ValueError(
+            f"unknown formulation {formulation!r}, expected 'lippmann_schwinger' or 'displacement'"
         )
+
+    control = control if control is not None else _ZERO_CONTROL
+    control_nonzero = any(any(row) for row in control)
+    if formulation == "lippmann_schwinger" and control_nonzero:
+        raise ValueError(
+            "formulation='lippmann_schwinger' cannot do stress-controlled "
+            "macroscopic BC (control has nonzero entries) -- its reference-"
+            "medium approach only supports pure strain BC; "
+            "use formulation='displacement' instead"
+        )
+    stress_goal_arr = jnp.zeros((3, 3)) if stress_goal is None else stress_goal
 
     C_field = assemble_C_field(materials, phase)
     lam_vox, mu_vox = lame_field(materials, phase)
-    green_op = build_reference_green_operator(n, L, materials, scheme=scheme)
     xi_flat = build_freq_grid(n, L)
     k_res_arr = k_res_field(materials, phase) if k_res is None else k_res
 
+    if formulation == "lippmann_schwinger":
+        green_op = build_reference_green_operator(n, L, materials, scheme=scheme)
+
     d_st = d_init
     H_st = H_init
+    eps_bar_cur = None
 
     for iter_st in range(1, maxiter_st + 1):
         d_prev_st = d_st
 
         C_eff = degrade_stiffness_field(C_field, d_st, k=k_res_arr)
 
-        eps, sigma, delta, converged_mech = solve_lippmann_schwinger(
-            n, C_eff, green_op, eps_bar,
-            toler_lin=toler_lin, maxiter=maxiter_cg,
-        )
+        if formulation == "lippmann_schwinger":
+            eps, sigma, delta, converged_mech = solve_lippmann_schwinger(
+                n, C_eff, green_op, eps_bar,
+                toler_lin=toler_lin, maxiter=maxiter_cg,
+            )
+        else:  # "displacement"
+            eps, sigma, delta, eps_bar_cur, converged_mech = solve_displacement_based(
+                n, C_eff, xi_flat, eps_bar, control, stress_goal_arr,
+                toler_lin=toler_lin, maxiter=maxiter_cg,
+            )
 
         psi_pos, _ = strain_energy_amor_split(eps, lam_vox, mu_vox)
         H_st = update_history_hybrid(H_st, psi_pos, d_prev_st, d_thres=d_thres)
@@ -171,4 +213,5 @@ def solve_fracture(
         converged_mech=converged_mech, converged_helm=converged_helm,
         converged_staggered=(err_abs < toler_st_abs or err_rel < toler_st_rel),
         iter_staggered=iter_st, err_abs=err_abs, err_rel=err_rel,
+        eps_bar=eps_bar_cur,
     )

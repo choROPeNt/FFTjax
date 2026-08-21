@@ -1,8 +1,8 @@
 """
 Standalone test for solve_mechanics (problems/mechanics.py).
 
-Three checks
-------------
+Four checks
+-----------
 1. End-to-end parity -- solve_mechanics on the same glass-fiber/epoxy
    composite RVE as notebooks/lin-elastic_strain.ipynb and
    test_elliptic_vector_lippmann_schwinger.py must reproduce the known
@@ -12,7 +12,12 @@ Three checks
 2. scheme="standard" also runs and converges (just checks it doesn't error
    and produces a finite, converged result -- no known reference value for
    the non-rotated scheme on this RVE).
-3. Unknown formulation/scheme raise clear errors rather than silently
+3. formulation="displacement" also runs and converges on the same RVE, and
+   agrees with the lippmann_schwinger result to within the few-percent
+   discretization difference expected between the two schemes on a
+   sharp-interface microstructure (see test_displacement_nw_cg.py's
+   module docstring for why exact agreement isn't expected here).
+4. Unknown formulation/scheme raise clear errors rather than silently
    doing the wrong thing.
 
 Usage
@@ -35,7 +40,7 @@ from materialmodels.elastic.isotropic import LinearElasticIsotropic
 from problems.mechanics import solve_mechanics
 
 
-phase_np, N, n, L, phi_act = make_square_composite_rve(
+phase_np, n, L, phi_act = make_square_composite_rve(
     phi=0.5, r_fiber=0.005, dx=0.0002, N_min=32, nz=10,
 )
 phase = jnp.array(phase_np.reshape(-1))
@@ -53,34 +58,47 @@ eps_bar = jnp.array([
 
 # ── 1. end-to-end parity with the known notebook result ─────────────────────
 
-eps, sigma, delta, converged = solve_mechanics(
+sol = solve_mechanics(
     n, L, phase, materials, eps_bar,
     formulation="lippmann_schwinger", scheme="rotated",
     toler_lin=1e-6, maxiter=1000,
 )
-tau_xy = float(jnp.mean(sigma[1, 0]))
-assert bool(converged), "composite RVE solve must converge"
+tau_xy = float(jnp.mean(sol.sigma[1, 0]))
+assert bool(sol.converged), "composite RVE solve must converge"
 assert abs(tau_xy - 7.625369073063829) < 1e-6, f"tau_xy mismatch: got {tau_xy}, expected ~7.625369"
-print(f"[1] rotated scheme: tau_xy = {tau_xy:.6f} MPa, converged={bool(converged)}")
+print(f"[1] rotated scheme: tau_xy = {tau_xy:.6f} MPa, converged={bool(sol.converged)}")
 
 
 # ── 2. standard scheme runs and converges ────────────────────────────────────
 
-eps_std, sigma_std, delta_std, converged_std = solve_mechanics(
+sol_std = solve_mechanics(
     n, L, phase, materials, eps_bar,
     formulation="lippmann_schwinger", scheme="standard",
     toler_lin=1e-6, maxiter=2000,
 )
-assert bool(converged_std), "standard-scheme solve must also converge"
-assert jnp.all(jnp.isfinite(sigma_std)), "standard-scheme stress must be finite"
-print(f"[2] standard scheme: tau_xy = {float(jnp.mean(sigma_std[1, 0])):.6f} MPa, "
-      f"converged={bool(converged_std)}")
+assert bool(sol_std.converged), "standard-scheme solve must also converge"
+assert jnp.all(jnp.isfinite(sol_std.sigma)), "standard-scheme stress must be finite"
+print(f"[2] standard scheme: tau_xy = {float(jnp.mean(sol_std.sigma[1, 0])):.6f} MPa, "
+      f"converged={bool(sol_std.converged)}")
 
 
-# ── 3. unknown formulation/scheme raise clear errors ─────────────────────────
+# ── 3. displacement-based formulation runs, converges, and roughly agrees ────
 
-with pytest.raises(NotImplementedError):
-    solve_mechanics(n, L, phase, materials, eps_bar, formulation="displacement")
+sol_disp = solve_mechanics(
+    n, L, phase, materials, eps_bar,
+    formulation="displacement",
+    toler_lin=1e-6, maxiter=2000,
+)
+tau_xy_disp = float(jnp.mean(sol_disp.sigma[1, 0]))
+rel_diff = abs(tau_xy_disp - tau_xy) / abs(tau_xy)
+assert bool(sol_disp.converged), "displacement-based solve must converge"
+assert jnp.allclose(sol_disp.eps_bar, eps_bar), "pure-strain BC: eps_bar must pass through unchanged"
+assert rel_diff < 0.10, f"displacement vs. lippmann_schwinger tau_xy differ by {rel_diff:.1%}, expected <10%"
+print(f"[3] displacement formulation: tau_xy = {tau_xy_disp:.6f} MPa, "
+      f"converged={bool(sol_disp.converged)}, rel. diff from LS = {rel_diff:.2%}")
+
+
+# ── 4. unknown formulation/scheme raise clear errors ─────────────────────────
 
 with pytest.raises(ValueError):
     solve_mechanics(n, L, phase, materials, eps_bar, formulation="bogus")

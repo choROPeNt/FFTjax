@@ -23,6 +23,12 @@ class ElasticitySolution(NamedTuple):
     sigma:     jnp.ndarray  # (3, 3, Nv)  local stress
     delta:     jnp.ndarray  # (3, 3, Nv)  strain correction from the CG solve
     converged: jnp.ndarray  # bool array
+    eps_bar:   jnp.ndarray | None = None  # (3, 3) macroscopic strain with any
+                                           # stress-controlled entries filled in
+                                           # by the solve -- None (default) for
+                                           # solvers with no mixed-BC concept
+                                           # (e.g. LippmannSchwingerSolver);
+                                           # populated by DisplacementBasedSolver
 
 
 class ElasticitySolver(ABC):
@@ -41,4 +47,11 @@ class ElasticitySolver(ABC):
         eps_bar:     jnp.ndarray,
         stress_goal: jnp.ndarray | None = None,
     ) -> ElasticitySolution:
+        """
+        ``stress_goal``'s shape and meaning are formulation-specific -- see
+        each concrete solver: ``LippmannSchwingerSolver`` takes a per-voxel
+        ``(3, 3, Nv)`` target stress field (None = zero, pure strain BC);
+        ``DisplacementBasedSolver`` takes a macroscopic ``(3, 3)`` target,
+        used only on the entries its ``control`` marks stress-controlled.
+        """
         ...

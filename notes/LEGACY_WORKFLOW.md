@@ -246,6 +246,8 @@ Underneath, `solve_mechanics` builds a `GreenOperatorBasic`/`GreenOperatorWillot
 `solvers/elliptic/vector/lippmann_schwinger.py`'s `Gamma0Operator`-based CG reduction, verified
 bit-identical to `dstrain_nw_cg` before the latter was retired. Reach for the lower-level pieces
 (`GreenOperatorWillot`, `LippmannSchwingerSolver` directly) only when something below
-`solve_mechanics`'s current scope is needed — e.g. a stress-controlled/mixed BC, which
-`solve_mechanics` doesn't expose yet. See `TARGET_LAYOUT.md` for the current module layout and
-what remains unbuilt (displacement-based formulation, mixed BC, phase-field damage).
+`solve_mechanics`'s current scope is needed. `solve_mechanics(..., formulation="displacement",
+control=...)` now also covers mixed strain/stress macroscopic BC (see
+`solvers/elliptic/vector/displacement_based.py`) and `problems/fracture.py` covers staggered
+mechanics<->phase-field damage. See `TARGET_LAYOUT.md` for the current module layout and what
+remains unbuilt.
