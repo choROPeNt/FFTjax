@@ -1,0 +1,21 @@
+# Weave geometry generation config — biaxial plain weave
+# Self-contained: geometry parameters inlined from data/fabric_db.json's
+# "200" entry (BIAX 200 g/m²) at the time this config was written, not
+# looked up at run time -- editing fabric_db.json later won't change what
+# this config builds.
+# {weave.jobname} → "200"  (used in output path)
+
+weave:
+  jobname:         "200"
+  description:     "BIAX 200 g/m²"
+  width:           1.55222   # mm
+  thickness:       0.17084   # mm
+  pattern_width:   2.01811   # mm
+  resin_rich_zone: 0.0       # mm
+  voxelsize:       0.02      # mm
+  n_layers:        2
+  Vf_yarn:         0.72      # fibre packing within a tow
+  max_nesting:     true     # TexGen-style deepest-no-overlap nesting search (see weave.py)
+
+output:  output/generation
+jobname: "{weave.jobname}"

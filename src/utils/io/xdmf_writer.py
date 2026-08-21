@@ -32,7 +32,10 @@ across the domain boundary), consistent with the periodic boundary conditions th
 project's FFT solvers assume.
 """
 
+import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on TPU, no GPU prealloc)
+
 import os
+import jax
 import numpy as np
 import h5py
 
@@ -114,7 +117,7 @@ class IncrementalWriter:
     def write_increment(
         self,
         increment: int,
-        fields: dict[str, np.ndarray],
+        fields: dict[str, np.ndarray | jax.Array],
         time: float | None = None,
         point_fields: set[str] | frozenset[str] | None = None,
     ) -> None:
@@ -125,8 +128,8 @@ class IncrementalWriter:
         ----------
         increment : int
             Increment index — used as the HDF5 group name.
-        fields : dict[str, np.ndarray]
-            Mapping of field name → numpy array, given voxel-centered (one value
+        fields : dict[str, np.ndarray | jax.Array]
+            Mapping of field name → array, given voxel-centered (one value
             per voxel) regardless of ``point_fields`` below.
             Each array must match grid_shape for scalar fields,
             or ``(*grid_shape, components)`` for vector / tensor fields.
