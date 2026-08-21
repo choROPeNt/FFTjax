@@ -100,7 +100,7 @@ print("  PASSED\n")
 print("── Case C: cg_solve_scan matches ground truth on the REAL, heterogeneous ──")
 print("   dstrain_nw_cg Green's operator (forward / reverse / finite-difference) ─\n")
 
-phase_np, N, n_rve, L_rve, phi_act = make_square_composite_rve(
+phase_np, n_rve, L_rve, phi_act = make_square_composite_rve(
     phi=0.5, r_fiber=0.005, dx=0.0002, N_min=32, nz=10,
 )
 Nv = int(np.prod(n_rve))

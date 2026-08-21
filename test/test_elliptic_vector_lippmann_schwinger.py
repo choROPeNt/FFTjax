@@ -95,9 +95,10 @@ for green_op in (GreenOperatorBasic(n, L, lam0, mu0), GreenOperatorWillot(n, L, 
 # ── 2. real composite RVE (matches notebooks/lin-elastic_strain.ipynb) ──────
 
 from generation.rve import make_square_composite_rve
-from mat_models.elastic import LinearElasticIsotropic, assemble_C_field
+from materialmodels.elastic.isotropic import LinearElasticIsotropic
+from materialmodels.assembly import assemble_C_field
 
-phase_np, N, n_rve, L_rve, phi_act = make_square_composite_rve(
+phase_np, n_rve, L_rve, phi_act = make_square_composite_rve(
     phi=0.5, r_fiber=0.005, dx=0.0002, N_min=32, nz=10,
 )
 dx_rve = tuple(Li / ni for Li, ni in zip(L_rve, n_rve))
