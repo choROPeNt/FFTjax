@@ -2,7 +2,7 @@
 Readers for the file formats used in FFTjax.
 
     read_xdmf  — load field arrays from an HDF5/XDMF simulation output
-    read_vtu   — load a TexGen (or generate_weave_vtu) voxel mesh
+    read_vtu   — load a TexGen (or generate_weave) voxel mesh
     read_npz   — load a numpy .npz archive (e.g. preproc output)
 
 All functions return plain numpy arrays in FFTjax C-order (X slowest).
@@ -119,7 +119,7 @@ def _read_texgen_vtu(
     """
     Parse a TexGen voxel VTU (UnstructuredGrid of hexahedral cells).
 
-    Also accepts VTU files produced by ``generate_weave_vtu.py``; those
+    Also accepts VTU files produced by ``generate_weave.py``; those
     contain a ``VolumeFraction`` field with smooth SDF-based phi values.
 
     Parameters
@@ -201,7 +201,7 @@ def read_vtu(
     np.ndarray,
 ]:
     """
-    Read a TexGen (or generate_weave_vtu) voxel mesh.
+    Read a TexGen (or generate_weave) voxel mesh.
 
     Parameters
     ----------

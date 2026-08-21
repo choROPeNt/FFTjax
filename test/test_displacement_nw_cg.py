@@ -42,6 +42,7 @@ Usage
 
 import os
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+os.makedirs("output", exist_ok=True)
 
 import sys
 sys.path.insert(0, "src")

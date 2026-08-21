@@ -27,6 +27,9 @@ use here (it is not; see its docstring).
 """
 import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on TPU, no GPU prealloc)
 
+import os
+os.makedirs("output", exist_ok=True)
+
 import jax
 import jax.numpy as jnp
 import numpy as np

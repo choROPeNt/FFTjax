@@ -6,7 +6,7 @@ Supports two modes selected by ``geometry.type`` in the config:
   square_rve  — generate a square-packed circular-fibre RVE from parameters.
                 Uniform phi; orientation fixed to ``geometry.fibre_dir``.
 
-  textile     — load an existing VTU / XDMF (from generate_weave_vtu.py or
+  textile     — load an existing VTU / XDMF (from scripts/generation/generate_weave.py or
                 TexGen) and re-export with proper HDF5 attributes.
                 Spatially distributed phi (VolumeFraction field) is preserved.
 
@@ -16,8 +16,8 @@ String values in the YAML support {variable} interpolation:
 
 Usage
 -----
-    python scripts/preprocessing/generate_rve.py configs/preproc_rve.yaml
-    python scripts/preprocessing/generate_rve.py configs/preproc_textile.yaml
+    python scripts/generation/generate_rve.py configs/preproc_rve.yaml
+    python scripts/generation/generate_rve.py configs/preproc_textile.yaml
 
 Output
 ------

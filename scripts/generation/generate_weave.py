@@ -2,14 +2,14 @@
 CLI for the biaxial plain-weave geometry generator.
 
 Geometry logic lives in src/generation/weave.py.
-Reading a TexGen-produced VTU back in lives in src/utils/io_texgen.py.
+Reading a TexGen-produced VTU back in lives in src/utils/io/reader.py.
 
 Usage
 -----
-    python scripts/preprocessing/generate_weave_vtu.py --material 200
-    python scripts/preprocessing/generate_weave_vtu.py --material 200 --nesting_shift
-    python scripts/preprocessing/generate_weave_vtu.py --list
-    python scripts/preprocessing/generate_weave_vtu.py --Breite 1.55 --Dicke 0.17
+    python scripts/generation/generate_weave.py --material 200
+    python scripts/generation/generate_weave.py --material 200 --nesting_shift
+    python scripts/generation/generate_weave.py --list
+    python scripts/generation/generate_weave.py --width 1.55 --thickness 0.17
 """
 
 import argparse
@@ -23,23 +23,24 @@ sys.path.insert(0, "src")
 from generation.weave import build_weave, load_db, list_materials, max_nesting
 from utils.io.xdmf_writer import IncrementalWriter
 def main():
-    parser = argparse.ArgumentParser(description='Generate two-layer biaxial weave VTU')
+    parser = argparse.ArgumentParser(description='Generate two-layer biaxial weave geometry (XDMF/HDF5)')
     parser.add_argument('--material',      type=str,   default=None,
                         help='fabric ID from data/fabric_db.json (160 | 200 | 245)')
     parser.add_argument('--list',          action='store_true',
                         help='list available material IDs and exit')
     parser.add_argument('--out',           type=Path,  default=None,
-                        help='output stem (default: data/<material>  →  .h5/.xdmf)')
-    parser.add_argument('--Breite',        type=float, default=None)
-    parser.add_argument('--Dicke',         type=float, default=None)
-    parser.add_argument('--Muster',        type=float, default=None)
+                        help='output stem (default: output/generation/<material>  →  .h5/.xdmf)')
+    parser.add_argument('--width',         type=float, default=None)
+    parser.add_argument('--thickness',     type=float, default=None)
+    parser.add_argument('--pattern-width', type=float, default=None, dest='pattern_width')
     parser.add_argument('--resin',         type=float, default=None)
     parser.add_argument('--voxelsize',     type=float, default=None)
     parser.add_argument('--n_layer',       type=int,   default=2)
     parser.add_argument('--Vf_yarn',       type=float, default=0.72)
     parser.add_argument('--nesting',       type=float, default=None)
     parser.add_argument('--nesting_shift', action='store_true',
-                        help='shift odd layers by (M/2,M/2) in XY; auto-sets nesting to DB max')
+                        help='shift odd layers by (pattern_width/2, pattern_width/2) in XY; '
+                             'auto-sets nesting to DB max')
     parser.add_argument('--epsilon', type=float, default=None,
                         help='SDF interface half-width mm (default: 1.5 × voxelsize)')
     args = parser.parse_args()
@@ -65,14 +66,14 @@ def main():
             return db_entry[db_key]
         return default
 
-    Breite    = _get(args.Breite,    'Breite',            1.55222)
-    Dicke     = _get(args.Dicke,     'Dicke',             0.17084)
-    Muster    = _get(args.Muster,    'Musterbreite',      2.01811)
-    resin     = _get(args.resin,     'Matrixreiche_Zone', 0.02)
-    voxelsize = _get(args.voxelsize, None,                load_db().get('_voxelsize', 0.02))
-    nesting_db = db_entry.get('nesting_max', Dicke)
+    width         = _get(args.width,         'width',           1.55222)
+    thickness     = _get(args.thickness,     'thickness',       0.17084)
+    pattern_width = _get(args.pattern_width, 'pattern_width',   2.01811)
+    resin         = _get(args.resin,         'resin_rich_zone', 0.02)
+    voxelsize     = _get(args.voxelsize,     None,              load_db().get('_voxelsize', 0.02))
+    nesting_db = db_entry.get('nesting_max', thickness)
     out_stem = args.out.with_suffix("") if args.out else Path(
-        f"data/{args.material}" if args.material else "data/weave"
+        f"output/generation/{args.material}" if args.material else "output/generation/weave"
     )
 
     nesting = args.nesting
@@ -83,16 +84,16 @@ def main():
 
     # ── build geometry ────────────────────────────────────────────────────────
     n, L, yarn_index, yarn_tangent, orientation, volume_fraction, phase = build_weave(
-        Breite            = Breite,
-        Dicke             = Dicke,
-        Musterbreite      = Muster,
-        Matrixreiche_Zone = resin,
-        n_layer           = args.n_layer,
-        voxelsize         = voxelsize,
-        Vf_yarn           = args.Vf_yarn,
-        nesting           = nesting,
-        nesting_shift     = args.nesting_shift,
-        epsilon           = args.epsilon,
+        width           = width,
+        thickness       = thickness,
+        pattern_width   = pattern_width,
+        resin_rich_zone = resin,
+        n_layer         = args.n_layer,
+        voxelsize       = voxelsize,
+        Vf_yarn         = args.Vf_yarn,
+        nesting         = nesting,
+        nesting_shift   = args.nesting_shift,
+        epsilon         = args.epsilon,
     )
     nx, ny, nz = n
     Lx, Ly, Lz = L
