@@ -18,18 +18,18 @@ mechanics:
       E:    3.0e3              # MPa
       nu:   0.35
       name: epoxy matrix
-    - model: isotropic_elastic
-      E:    70.0e3             # MPa
-      nu:   0.20
-      name: glass fibre
+    # - model: isotropic_elastic
+    #   E:    70.0e3             # MPa
+    #   nu:   0.20
+    #   name: glass fibre
     # transversely isotropic fibre example (not used above):
-    # - model: transverse_isotropic
-    #   E_L: 230.0e3
-    #   E_T: 15.0e3
-    #   G_LT: 24.0e3
-    #   nu_LT: 0.2
-    #   nu_TT: 0.4
-    #   name: carbon fibre
+    - model: transverse_isotropic
+      E_L: 230.0e3
+      E_T: 15.0e3
+      G_LT: 24.0e3
+      nu_LT: 0.2
+      nu_TT: 0.4
+      name: carbon fibre
 
   eps_bar:                    # prescribed macroscopic strain (3x3), reached at t=1
     - [1.0e-3,   0.0, 0.0]

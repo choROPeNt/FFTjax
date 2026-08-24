@@ -206,7 +206,16 @@ def solve_mechanics_incremental(
             eps_grid   = field_to_grid(sol.eps, n)
             sigma_grid = field_to_grid(sol.sigma, n)
             sigma_vm   = von_mises(sigma_grid)
-            u_grid     = compute_displacement(sol.eps, result.t * eps_bar, n, L)
+            # sol.eps_bar (displacement formulation only) is the *solved*
+            # macroscopic strain -- stress-controlled entries filled in with
+            # their actual result, e.g. Poisson contraction under a free
+            # lateral surface. The prescribed eps_bar has zeros there instead,
+            # so falling back to it would silently drop that contraction from
+            # the displacement field's macroscopic part (sol.eps itself is
+            # unaffected -- the solver embeds the true mean directly in its
+            # DC frequency mode, so stress/modulus are correct either way).
+            eps_bar_u  = sol.eps_bar if sol.eps_bar is not None else result.t * eps_bar
+            u_grid     = compute_displacement(sol.eps, eps_bar_u, n, L)
             fields = {
                 "phase":        np.asarray(phase).reshape(n).astype(np.float32),
                 "strain":       to_voigt(eps_grid).astype(np.float64),
