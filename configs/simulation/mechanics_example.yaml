@@ -1,0 +1,55 @@
+# Mechanical homogenization config — loads a microstructure, solves under a
+# prescribed macroscopic strain.
+# {mechanics.input.stem} → "rve_random_phi-0.55_seed-67"  (used in output path)
+#
+# `input` below must already exist -- generate it first with
+# scripts/generation/generate_rve.py (e.g. configs/generation/preproc_rve_random.yaml
+# for a randomly-packed periodic RVE; generation.rve.make_square_composite_rve
+# gives a quadratic/square-packed one, not yet wired to that script's CLI).
+
+mechanics:
+  input: output/generation/rve_random_phi-0.55_seed-67.xdmf
+
+  materials:                  # indexed by 0-based phase id (0=matrix, 1=fibre)
+    - E:    3.0e3              # MPa
+      nu:   0.35
+      name: epoxy matrix
+    - E:    70.0e3             # MPa
+      nu:   0.20
+      name: glass fibre
+
+  eps_bar:                    # prescribed macroscopic strain (3x3), reached at t=1
+    - [0.0,   1.0e-3, 0.0]
+    - [1.0e-3, 0.0,   0.0]
+    - [0.0,   0.0,   0.0]
+
+  formulation: lippmann_schwinger   # or "displacement"
+  scheme:      rotated              # "standard" or "rotated" -- lippmann_schwinger only
+  toler_lin:   1.0e-2
+  maxiter:     1000
+
+  # mode: single (default) -- one solve at the full eps_bar, no load stepping.
+  #   stepping: {mode: single}
+  # mode: fixed -- equal load-fraction increments of size dt, no cutback
+  #   (dt is a target -- resized to 1/round(1/dt) so every step is exactly equal).
+  #   stepping: {mode: fixed, dt: 0.25}
+  # mode: automatic -- adaptive load-fraction step (Abaqus *STATIC style):
+  #   grows by factor_inc after a converged increment, shrinks by factor_dec
+  #   and retries (up to max_cutbacks times) after a non-converged one.
+  #   Only meaningfully exercised once a nonlinear (e.g. plastic) solve is
+  #   behind solve_mechanics -- pure linear elasticity always converges in
+  #   one CG solve, so cutback never actually triggers here, but the
+  #   load-history (one written increment per step) is still useful.
+  stepping:
+    mode:         automatic
+    # dt:           0.2
+    dt_init:      0.2
+    dt_min:       1.0e-4
+    dt_max:       0.5
+    factor_inc:   1.5
+    factor_dec:   0.5
+    max_cutbacks: 5
+    max_steps:    1000
+
+output:  output/simulation
+jobname: "{mechanics.input.stem}"

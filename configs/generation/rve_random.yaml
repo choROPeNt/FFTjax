@@ -1,0 +1,15 @@
+# Preprocessing config — randomly-packed circular-fibre RVE (Catalanotti 2016)
+# {geometry.type} → "random_rve"  (used in output path)
+
+geometry:
+  phi:       0.55           # target fibre volume fraction (up to ~0.9069)
+  r_fib:     0.0035        # mm  fibre radius  (= 3.5 µm)
+  vox:       0.00009       # mm  voxel size    (= 0.1 µm, isotropic)
+  nz:        1             # voxels through thickness
+  fibre_dir: [0.0, 0.0, 1.0]   # fibre axis in global frame
+  Vf_yarn:   1.0           # fibre packing within tow (1.0 = solid fibre)
+  K:         15            # perturbation iterations (K>10 -> fully randomised)
+  seed:      67            # RNG seed (omit for a fresh, non-reproducible RVE)
+
+output:  output/generation
+jobname: "rve_random_phi-{geometry.phi}_seed-{geometry.seed}"

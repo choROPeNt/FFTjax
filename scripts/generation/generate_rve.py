@@ -12,7 +12,7 @@ String values in the YAML support {variable} interpolation:
 
 Usage
 -----
-    python scripts/generation/generate_rve.py configs/preproc_rve_random.yaml
+    python scripts/generation/generate_rve.py configs/generation/rve_random.yaml
 
 Output
 ------
