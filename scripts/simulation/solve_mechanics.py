@@ -19,6 +19,11 @@ Writes one XDMF/HDF5 increment per accepted step (time = load fraction
 reached) -- for "single" that's just one increment at time=1.0. Progress
 prints live as each increment converges, not only after the whole solve returns.
 
+``control``/``stress_bar`` (formulation="displacement" only) prescribe a
+mixed macroscopic strain/stress BC -- control's 1-entries mark which
+directions are stress- rather than strain-controlled, stress_bar gives their
+target (eps_bar is ignored on those entries). Omit both for pure strain BC.
+
 String values in the YAML support {variable} interpolation:
   output:  "output/simulation"
   jobname: "{mechanics.input.stem}"
@@ -46,7 +51,7 @@ sys.path.insert(0, "src")
 import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on TPU, no GPU prealloc)
 import jax.numpy as jnp
 
-from materialmodels.elastic.isotropic import LinearElasticIsotropic
+from materialmodels.factory import build_material
 from problems.mechanics import solve_mechanics_incremental
 from solvers.elliptic.vector.base import ElasticitySolution
 from utils.config import load_config
@@ -74,14 +79,20 @@ def main():
     print(f"Grid   : {n}   phi = {float(np.mean(phase_np > 0)):.3f}")
 
     # ── materials (list, indexed by 0-based phase id) ───────────────────────
-    materials = [
-        LinearElasticIsotropic(E=float(m["E"]), nu=float(m["nu"]), name=m.get("name", ""))
-        for m in mcfg["materials"]
-    ]
+    materials = [build_material(m) for m in mcfg["materials"]]
     for i, m in enumerate(materials):
-        print(f"  phase {i}: {m.name!r}  E={m.E:.4g}  nu={m.nu:.3f}")
+        print(f"  phase {i}: {m}")
 
     eps_bar_target = jnp.array(mcfg["eps_bar"], dtype=jnp.float64)
+
+    # mixed strain/stress BC -- formulation="displacement" only (see
+    # problems.mechanics.solve_mechanics docstring). control's 1-entries mark
+    # which macroscopic directions are stress- rather than strain-controlled;
+    # stress_bar gives their target stress, eps_bar is ignored there.
+    control_cfg = mcfg.get("control")
+    control = tuple(tuple(int(c) for c in row) for row in control_cfg) if control_cfg else None
+    stress_bar_cfg = mcfg.get("stress_bar")
+    stress_goal = jnp.array(stress_bar_cfg, dtype=jnp.float64) if stress_bar_cfg else None
 
     # ── output ────────────────────────────────────────────────────────────────
     output  = cfg["output"]
@@ -106,6 +117,8 @@ def main():
             stepping     = mode,
             formulation  = mcfg.get("formulation", "lippmann_schwinger"),
             scheme       = mcfg.get("scheme", "rotated"),
+            control      = control,
+            stress_goal  = stress_goal,
             toler_lin    = float(mcfg.get("toler_lin", 1e-6)),
             maxiter      = int(mcfg.get("maxiter", 1000)),
             dt           = scfg.get("dt"),
@@ -131,9 +144,11 @@ def main():
         # without the original config.
         f.attrs["input"]       = str(src)
         f.attrs["eps_bar"]     = np.array(eps_bar_target, dtype=float)
-        f.attrs["material_E"]  = np.array([m.E for m in materials], dtype=float)
-        f.attrs["material_nu"] = np.array([m.nu for m in materials], dtype=float)
-        f.attrs["material_name"] = np.array([m.name for m in materials], dtype=object)
+        if control is not None:
+            f.attrs["control"]    = np.array(control, dtype=int)
+            f.attrs["stress_bar"] = np.array(stress_goal, dtype=float)
+        f.attrs["material_name"] = np.array([getattr(m, "name", "") for m in materials], dtype=object)
+        f.attrs["material_repr"] = np.array([repr(m) for m in materials], dtype=object)
         f.attrs["formulation"] = mcfg.get("formulation", "lippmann_schwinger")
         f.attrs["scheme"]      = mcfg.get("scheme", "rotated")
         f.attrs["toler_lin"]   = float(mcfg.get("toler_lin", 1e-6))

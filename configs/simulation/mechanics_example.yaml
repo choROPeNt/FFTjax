@@ -3,28 +3,53 @@
 # {mechanics.input.stem} → "rve_random_phi-0.55_seed-67"  (used in output path)
 #
 # `input` below must already exist -- generate it first with
-# scripts/generation/generate_rve.py (e.g. configs/generation/preproc_rve_random.yaml
+# scripts/generation/generate_rve.py (e.g. configs/generation/rve_random.yaml
 # for a randomly-packed periodic RVE; generation.rve.make_square_composite_rve
 # gives a quadratic/square-packed one, not yet wired to that script's CLI).
 
 mechanics:
   input: output/generation/rve_random_phi-0.55_seed-67.xdmf
 
-  materials:                  # indexed by 0-based phase id (0=matrix, 1=fibre)
-    - E:    3.0e3              # MPa
+  # indexed by 0-based phase id (0=matrix, 1=fibre). `model` selects the
+  # materialmodels.factory class; remaining keys are forwarded to its
+  # constructor -- see src/materialmodels/factory.py for the model registry.
+  materials:
+    - model: isotropic_elastic
+      E:    3.0e3              # MPa
       nu:   0.35
       name: epoxy matrix
-    - E:    70.0e3             # MPa
+    - model: isotropic_elastic
+      E:    70.0e3             # MPa
       nu:   0.20
       name: glass fibre
+    # transversely isotropic fibre example (not used above):
+    # - model: transverse_isotropic
+    #   E_L: 230.0e3
+    #   E_T: 15.0e3
+    #   G_LT: 24.0e3
+    #   nu_LT: 0.2
+    #   nu_TT: 0.4
+    #   name: carbon fibre
 
   eps_bar:                    # prescribed macroscopic strain (3x3), reached at t=1
-    - [0.0,   1.0e-3, 0.0]
-    - [1.0e-3, 0.0,   0.0]
+    - [1.0e-3,   0.0, 0.0]
+    - [0.0, 0.0,   0.0]
     - [0.0,   0.0,   0.0]
 
-  formulation: lippmann_schwinger   # or "displacement"
-  scheme:      rotated              # "standard" or "rotated" -- lippmann_schwinger only
+  # mixed strain/stress BC -- formulation: displacement only, both optional
+  # (omit for pure strain BC). control's 1-entries mark stress-controlled
+  # directions; stress_bar gives their target (eps_bar ignored there).
+  control:
+    - [0, 0, 0]
+    - [0, 1, 0]     # e.g. free surface: sigma_23 = sigma_32 = 0
+    - [0, 0, 1]
+  stress_bar:
+    - [0.0, 0.0, 0.0]
+    - [0.0, 0.0, 0.0]
+    - [0.0, 0.0, 0.0]
+
+  formulation: displacement   # or "lippmann_schwinger"
+  # scheme:    rotated        # "standard" or "rotated" -- lippmann_schwinger only, ignored here
   toler_lin:   1.0e-2
   maxiter:     1000
 
