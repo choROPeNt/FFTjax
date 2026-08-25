@@ -29,17 +29,22 @@ materialmodels/ and solvers/ stacks so far:
 
 import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on TPU, no GPU prealloc)
 
-from typing import NamedTuple, Tuple
+import time
+from typing import Callable, NamedTuple, Tuple, cast
 
 import jax.numpy as jnp
+import numpy as np
 
 from materialmodels.assembly import assemble_C_field
-from materialmodels.phasefield.degradation import degrade_stiffness_field, k_res_field
+from materialmodels.phasefield.degradation import Gc_field, degrade_stiffness_field, k_res_field
 from materialmodels.phasefield.driving_force import lame_field, strain_energy_amor_split, update_history_hybrid
 from operators.green import build_freq_grid, build_reference_green_operator
+from post.fields import compute_displacement, field_to_grid, to_voigt, von_mises
+from problems.incremental import IncrementResult, solve_automatic, solve_fixed
 from solvers.elliptic.scalar import solve_damage_helmholtz_cg
 from solvers.elliptic.vector.displacement_based import solve_displacement_based
 from solvers.elliptic.vector.lippmann_schwinger import solve_lippmann_schwinger
+from utils.io.xdmf_writer import IncrementalWriter
 
 _ZERO_CONTROL = ((0, 0, 0), (0, 0, 0), (0, 0, 0))
 
@@ -68,6 +73,12 @@ class FractureSolution(NamedTuple):
                                                      # filled in -- None unless
                                                      # formulation="displacement"
 
+    @property
+    def converged(self) -> bool:
+        """Satisfies problems.incremental's Solution protocol -- the staggered
+        loop's own convergence, not the last mechanical/Helmholtz sub-solve."""
+        return self.converged_staggered
+
 
 def solve_fracture(
     n:            Tuple[int, ...],
@@ -76,7 +87,7 @@ def solve_fracture(
     materials:    list,
     eps_bar:      jnp.ndarray,
     l0:           float,
-    Gc:           float,
+    Gc:           float | jnp.ndarray | None,
     d_init:       jnp.ndarray,
     H_init:       jnp.ndarray,
     formulation:  str = "lippmann_schwinger",
@@ -118,7 +129,16 @@ def solve_fracture(
                   (see materialmodels.elastic.isotropic.LinearElasticIsotropic)
     eps_bar     : (3, 3)         prescribed macroscopic strain for this increment;
                   entries where ``control == 1`` are ignored (solved for instead)
-    l0, Gc      : phase-field length scale and critical energy release rate
+    l0          : phase-field length scale
+    Gc          : critical energy release rate. None gathers each material's
+                  own .Gc per-phase (see materialmodels.phasefield.
+                  degradation.Gc_field -- raises if any present material's
+                  .Gc is unset). Pass a scalar to use one value for every
+                  phase (required to be uniform right now -- Gc_field's
+                  per-voxel gather still needs the heterogeneous divergence-
+                  form damage solver to actually vary by phase, not yet
+                  implemented; a non-uniform gather raises here rather than
+                  silently using the homogeneous solver incorrectly).
     d_init      : (Nv,)          damage carried in from the previous increment
     H_init      : (Nv,)          history variable carried in from the previous increment
     formulation : "lippmann_schwinger" (reference-medium, strain BC only) or
@@ -171,6 +191,20 @@ def solve_fracture(
     xi_flat = build_freq_grid(n, L)
     k_res_arr = k_res_field(materials, phase) if k_res is None else k_res
 
+    if Gc is None:
+        Gc_arr = Gc_field(materials, phase)
+        Gc_min, Gc_max = float(jnp.min(Gc_arr)), float(jnp.max(Gc_arr))
+        if Gc_min != Gc_max:
+            raise NotImplementedError(
+                f"materials have non-uniform .Gc (range [{Gc_min:.4g}, {Gc_max:.4g}]) -- "
+                "the current damage solver (solve_damage_helmholtz_cg) is homogeneous-Gc "
+                "only; a spatially varying Gc needs the divergence-form heterogeneous "
+                "solver (not yet implemented, see solvers.elliptic.scalar's module "
+                "docstring). Pass a uniform Gc (via a single value on every material, "
+                "or Gc=<scalar> here to override) until that lands."
+            )
+        Gc = Gc_min
+
     if formulation == "lippmann_schwinger":
         green_op = build_reference_green_operator(n, L, materials, scheme=scheme)
 
@@ -215,3 +249,138 @@ def solve_fracture(
         iter_staggered=iter_st, err_abs=err_abs, err_rel=err_rel,
         eps_bar=eps_bar_cur,
     )
+
+
+def solve_fracture_incremental(
+    n:            Tuple[int, ...],
+    L:            Tuple[float, ...],
+    phase:        jnp.ndarray,
+    materials:    list,
+    eps_bar:      jnp.ndarray,
+    l0:           float,
+    Gc:           float | jnp.ndarray | None,
+    d_init:       jnp.ndarray,
+    H_init:       jnp.ndarray,
+    stepping:     str = "single",
+    formulation:  str = "lippmann_schwinger",
+    scheme:       str = "rotated",
+    control:      Tuple[Tuple[int, ...], ...] | None = None,
+    stress_goal:  jnp.ndarray | None = None,
+    toler_lin:    float = 1e-6,
+    maxiter_cg:   int = 1000,
+    toler_helm:   float = 1e-4,
+    maxiter_helm: int = 300,
+    eta:          float = 0.0,
+    dt:           float = 1.0,
+    d_thres:      float = 0.95,
+    k_res:        float | jnp.ndarray | None = None,
+    toler_st_abs: float = 1e-2,
+    toler_st_rel: float = 1e-3,
+    maxiter_st:   int = 200,
+    dt_step:      float | None = None,
+    dt_init:      float = 0.1,
+    dt_min:       float = 1e-4,
+    dt_max:       float = 0.5,
+    factor_inc:   float = 1.5,
+    factor_dec:   float = 0.5,
+    max_cutbacks: int = 5,
+    max_steps:    int = 1000,
+    writer:       IncrementalWriter | None = None,
+    orientation:  jnp.ndarray | None = None,
+    on_increment: Callable[[IncrementResult, float], None] | None = None,
+) -> list[IncrementResult]:
+    """
+    solve_fracture, load-stepped up to the target eps_bar (Abaqus-*STATIC
+    style) via problems.incremental -- same pattern as
+    problems.mechanics.solve_mechanics_incremental, with one addition: the
+    damage/history state (d, H) is path-dependent, so it must be threaded
+    from one accepted increment to the next rather than recomputed per call.
+
+    That threading is done via a plain mutable closure over ``_state``,
+    updated *only* inside ``on_increment`` -- which problems.incremental
+    already guarantees fires exactly once per *accepted* increment, never
+    on a rejected cutback attempt (see solve_automatic's docstring). This
+    means solve_fn itself must stay read-only with respect to ``_state``:
+    solve_automatic may call solve_fn several times per increment (one per
+    cutback attempt) before accepting one, all of which must start from the
+    same last-accepted (d, H), not from whatever a previous, rejected,
+    too-large-dt attempt produced.
+
+    ``dt_step`` is the load-stepping increment size (problems.incremental's
+    ``dt``) -- named differently here because solve_fracture's own ``dt`` is
+    the damage equation's unrelated viscous-regularisation timestep, passed
+    through unchanged to every solve_fracture call.
+
+    ``stepping``, ``writer``, ``orientation``, ``on_increment`` -- see
+    problems.mechanics.solve_mechanics_incremental's docstring; the only
+    difference is the extra "damage" field written per increment here.
+    All other parameters are solve_fracture's own.
+
+    Returns
+    -------
+    list[IncrementResult] -- .solution is a FractureSolution per increment.
+    """
+    _state = {"d": d_init, "H": H_init}
+
+    def solve_fn(t: float) -> FractureSolution:
+        return solve_fracture(
+            n, L, phase, materials, t * eps_bar, l0, Gc,
+            d_init=_state["d"], H_init=_state["H"],
+            formulation=formulation, scheme=scheme, control=control, stress_goal=stress_goal,
+            toler_lin=toler_lin, maxiter_cg=maxiter_cg,
+            toler_helm=toler_helm, maxiter_helm=maxiter_helm,
+            eta=eta, dt=dt, d_thres=d_thres, k_res=k_res,
+            toler_st_abs=toler_st_abs, toler_st_rel=toler_st_rel, maxiter_st=maxiter_st,
+        )
+
+    def _on_increment(result: IncrementResult) -> None:
+        sol = cast(FractureSolution, result.solution)
+        _state["d"] = sol.d
+        _state["H"] = sol.H
+
+        write_time = 0.0
+        if writer is not None:
+            t0 = time.perf_counter()
+            eps_grid   = field_to_grid(sol.eps, n)
+            sigma_grid = field_to_grid(sol.sigma, n)
+            sigma_vm   = von_mises(sigma_grid)
+            eps_bar_u  = sol.eps_bar if sol.eps_bar is not None else result.t * eps_bar
+            u_grid     = compute_displacement(sol.eps, eps_bar_u, n, L)
+            fields = {
+                "phase":        np.asarray(phase).reshape(n).astype(np.float32),
+                "strain":       to_voigt(eps_grid).astype(np.float64),
+                "stress":       to_voigt(sigma_grid).astype(np.float64),
+                "von_mises":    sigma_vm.astype(np.float64),
+                "displacement": u_grid.astype(np.float64),
+                "damage":       np.asarray(sol.d).reshape(n).astype(np.float64),
+                "strain_energy_pos": np.asarray(sol.psi_pos).reshape(n).astype(np.float64),
+            }
+            if orientation is not None:
+                fields["orientation"] = np.asarray(orientation).T.reshape(*n, 3).astype(np.float64)
+            writer.write_increment(result.step, fields, time=result.t)
+            write_time = time.perf_counter() - t0
+        if on_increment is not None:
+            on_increment(result, write_time)
+
+    if stepping == "single":
+        t0 = time.perf_counter()
+        sol = solve_fn(1.0)
+        result = IncrementResult(step=1, t=1.0, dt=1.0, solution=sol,
+                                  wall_time=time.perf_counter() - t0)
+        _on_increment(result)
+        return [result]
+    elif stepping == "fixed":
+        if dt_step is None:
+            raise ValueError("stepping='fixed' requires dt_step")
+        return solve_fixed(solve_fn, dt_step, on_increment=_on_increment)
+    elif stepping == "automatic":
+        return solve_automatic(
+            solve_fn, dt_init=dt_init, dt_min=dt_min, dt_max=dt_max,
+            factor_inc=factor_inc, factor_dec=factor_dec,
+            max_cutbacks=max_cutbacks, max_steps=max_steps,
+            on_increment=_on_increment,
+        )
+    else:
+        raise ValueError(
+            f"unknown stepping {stepping!r}, expected 'single', 'fixed', or 'automatic'"
+        )

@@ -1,0 +1,88 @@
+# Phase-field fracture config — mechanics + AT2 damage on a loaded
+# microstructure.
+# {fracture.input.stem} → "rve_random_phi-0.35_seed-67"  (used in output path)
+#
+# `input` below must already exist -- generate it first with
+# scripts/generation/generate_rve.py (e.g. configs/generation/rve_random.yaml
+# for a randomly-packed periodic RVE).
+#
+# Only isotropic materials are supported (Amor-split driving force and AT2
+# residual stiffness both read .lam/.mu/.k_res -- see
+# materialmodels.phasefield.driving_force.lame_field's docstring); no
+# transversely_isotropic fibre here, unlike mechanics_example.yaml.
+
+fracture:
+  input: output/generation/rve_random_phi-0.35_seed-67.xdmf
+
+  # indexed by 0-based phase id (0=matrix, 1=fibre). `model` selects the
+  # materialmodels.factory class; k_res is the AT2 residual stiffness for
+  # that phase -- 1.0 makes a phase damage-immune (fibre here), the default
+  # ~1e-6 lets it fully degrade (matrix). Gc is the critical energy release
+  # rate for that phase's damage -- gathered per-material by
+  # materialmodels.phasefield.degradation.Gc_field when fracture.Gc (below)
+  # is omitted. Must currently be the same value on every material: the
+  # damage solver is homogeneous-Gc only, a per-phase-varying Gc needs the
+  # divergence-form solver (not yet implemented) and problems.fracture.
+  # solve_fracture raises rather than silently using the wrong equation.
+  materials:
+    - model: isotropic_elastic
+      E:     3.760e3            # MPa
+      nu:    0.39
+      k_res: 1.0e-6
+      Gc:    6.4e-4              # N/mm
+      name:  epoxy matrix
+    - model: isotropic_elastic
+      E:     70.0e3              # MPa
+      nu:    0.20
+      k_res: 1.0                 # damage-immune
+      Gc:    6.4e-4               # N/mm -- must match the matrix (see above)
+      name:  glass fibre
+
+  eps_bar:                    # prescribed macroscopic strain (3x3), reached at t=1
+    - [1.0e-2, 0.0, 0.0]
+    - [0.0,    0.0, 0.0]
+    - [0.0,    0.0, 0.0]
+
+  l0: 3.0e-4       # mm  phase-field length scale
+  # Gc: 6.4e-4     # N/mm -- override for every phase, instead of each
+                   # material's own Gc above (omit to use those)
+
+  formulation:  lippmann_schwinger   # or "displacement"
+  scheme:       rotated              # "standard" or "rotated" -- lippmann_schwinger only
+  toler_lin:    1.0e-2
+  maxiter_cg:   1000
+
+  toler_helm:   1.0e-2
+  maxiter_helm: 500
+
+  eta: 1.0e-6     # damage-equation viscous regularisation (0 = none)
+  dt:  1.0        # ^ its (unrelated to stepping.dt_step) timestep
+
+  d_thres: 0.95   # hybrid irreversibility threshold
+
+  toler_st_abs: 1.0e-3   # staggered fixed-point convergence
+  toler_st_rel: 1.0e-4
+  maxiter_st:   100
+
+  # mode: single (default) -- one staggered solve at the full eps_bar.
+  #   stepping: {mode: single}
+  # mode: fixed -- equal load-fraction increments of size dt_step, no cutback.
+  #   stepping: {mode: fixed, dt_step: 0.1}
+  # mode: automatic -- adaptive load-fraction step (Abaqus *STATIC style):
+  #   grows by factor_inc after a converged increment, shrinks by factor_dec
+  #   and retries (up to max_cutbacks times) after a non-converged one --
+  #   the useful mode here, since damage growth genuinely can fail to
+  #   converge at too-large a step, unlike pure linear elasticity.
+  stepping:
+    mode:         fixed
+    dt_step:      0.1
+    # dt_init:      0.1
+    # dt_min:       1.0e-4
+    # dt_max:       0.2
+    # factor_inc:   1.5
+    # factor_dec:   0.5
+    # max_cutbacks: 5
+    # max_steps:    1000
+
+output:  output/simulation
+jobname: "{fracture.input.stem}_fracture"

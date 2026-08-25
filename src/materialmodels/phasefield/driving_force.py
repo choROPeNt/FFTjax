@@ -4,9 +4,9 @@ elastic strain energy density (Amor et al. 2009 volumetric-deviatoric
 split), and the irreversibility law that turns ψ⁺ into a monotone history
 variable H.
 
-Only Amor is implemented -- it's what the two single-notch-plate benchmarks
-(pff_tension.py, pff_shear.py) use; add a Miehe/spectral split here if a
-future problem needs it.
+Only Amor is implemented -- it's what the single-notch-plate benchmark
+(benchmark/single_notch_plate/pff_single_notch.py) uses; add a Miehe/spectral
+split here if a future problem needs it.
 """
 
 import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on TPU, no GPU prealloc)

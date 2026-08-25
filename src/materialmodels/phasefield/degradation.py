@@ -89,3 +89,38 @@ def k_res_field(materials: Sequence[ConstitutiveModel], phase: jnp.ndarray) -> j
     """
     k_stack = jnp.array([m.k_res for m in materials])
     return k_stack[phase]
+
+
+def Gc_field(materials: Sequence[ConstitutiveModel], phase: jnp.ndarray) -> jnp.ndarray:
+    """
+    Per-voxel critical energy release rate Gc, gathered from each material's
+    ``.Gc`` attribute by phase index -- same hard (sharp-interface) assembly
+    pattern as ``k_res_field``. Raises if any present phase's ``.Gc`` is
+    unset (``None``) -- unlike k_res there's no numeric default that's safe
+    to assume for fracture toughness.
+
+    Note: piecewise-constant Gc(x) still needs the heterogeneous (divergence-
+    form) damage solver, not the current homogeneous-Gc one -- the
+    variational derivative of the Gc(x)|grad d|^2 term is div(Gc(x) grad d),
+    which differs from Gc(x)*lap(d) wherever Gc varies, including at a sharp
+    phase interface (product rule: div(Gc grad d) = Gc*lap(d) + grad(Gc).grad(d)).
+    Not yet implemented -- see solvers.elliptic.scalar's module docstring.
+
+    Parameters
+    ----------
+    materials : list of ConstitutiveModel with .Gc, indexed by phase
+                (see materialmodels.elastic.isotropic.LinearElasticIsotropic)
+    phase     : (Nv,) int   phase index per voxel
+
+    Returns
+    -------
+    Gc : (Nv,)
+    """
+    missing = [i for i, m in enumerate(materials) if getattr(m, "Gc", None) is None]
+    if missing:
+        raise ValueError(
+            f"materials at index {missing} have no .Gc set -- every material "
+            "used in a fracture solve needs a critical energy release rate"
+        )
+    Gc_stack = jnp.array([m.Gc for m in materials])
+    return Gc_stack[phase]

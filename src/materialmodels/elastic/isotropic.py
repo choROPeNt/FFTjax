@@ -35,13 +35,24 @@ class LinearElasticIsotropic(ConstitutiveModel):
                      Set to 1.0 for a phase that must never lose stiffness under
                      damage (g(d) ≡ 1 regardless of d) -- e.g. a damage-immune
                      fiber inclusion.
+    Gc     : float | None  Critical energy release rate for this material's
+                     phase-field damage (same units as l0 * stress, e.g. N/mm).
+                     Only read by fracture problems (materialmodels.phasefield.
+                     degradation.Gc_field gathers it per-phase); elasticity-only
+                     solves ignore it. None (default) is fine unless a fracture
+                     solve actually needs this phase's Gc -- Gc_field raises if
+                     it does and this is still unset, rather than silently
+                     picking some default (unlike k_res, there's no numeric
+                     value for fracture toughness that's safe to assume).
     """
 
-    def __init__(self, E: float, nu: float, name: str = "", k_res: float = 1e-6):
+    def __init__(self, E: float, nu: float, name: str = "", k_res: float = 1e-6,
+                 Gc: float | None = None):
         self.E     = float(E)
         self.nu    = float(nu)
         self.name  = name
         self.k_res = float(k_res)
+        self.Gc    = float(Gc) if Gc is not None else None
         self.lam   = E * nu / ((1.0 + nu) * (1.0 - 2.0 * nu))
         self.mu    = E / (2.0 * (1.0 + nu))
 
