@@ -36,6 +36,9 @@ Output
 ------
     <output>/<jobname>.h5
     <output>/<jobname>.xdmf
+    <output>/<jobname>_stats.npy   -- one structured-array row per accepted
+        increment: step, t, dt, converged, wall_time, write_time,
+        eps_bar_voigt (6,), sigma_bar_voigt (6,) -- np.load(path) to read.
 """
 
 import argparse
@@ -52,6 +55,7 @@ import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on 
 import jax.numpy as jnp
 
 from materialmodels.factory import build_material
+from post.fields import homogenize, to_voigt
 from problems.mechanics import solve_mechanics_incremental
 from solvers.elliptic.vector.base import ElasticitySolution
 from utils.config import load_config
@@ -104,14 +108,45 @@ def main():
     #    is handed in so solve_mechanics_incremental writes each accepted
     #    increment itself, as it's produced -- on_increment prints live for
     #    the same reason, instead of only after the whole solve returns) ────
+    # per-increment solver + homogenization stats, saved to <stem>_stats.npy
+    # below -- one structured-array row per accepted increment.
+    _STATS_DTYPE = np.dtype([
+        ("step", "i4"), ("t", "f8"), ("dt", "f8"), ("converged", "?"),
+        ("wall_time", "f8"), ("write_time", "f8"),
+        ("eps_bar_voigt", "f8", (6,)), ("sigma_bar_voigt", "f8", (6,)),
+    ])
+    stats_rows = []
+
     def _report(r, write_time):
         sol = cast(ElasticitySolution, r.solution)
+        eps_bar, sigma_bar = homogenize(sol.eps, sol.sigma)
         print(f"  step {r.step:3d}  t={r.t:.4f}  dt={r.dt:.4f}  converged={bool(sol.converged)}  "
               f"solve={r.wall_time:.2f}s  write={write_time:.2f}s  "
               f"total={r.wall_time + write_time:.2f}s")
+        # Voigt order: [11, 22, 33, 12, 13, 23]
+        eps_v   = to_voigt(np.asarray(eps_bar))
+        sigma_v = to_voigt(np.asarray(sigma_bar))
+        print(f"           eps_bar   voigt = [{' '.join(f'{v: .4e}' for v in eps_v)}]")
+        print(f"           sigma_bar voigt = [{' '.join(f'{v: .4e}' for v in sigma_v)}]")
+        stats_rows.append((
+            r.step, r.t, r.dt, bool(sol.converged),
+            r.wall_time, write_time, eps_v, sigma_v,
+        ))
 
     mode = scfg.get("mode", "single")
     with IncrementalWriter(stem, grid_shape=n, grid_length=L) as w:
+        # step 0 -- undeformed initial condition (t=0), so the output has a
+        # zero-strain reference frame before the first accepted increment.
+        step0_fields = {
+            "phase":        phase_np.reshape(n).astype(np.float32),
+            "strain":       np.zeros((*n, 6)),
+            "stress":       np.zeros((*n, 6)),
+            "von_mises":    np.zeros(n),
+            "displacement": np.zeros((*n, 3)),
+            "orientation":  orientations_np.T.reshape(*n, 3).astype(np.float64),
+        }
+        w.write_increment(0, step0_fields, time=0.0)
+
         results = solve_mechanics_incremental(
             n, L, phase, materials, eps_bar_target,
             stepping     = mode,
@@ -157,7 +192,11 @@ def main():
         f.attrs["converged"]   = bool(final_sol.converged)
         f.attrs["t_final"]     = float(final.t)
 
+    stats_path = f"{stem}_stats.npy"
+    np.save(stats_path, np.array(stats_rows, dtype=_STATS_DTYPE))
+
     print(f"Written → {stem}.h5 / .xdmf")
+    print(f"Written → {stats_path}  (structured array: {_STATS_DTYPE.names})")
     print("Open the .xdmf in ParaView with the 'Xdmf3ReaderT' reader.")
 
 

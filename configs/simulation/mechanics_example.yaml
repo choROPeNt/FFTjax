@@ -8,27 +8,26 @@
 # gives a quadratic/square-packed one, not yet wired to that script's CLI).
 
 mechanics:
-  input: output/generation/rve_random_phi-0.55_seed-67.xdmf
+  input: output/generation/rve_random_phi-0.35_seed-67.xdmf
 
   # indexed by 0-based phase id (0=matrix, 1=fibre). `model` selects the
   # materialmodels.factory class; remaining keys are forwarded to its
   # constructor -- see src/materialmodels/factory.py for the model registry.
   materials:
     - model: isotropic_elastic
-      E:    3.0e3              # MPa
-      nu:   0.35
+      E:    3.760e3              # MPa
+      nu:   0.39
       name: epoxy matrix
     # - model: isotropic_elastic
     #   E:    70.0e3             # MPa
     #   nu:   0.20
     #   name: glass fibre
-    # transversely isotropic fibre example (not used above):
     - model: transverse_isotropic
-      E_L: 230.0e3
+      E_L: 234.0e3
       E_T: 15.0e3
-      G_LT: 24.0e3
+      G_LT: 15.0e3
       nu_LT: 0.2
-      nu_TT: 0.4
+      nu_TT: 0.0714    # = E_T/(2*G23) - 1, G23 = 7000 (isotropic transverse plane)
       name: carbon fibre
 
   eps_bar:                    # prescribed macroscopic strain (3x3), reached at t=1
@@ -50,7 +49,7 @@ mechanics:
 
   formulation: displacement   # or "lippmann_schwinger"
   # scheme:    rotated        # "standard" or "rotated" -- lippmann_schwinger only, ignored here
-  toler_lin:   1.0e-2
+  toler_lin:   1.0e-6
   maxiter:     1000
 
   # mode: single (default) -- one solve at the full eps_bar, no load stepping.

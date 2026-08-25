@@ -29,6 +29,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from materialmodels.assembly import assemble_C_field
+from materialmodels.tensors import isotropic_equivalent_lame
 from operators.green import GreenOperatorBasic, GreenOperatorWillot, build_freq_grid
 from post.fields import compute_displacement, field_to_grid, to_voigt, von_mises
 from problems.incremental import IncrementResult, solve_automatic, solve_fixed
@@ -100,10 +101,15 @@ def solve_mechanics(
                 "use formulation='displacement' instead"
             )
 
-        # Reference medium: arithmetic mean of the materials' Lame parameters --
-        # see module docstring for why this isn't materialmodels/averaging.py yet.
-        lam0 = sum(m.lam for m in materials) / len(materials)
-        mu0 = sum(m.mu for m in materials) / len(materials)
+        # Reference medium: Voigt-average isotropic Lame parameters of the
+        # arithmetic mean stiffness tensor -- exact for isotropic materials
+        # (reduces to averaging their own lam/mu), also handles anisotropic
+        # ones (e.g. TransverseIsotropicFibre, which has no .lam/.mu) since
+        # it works from stiffness_tensor() rather than assuming those
+        # attributes exist. See module docstring for why this isn't
+        # materialmodels/averaging.py yet.
+        C_mean = jnp.mean(jnp.stack([m.stiffness_tensor() for m in materials]), axis=0)
+        lam0, mu0 = (float(v) for v in isotropic_equivalent_lame(C_mean))
 
         if scheme == "standard":
             green_op = GreenOperatorBasic(n, L, lam0, mu0)

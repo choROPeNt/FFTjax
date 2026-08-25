@@ -117,6 +117,26 @@ def von_mises(sigma_grid: np.ndarray) -> np.ndarray:
     ))
 
 
+def homogenize(eps: jnp.ndarray, sigma: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """
+    Volume-averaged (homogenized) macroscopic strain and stress:
+    eps_bar = mean_voxel(eps), sigma_bar = mean_voxel(sigma) -- exact for a
+    uniform periodic voxel grid, where every voxel has equal volume (true
+    throughout this project). Works for either formulation, unlike
+    ElasticitySolution.eps_bar (displacement-only, None for
+    lippmann_schwinger) -- for a converged solve the two agree.
+
+    Parameters
+    ----------
+    eps, sigma : (3, 3, Nv)   local strain/stress fields (solver layout)
+
+    Returns
+    -------
+    eps_bar, sigma_bar : (3, 3)
+    """
+    return jnp.mean(eps, axis=-1), jnp.mean(sigma, axis=-1)
+
+
 def compute_displacement(
     eps: jnp.ndarray,
     eps_bar: jnp.ndarray,

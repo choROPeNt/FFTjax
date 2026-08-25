@@ -118,6 +118,22 @@ def rotate_tensor4(R: jnp.ndarray, C4: jnp.ndarray) -> jnp.ndarray:
     return jnp.einsum('ia,jb,kc,ld,abcd->ijkl', R, R, R, R, C4)
 
 
+def isotropic_equivalent_lame(C4: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """
+    Voigt-average isotropic Lame parameters (lam0, mu0) of a general (3,3,3,3)
+    stiffness tensor -- exact for an isotropic C4 (recovers its own lam, mu),
+    an isotropization for an anisotropic one (e.g. a rotated
+    TransverseIsotropicFibre). Both K = C_iijj/9 (bulk modulus) and
+    mu0 = (C_ijij - 3K)/10 are linear in C4, so this commutes with averaging
+    stiffness tensors across materials -- e.g. mean-over-materials then
+    isotropize gives the same lam0/mu0 as isotropize-then-mean.
+    """
+    K = jnp.einsum('iijj->', C4) / 9.0
+    mu0 = (jnp.einsum('ijij->', C4) - 3.0 * K) / 10.0
+    lam0 = K - 2.0 * mu0 / 3.0
+    return lam0, mu0
+
+
 def is_major_symmetric(C4: np.ndarray, atol: float = 1e-10) -> bool:
     """C_ijkl == C_klij."""
     C4 = np.asarray(C4)

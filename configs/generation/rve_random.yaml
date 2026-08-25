@@ -2,7 +2,7 @@
 # {geometry.type} → "random_rve"  (used in output path)
 
 geometry:
-  phi:       0.55           # target fibre volume fraction (up to ~0.9069)
+  phi:       0.35           # target fibre volume fraction (up to ~0.9069)
   r_fib:     0.0035        # mm  fibre radius  (= 3.5 µm)
   vox:       0.00009       # mm  voxel size    (= 0.1 µm, isotropic)
   nz:        1             # voxels through thickness
