@@ -106,8 +106,8 @@ def make_square_composite_rve(phi, r_fiber, dx, N_min=32, nz=1, clean_isolated=T
     return phase_np, n, L, phi_act
 
 
-def make_random_composite_rve(phi, r_fiber, dx, N_min=32, nz=1, K=15, seed=None,
-                               interphase_thickness=None, clean_isolated=True):
+def make_random_composite_rve(phi, r_fiber, dx, N_min=32, size_in_r=None, nz=1, K=15,
+                               seed=None, interphase_thickness=None, clean_isolated=True):
     """
     Densely-packed random-fibre RVE. Based on Catalanotti (2016),
     doi.org/10.1016/j.compstruct.2015.11.039 -- reaches any phi up to the
@@ -120,7 +120,14 @@ def make_random_composite_rve(phi, r_fiber, dx, N_min=32, nz=1, K=15, seed=None,
     phi     : target fibre volume fraction (0 < phi < pi*sqrt(3)/6 ≈ 0.9069)
     r_fiber : fibre radius  [length unit, e.g. mm]
     dx      : target voxel size [same length unit] -- a target, not a guarantee
-    N_min   : minimum grid size per in-plane side (default 32)
+    N_min   : minimum grid size per in-plane side (default 32); ignored if
+                  size_in_r is given
+    size_in_r : target domain side length in multiples of r_fiber (e.g. 15
+                  for a 15r RVE, the Catalanotti (2016) convention). A
+                  target, not a guarantee -- N/M are integer-rounded, so the
+                  realized Lx/Ly land close to but not exactly at
+                  size_in_r*r_fiber. Overrides the N_min*dx sizing floor
+                  when set (default None).
     nz      : number of voxels through the thickness (default 1)
     K       : perturbation iterations (default 15; K>10 -> fully random)
     seed    : RNG seed (None -> fresh, non-reproducible sequence)
@@ -169,7 +176,8 @@ def make_random_composite_rve(phi, r_fiber, dx, N_min=32, nz=1, K=15, seed=None,
     f = np.sqrt(phi_max / phi)   # uniform expansion factor to reach target phi (step 2)
 
     r_dilated = r_fiber + (interphase_thickness or 0.0)
-    L_min = max(N_min * dx, 4.0 * r_dilated)
+    size_floor = size_in_r * r_fiber if size_in_r is not None else N_min * dx
+    L_min = max(size_floor, 4.0 * r_dilated)
     # >=3 cells per axis (>=18 fibres): keeps the domain comfortably larger
     # than the fibre (or, with an interphase, dilated-fibre) diameter for
     # the single-periodic-image check below -- see docstring.

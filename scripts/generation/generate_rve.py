@@ -47,10 +47,12 @@ def main():
 
     # ── build geometry ────────────────────────────────────────────────────────
     interphase_thickness = gcfg.get("interphase_thickness")
+    size_in_r = gcfg.get("size_in_r")
     phase_np, n, L, phi_act, centres = make_random_composite_rve(
         phi     = float(gcfg["phi"]),
         r_fiber = float(gcfg["r_fib"]),
         dx      = float(gcfg["vox"]),
+        size_in_r = float(size_in_r) if size_in_r is not None else None,
         nz      = int(gcfg.get("nz", 1)),
         K       = int(gcfg.get("K", 15)),
         seed    = gcfg.get("seed"),

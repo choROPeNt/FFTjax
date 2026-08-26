@@ -4,10 +4,16 @@
 geometry:
   phi:       0.55           # target fibre volume fraction (up to ~0.9069)
   r_fib:     0.0035        # mm  fibre radius  (= 3.5 µm)
-  vox:       0.000114      # mm  voxel size -- targets a ~512^2 grid on this
-                            # domain (~0.056x0.059 mm at phi=0.35, seed=67);
-                            # also sized so fracture_example.yaml's l0 =
-                            # 4.57e-4 mm satisfies l0 >= 4*vox (standard
+  size_in_r: 15             # target domain side length = 15*r_fib (Catalanotti
+                            # 2016 convention), overrides the N_min*dx floor.
+                            # A target, not a guarantee: at this small a unit-
+                            # cell count the integer N/M rounding in rve.py
+                            # overshoots to ~18r (~0.063x0.062 mm, seed=67,
+                            # phi=0.55) rather than landing on 15r exactly
+  vox:       0.0001      # mm  voxel size -- with size_in_r=15 (realized
+                            # domain ~0.063x0.062 mm, see above) this gives a
+                            # ~630^2 grid; also sized so fracture_example.yaml's
+                            # l0 = 4.57e-4 mm satisfies l0 >= 4*vox (standard
                             # phase-field mesh-resolution guideline)
   nz:        1             # voxels through thickness
   fibre_dir: [0.0, 0.0, 1.0]   # fibre axis in global frame
