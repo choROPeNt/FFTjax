@@ -15,9 +15,14 @@ allowed to know about them.
 
 Scope of this first pass, matching what's actually built on the
 materialmodels/ and solvers/ stacks so far:
-- Amor driving-force split, AT2 degradation, hybrid irreversibility,
-  homogeneous Gc -- the two single-notch-plate benchmarks' scheme
-  (Schneider & Kaestner 2025, doi:10.1111/ffe.14553).
+- Amor driving-force split, AT2 degradation, hybrid irreversibility --
+  the two single-notch-plate benchmarks' scheme (Schneider & Kaestner 2025,
+  doi:10.1111/ffe.14553). Gc may be homogeneous (a scalar, or a uniform
+  per-material gather) or heterogeneous (a genuinely varying per-voxel
+  field) -- solve_fracture dispatches to solvers.elliptic.scalar's
+  solve_damage_helmholtz_cg or solve_damage_helmholtz_cg_het accordingly;
+  see that module's docstring for why these solve different equations, not
+  the same one at different generality.
 - Damage/history (d, H) are carried across increments by the *caller*
   (this function takes d_init/H_init and returns d/H, it doesn't own the
   time-stepping loop) -- same division of responsibility as solve_mechanics
@@ -41,7 +46,7 @@ from materialmodels.phasefield.driving_force import lame_field, strain_energy_am
 from operators.green import build_freq_grid, build_reference_green_operator
 from post.fields import compute_displacement, field_to_grid, to_voigt, von_mises
 from problems.incremental import IncrementResult, solve_automatic, solve_fixed
-from solvers.elliptic.scalar import solve_damage_helmholtz_cg
+from solvers.elliptic.scalar import solve_damage_helmholtz_cg, solve_damage_helmholtz_cg_het
 from solvers.elliptic.vector.displacement_based import solve_displacement_based
 from solvers.elliptic.vector.lippmann_schwinger import solve_lippmann_schwinger
 from utils.io.xdmf_writer import IncrementalWriter
@@ -134,11 +139,14 @@ def solve_fracture(
                   own .Gc per-phase (see materialmodels.phasefield.
                   degradation.Gc_field -- raises if any present material's
                   .Gc is unset). Pass a scalar to use one value for every
-                  phase (required to be uniform right now -- Gc_field's
-                  per-voxel gather still needs the heterogeneous divergence-
-                  form damage solver to actually vary by phase, not yet
-                  implemented; a non-uniform gather raises here rather than
-                  silently using the homogeneous solver incorrectly).
+                  phase, or an explicit (Nv,) array for a field not tied to
+                  materials (e.g. a smoothly-varying one). A uniform Gc
+                  (scalar, or an array/gather that happens to be uniform)
+                  uses the cheaper homogeneous solver
+                  (solve_damage_helmholtz_cg); a genuinely varying one uses
+                  the divergence-form heterogeneous solver
+                  (solve_damage_helmholtz_cg_het) -- see that module's
+                  docstring for why these solve different equations.
     d_init      : (Nv,)          damage carried in from the previous increment
     H_init      : (Nv,)          history variable carried in from the previous increment
     formulation : "lippmann_schwinger" (reference-medium, strain BC only) or
@@ -192,18 +200,16 @@ def solve_fracture(
     k_res_arr = k_res_field(materials, phase) if k_res is None else k_res
 
     if Gc is None:
-        Gc_arr = Gc_field(materials, phase)
-        Gc_min, Gc_max = float(jnp.min(Gc_arr)), float(jnp.max(Gc_arr))
-        if Gc_min != Gc_max:
-            raise NotImplementedError(
-                f"materials have non-uniform .Gc (range [{Gc_min:.4g}, {Gc_max:.4g}]) -- "
-                "the current damage solver (solve_damage_helmholtz_cg) is homogeneous-Gc "
-                "only; a spatially varying Gc needs the divergence-form heterogeneous "
-                "solver (not yet implemented, see solvers.elliptic.scalar's module "
-                "docstring). Pass a uniform Gc (via a single value on every material, "
-                "or Gc=<scalar> here to override) until that lands."
-            )
-        Gc = Gc_min
+        Gc = Gc_field(materials, phase)
+    # A per-voxel Gc that happens to be uniform collapses to the cheaper,
+    # exact-preconditioner homogeneous solver -- only a genuinely varying
+    # Gc needs the 3x-FFT divergence-form one (see solvers.elliptic.scalar).
+    Gc_heterogeneous = isinstance(Gc, jnp.ndarray) and jnp.ndim(Gc) > 0
+    if Gc_heterogeneous:
+        Gc_min, Gc_max = float(jnp.min(Gc)), float(jnp.max(Gc))
+        if Gc_min == Gc_max:
+            Gc = Gc_min
+            Gc_heterogeneous = False
 
     if formulation == "lippmann_schwinger":
         green_op = build_reference_green_operator(n, L, materials, scheme=scheme)
@@ -231,7 +237,8 @@ def solve_fracture(
         psi_pos, _ = strain_energy_amor_split(eps, lam_vox, mu_vox)
         H_st = update_history_hybrid(H_st, psi_pos, d_prev_st, d_thres=d_thres)
 
-        d_st, converged_helm = solve_damage_helmholtz_cg(
+        damage_solve = solve_damage_helmholtz_cg_het if Gc_heterogeneous else solve_damage_helmholtz_cg
+        d_st, converged_helm = damage_solve(
             H_st, xi_flat, n, l0, Gc, d_prev_st,
             toler_cg=toler_helm, maxiter=maxiter_helm, eta=eta, dt=dt, k=k_res_arr,
         )
@@ -271,7 +278,6 @@ def solve_fracture_incremental(
     toler_helm:   float = 1e-4,
     maxiter_helm: int = 300,
     eta:          float = 0.0,
-    dt:           float = 1.0,
     d_thres:      float = 0.95,
     k_res:        float | jnp.ndarray | None = None,
     toler_st_abs: float = 1e-2,
@@ -306,10 +312,20 @@ def solve_fracture_incremental(
     same last-accepted (d, H), not from whatever a previous, rejected,
     too-large-dt attempt produced.
 
-    ``dt_step`` is the load-stepping increment size (problems.incremental's
-    ``dt``) -- named differently here because solve_fracture's own ``dt`` is
-    the damage equation's unrelated viscous-regularisation timestep, passed
-    through unchanged to every solve_fracture call.
+    ``dt_step`` is the load-stepping *target* increment size (problems.
+    incremental's ``dt`` argument to solve_fixed) -- named differently here
+    because solve_fracture's own ``dt`` parameter means something else (the
+    damage equation's viscous-regularisation timestep). This function does
+    not take that ``dt`` directly: it derives the *actual* per-increment
+    value itself, as ``t - t_prev`` (the real gap between this increment's
+    cumulative load fraction and the last *accepted* one), and passes that
+    to solve_fracture. This matters because the real step size isn't always
+    dt_step -- solve_fixed's last step can be shorter, and solve_automatic's
+    varies every increment by construction -- so a fixed viscosity timestep
+    would silently apply the wrong eta/dt strength on any increment whose
+    real size differs from whatever value happened to be passed in.
+    ``t_prev`` is tracked the same read-in-solve_fn/write-in-on_increment
+    way as ``d``/``H``, for the same cutback-safety reason.
 
     ``stepping``, ``writer``, ``orientation``, ``on_increment`` -- see
     problems.mechanics.solve_mechanics_incremental's docstring; the only
@@ -320,16 +336,17 @@ def solve_fracture_incremental(
     -------
     list[IncrementResult] -- .solution is a FractureSolution per increment.
     """
-    _state = {"d": d_init, "H": H_init}
+    _state = {"d": d_init, "H": H_init, "t_prev": 0.0}
 
     def solve_fn(t: float) -> FractureSolution:
+        dt_actual = t - _state["t_prev"]
         return solve_fracture(
             n, L, phase, materials, t * eps_bar, l0, Gc,
             d_init=_state["d"], H_init=_state["H"],
             formulation=formulation, scheme=scheme, control=control, stress_goal=stress_goal,
             toler_lin=toler_lin, maxiter_cg=maxiter_cg,
             toler_helm=toler_helm, maxiter_helm=maxiter_helm,
-            eta=eta, dt=dt, d_thres=d_thres, k_res=k_res,
+            eta=eta, dt=dt_actual, d_thres=d_thres, k_res=k_res,
             toler_st_abs=toler_st_abs, toler_st_rel=toler_st_rel, maxiter_st=maxiter_st,
         )
 
@@ -337,6 +354,7 @@ def solve_fracture_incremental(
         sol = cast(FractureSolution, result.solution)
         _state["d"] = sol.d
         _state["H"] = sol.H
+        _state["t_prev"] = result.t
 
         write_time = 0.0
         if writer is not None:

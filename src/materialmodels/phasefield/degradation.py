@@ -99,12 +99,14 @@ def Gc_field(materials: Sequence[ConstitutiveModel], phase: jnp.ndarray) -> jnp.
     unset (``None``) -- unlike k_res there's no numeric default that's safe
     to assume for fracture toughness.
 
-    Note: piecewise-constant Gc(x) still needs the heterogeneous (divergence-
-    form) damage solver, not the current homogeneous-Gc one -- the
-    variational derivative of the Gc(x)|grad d|^2 term is div(Gc(x) grad d),
-    which differs from Gc(x)*lap(d) wherever Gc varies, including at a sharp
-    phase interface (product rule: div(Gc grad d) = Gc*lap(d) + grad(Gc).grad(d)).
-    Not yet implemented -- see solvers.elliptic.scalar's module docstring.
+    Note: a non-uniform result here (e.g. differing Gc per phase) needs the
+    heterogeneous (divergence-form) damage solver, not the homogeneous-Gc
+    one -- the variational derivative of the Gc(x)|grad d|^2 term is
+    div(Gc(x) grad d), which differs from Gc(x)*lap(d) wherever Gc varies,
+    including at a sharp phase interface (product rule: div(Gc grad d) =
+    Gc*lap(d) + grad(Gc).grad(d)). problems.fracture.solve_fracture already
+    dispatches to the right one automatically (see solvers.elliptic.scalar's
+    module docstring) -- this function itself is agnostic to which.
 
     Parameters
     ----------

@@ -6,13 +6,15 @@
 # scripts/generation/generate_rve.py (e.g. configs/generation/rve_random.yaml
 # for a randomly-packed periodic RVE).
 #
-# Only isotropic materials are supported (Amor-split driving force and AT2
-# residual stiffness both read .lam/.mu/.k_res -- see
-# materialmodels.phasefield.driving_force.lame_field's docstring); no
-# transversely_isotropic fibre here, unlike mechanics_example.yaml.
+# Anisotropic materials (e.g. transverse_isotropic) are usable here too --
+# the Amor-split driving force uses an isotropized (lambda, mu) proxy of
+# each material's stiffness_tensor() (materialmodels.phasefield.
+# driving_force.lame_field), exact for an isotropic material, an
+# approximation for an anisotropic one -- same approximation
+# problems.mechanics's lippmann_schwinger reference medium already makes.
 
 fracture:
-  input: output/generation/rve_random_phi-0.35_seed-67.xdmf
+  input: output/generation/rve_quad_phi-0.55.xdmf
 
   # indexed by 0-based phase id (0=matrix, 1=fibre). `model` selects the
   # materialmodels.factory class; k_res is the AT2 residual stiffness for
@@ -20,43 +22,65 @@ fracture:
   # ~1e-6 lets it fully degrade (matrix). Gc is the critical energy release
   # rate for that phase's damage -- gathered per-material by
   # materialmodels.phasefield.degradation.Gc_field when fracture.Gc (below)
-  # is omitted. Must currently be the same value on every material: the
-  # damage solver is homogeneous-Gc only, a per-phase-varying Gc needs the
-  # divergence-form solver (not yet implemented) and problems.fracture.
-  # solve_fracture raises rather than silently using the wrong equation.
+  # is omitted. May differ per material now -- problems.fracture.
+  # solve_fracture dispatches to the heterogeneous (divergence-form) damage
+  # solver automatically whenever the gathered values aren't uniform, and
+  # to the cheaper homogeneous one when they are (as here, kept equal on
+  # both phases; change the fibre's value below to exercise the
+  # heterogeneous path).
   materials:
     - model: isotropic_elastic
       E:     3.760e3            # MPa
       nu:    0.39
       k_res: 1.0e-6
-      Gc:    6.4e-4              # N/mm
+      Gc:    6.4e-4              # N/mm -- calibrated to reproduce the
+                                  # reported tensile strength (93 MPa) at
+                                  # l0 below (see notes/ derivation);
+                                  # not the literal reported GIc (0.09 N/mm)
       name:  epoxy matrix
-    - model: isotropic_elastic
-      E:     70.0e3              # MPa
-      nu:    0.20
-      k_res: 1.0                 # damage-immune
-      Gc:    6.4e-4               # N/mm -- must match the matrix (see above)
-      name:  glass fibre
+    - model: transverse_isotropic
+      E_L: 234.0e3
+      E_T: 15.0e3
+      G_LT: 15.0e3
+      nu_LT: 0.2
+      nu_TT: 0.0714    # = E_T/(2*G23) - 1, G23 = 7000 (isotropic transverse plane)
+      k_res: 1.0e-6
+      Gc:    10.98e-3              # N/mm -- kept equal to the matrix so this
+                                  # stays on the cheaper homogeneous-Gc
+                                  # solver path (k_res=1.0 already makes this
+                                  # phase damage-immune regardless)
+      name: carbon fibre
 
   eps_bar:                    # prescribed macroscopic strain (3x3), reached at t=1
     - [1.0e-2, 0.0, 0.0]
     - [0.0,    0.0, 0.0]
     - [0.0,    0.0, 0.0]
 
-  l0: 3.0e-4       # mm  phase-field length scale
-  # Gc: 6.4e-4     # N/mm -- override for every phase, instead of each
-                   # material's own Gc above (omit to use those)
+  control:
+    - [0, 0, 0]
+    - [0, 1, 0]     # e.g. free surface: sigma_23 = sigma_32 = 0
+    - [0, 0, 1]
+  stress_bar:
+    - [0.0, 0.0, 0.0]
+    - [0.0, 0.0, 0.0]
+    - [0.0, 0.0, 0.0]
 
-  formulation:  lippmann_schwinger   # or "displacement"
-  scheme:       rotated              # "standard" or "rotated" -- lippmann_schwinger only
+    
+  l0: 4.57e-4      # mm  phase-field length scale -- >= 4*voxel size
+                   # (standard phase-field mesh-resolution guideline) for a
+                   # ~512^2 grid at configs/generation/rve_random.yaml's vox
+
+
+  formulation:  displacement   # or "lippman-schwinger"
+  # scheme:       rotated              # "standard" or "rotated" -- lippmann_schwinger only
   toler_lin:    1.0e-2
-  maxiter_cg:   1000
+  maxiter_cg:   300
 
   toler_helm:   1.0e-2
-  maxiter_helm: 500
+  maxiter_helm: 200
 
   eta: 1.0e-6     # damage-equation viscous regularisation (0 = none)
-  dt:  1.0        # ^ its (unrelated to stepping.dt_step) timestep
+
 
   d_thres: 0.95   # hybrid irreversibility threshold
 
@@ -75,7 +99,7 @@ fracture:
   #   converge at too-large a step, unlike pure linear elasticity.
   stepping:
     mode:         fixed
-    dt_step:      0.1
+    dt_step:      0.01
     # dt_init:      0.1
     # dt_min:       1.0e-4
     # dt_max:       0.2

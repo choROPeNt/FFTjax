@@ -40,6 +40,16 @@ class TransverseIsotropicFibre(ConstitutiveModel):
     Derived:
     G_TT  = E_T / (2(1 + nu_TT))    transverse-transverse shear modulus
     nu_TL = nu_LT * E_T / E_L       reciprocal Poisson ratio (symmetry of S)
+
+    k_res, Gc : AT2 phase-field residual stiffness / critical energy release
+                rate -- see materialmodels.elastic.isotropic.
+                LinearElasticIsotropic's docstring for what these do; same
+                meaning here. Only read by fracture problems, which use an
+                isotropized (λ, μ) proxy of this material's stiffness_tensor()
+                for the Amor driving-force split -- see materialmodels.
+                phasefield.driving_force.lame_field's docstring for why
+                that's an approximation for an anisotropic material like
+                this one, not new plumbing.
     """
 
     def __init__(
@@ -50,6 +60,8 @@ class TransverseIsotropicFibre(ConstitutiveModel):
         nu_LT: float,
         nu_TT: float,
         name: str = "",
+        k_res: float = 1e-6,
+        Gc: float | None = None,
     ):
         self.E_L = float(E_L)
         self.E_T = float(E_T)
@@ -57,6 +69,8 @@ class TransverseIsotropicFibre(ConstitutiveModel):
         self.nu_LT = float(nu_LT)
         self.nu_TT = float(nu_TT)
         self.name = name
+        self.k_res = float(k_res)
+        self.Gc = float(Gc) if Gc is not None else None
         self.G_TT = float(E_T / (2.0 * (1.0 + nu_TT)))
         self.nu_TL = float(nu_LT * E_T / E_L)   # S symmetry: nu_LT/E_L = nu_TL/E_T
 

@@ -24,6 +24,7 @@ from math import prod
 import jax.numpy as jnp
 from jax import jit
 
+from operators.green import nyquist_safe_xi
 from solvers.elliptic.vector.base import ElasticitySolver, ElasticitySolution
 from solvers.krylov.cg import cg_solve
 
@@ -38,32 +39,6 @@ def _active_pairs(control: Tuple[Tuple[int, ...], ...]) -> Tuple[Tuple[int, int]
         for j in range(i, 3)
         if control[i][j]
     )
-
-
-def _nyquist_safe_xi(xi_flat: jnp.ndarray, n: Tuple) -> jnp.ndarray:
-    """
-    Zero the Nyquist-frequency component of ``xi_flat`` along each even grid
-    dimension.
-
-    The gradient/divergence operators below use ``xi`` to an odd power
-    (unlike the strain-based solver's Green's operator, which only ever
-    uses even powers ``ξξ``/``ξξξξ``). For an even-length dimension the
-    Nyquist bin has no distinct negative-frequency partner, so its FFT
-    coefficient must be real for the transform of a real signal to stay
-    Hermitian-symmetric -- multiplying it by an odd (purely imaginary) power
-    of ``ξ`` breaks that symmetry and corrupts the real-space result.
-    Zeroing it there is the standard fix used throughout FFT-Galerkin
-    homogenization schemes (same gotcha the future diffusion solver, see
-    project memory, will need too).
-    """
-    idx   = [jnp.arange(ni) for ni in n]
-    grids = jnp.meshgrid(*idx, indexing="ij")
-    masks = [
-        (g == ni // 2) if ni % 2 == 0 else jnp.zeros_like(g, dtype=bool)
-        for ni, g in zip(n, grids)
-    ]
-    nyquist_mask = jnp.stack([m.ravel() for m in masks])
-    return jnp.where(nyquist_mask, 0.0, xi_flat)
 
 
 @partial(jit, static_argnames=("n", "control", "maxiter"))
@@ -110,7 +85,7 @@ def solve_displacement_based(
     pairs = _active_pairs(control)
     control_arr = jnp.asarray(control, dtype=eps_bar.dtype)
 
-    iq = 1j * _nyquist_safe_xi(xi_flat, n)  # (3, Nv)
+    iq = 1j * nyquist_safe_xi(xi_flat, n)  # (3, Nv)
 
     # ── FFT helpers ───────────────────────────────────────────────────────────
     def fft_(x):
@@ -172,7 +147,7 @@ def solve_displacement_based(
     # ── Preconditioner  M ≈ A⁻¹, built from a reference (homogeneous) medium ──
     # "du" block: per-frequency acoustic tensor  K0(ξ) = ξ·C0·ξ  (3,3,Nv),
     # inverted pointwise. ξ=0 at the true DC bin *and* at every point where a
-    # Nyquist-zeroed dimension (see _nyquist_safe_xi) makes all components
+    # Nyquist-zeroed dimension (see operators.green.nyquist_safe_xi) makes all components
     # vanish simultaneously -- K0 is singular there and must be regularized;
     # these are exactly the directions the operator itself is blind to
     # (a rigid-body-translation-like gauge freedom), so any regular value works.

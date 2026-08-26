@@ -98,7 +98,7 @@ dt_step                   = 0.01   # 100 equal steps — see module docstring
 toler_st_abs, toler_st_rel, maxiter_st = 1e-2, 1e-3, 200
 eta = 1e-6   # damage-equation viscous regularisation (Fig. 3b, Schneider & Kästner 2025)
 
-output = "output/benchmark"
+output = "output/benchmark/single_notch_plate"
 here   = os.path.dirname(os.path.abspath(__file__))
 
 LOADING_CASES = {
@@ -175,7 +175,7 @@ def run_case(name: str, case: dict) -> None:
             scheme       = "rotated",
             toler_lin    = toler_lin, maxiter_cg=maxiter_cg,
             toler_helm   = toler_helm, maxiter_helm=maxiter_helm,
-            eta          = eta, dt=dt_step, d_thres=d_thres,
+            eta          = eta, d_thres=d_thres,
             toler_st_abs = toler_st_abs, toler_st_rel=toler_st_rel, maxiter_st=maxiter_st,
             writer       = w,
             on_increment = _report,

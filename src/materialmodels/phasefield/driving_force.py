@@ -17,28 +17,38 @@ import jax
 import jax.numpy as jnp
 
 from materialmodels.base import ConstitutiveModel
+from materialmodels.tensors import isotropic_equivalent_lame
 
 
 def lame_field(materials: Sequence[ConstitutiveModel], phase: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
     """
-    Per-voxel Lamé constants gathered from each material's ``.lam``/``.mu``
-    attributes by phase index -- same hard (sharp-interface) assembly
-    pattern as ``materialmodels.assembly.assemble_C_field``, but for the
-    scalar (λ, μ) pair the Amor split needs instead of the full C tensor.
-    Only valid where every material in ``materials`` is isotropic (exposes
-    ``.lam``/``.mu``).
+    Per-voxel Lamé constants for the Amor split, gathered by phase index --
+    same hard (sharp-interface) assembly pattern as
+    ``materialmodels.assembly.assemble_C_field``, but reduced to the scalar
+    (λ, μ) pair the split needs instead of the full C tensor.
+
+    Each material's (λ, μ) comes from ``isotropic_equivalent_lame`` on its
+    own ``stiffness_tensor()`` -- exact for an isotropic material (recovers
+    its own λ, μ bit-for-bit, verified in materialmodels.tensors), an
+    isotropization for an anisotropic one (e.g. TransverseIsotropicFibre).
+    The Amor split itself is only defined for an isotropic elastic law, so
+    an anisotropic phase's driving force is inherently approximate here --
+    this is the same approximation problems.mechanics.solve_mechanics's
+    lippmann_schwinger reference medium already makes for such materials,
+    not a new one introduced by this function.
 
     Parameters
     ----------
-    materials : list of ConstitutiveModel with .lam/.mu, indexed by phase
+    materials : list of ConstitutiveModel (any -- only needs .stiffness_tensor())
     phase     : (Nv,) int   phase index per voxel
 
     Returns
     -------
     lam_vox, mu_vox : (Nv,), (Nv,)
     """
-    lam_stack = jnp.array([m.lam for m in materials])
-    mu_stack = jnp.array([m.mu for m in materials])
+    lam_mu = [isotropic_equivalent_lame(m.stiffness_tensor()) for m in materials]
+    lam_stack = jnp.array([lm[0] for lm in lam_mu])
+    mu_stack = jnp.array([lm[1] for lm in lam_mu])
     return lam_stack[phase], mu_stack[phase]
 
 

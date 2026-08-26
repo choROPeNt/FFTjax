@@ -2,6 +2,7 @@ import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on 
 
 import jax.numpy as jnp
 
+from materialmodels.tensors import isotropic_equivalent_lame
 from operators.base import LinearOperator
 from operators.general_functions import ddot42
 
@@ -33,6 +34,34 @@ def build_freq_grid(
              for ni, Li in zip(n, L)]
     grids = jnp.meshgrid(*freqs, indexing='ij')
     return jnp.stack([g.ravel() for g in grids])  # (ndim, Nv)
+
+
+def nyquist_safe_xi(xi_flat: jnp.ndarray, n: tuple[int, ...]) -> jnp.ndarray:
+    """
+    Zero the Nyquist-frequency component of ``xi_flat`` along each even grid
+    dimension.
+
+    Any operator that uses ``xi`` to an odd power (a plain gradient or
+    divergence, unlike the strain-based Green's operators above, which only
+    ever use even powers ``ξξ``/``ξξξξ``) needs this. For an even-length
+    dimension the Nyquist bin has no distinct negative-frequency partner, so
+    its FFT coefficient must be real for the transform of a real signal to
+    stay Hermitian-symmetric -- multiplying it by an odd (purely imaginary)
+    power of ``ξ`` breaks that symmetry and corrupts the real-space result.
+    Zeroing it there is the standard fix used throughout FFT-Galerkin
+    homogenization schemes. Shared by solvers.elliptic.vector.
+    displacement_based (gradient/divergence of a displacement field) and
+    solvers.elliptic.scalar's heterogeneous-Gc damage solve (gradient/
+    divergence of a scalar damage field) -- same gotcha either way.
+    """
+    idx   = [jnp.arange(ni) for ni in n]
+    grids = jnp.meshgrid(*idx, indexing="ij")
+    masks = [
+        (g == ni // 2) if ni % 2 == 0 else jnp.zeros_like(g, dtype=bool)
+        for ni, g in zip(n, grids)
+    ]
+    nyquist_mask = jnp.stack([m.ravel() for m in masks])
+    return jnp.where(nyquist_mask, 0.0, xi_flat)
 
 
 # ---------------------------------------------------------------------------
@@ -221,19 +250,25 @@ def build_reference_green_operator(
     staggered fracture, ...) so the reference-medium averaging and
     scheme-selection logic lives in exactly one place.
 
+    Reference-medium (lam0, mu0) is a Voigt-isotropization of the mean
+    stiffness tensor (materialmodels.tensors.isotropic_equivalent_lame) --
+    exact for isotropic materials (reduces to averaging their own lam/mu),
+    also handles anisotropic ones (e.g. TransverseIsotropicFibre, which has
+    no .lam/.mu) since it works from stiffness_tensor() rather than
+    assuming those attributes exist.
+
     Parameters
     ----------
     n, L       : grid shape and physical domain size
-    materials  : list, each exposing .lam and .mu (see
-                 materialmodels.elastic.isotropic.LinearElasticIsotropic)
+    materials  : list, each exposing .stiffness_tensor()
     scheme     : 'standard' (GreenOperatorBasic) or 'rotated' (GreenOperatorWillot)
 
     Returns
     -------
     green_op : GreenOperatorBasic or GreenOperatorWillot
     """
-    lam0 = sum(m.lam for m in materials) / len(materials)
-    mu0 = sum(m.mu for m in materials) / len(materials)
+    C_mean = jnp.mean(jnp.stack([m.stiffness_tensor() for m in materials]), axis=0)
+    lam0, mu0 = (float(v) for v in isotropic_equivalent_lame(C_mean))
 
     if scheme == 'standard':
         return GreenOperatorBasic(n, L, lam0, mu0)

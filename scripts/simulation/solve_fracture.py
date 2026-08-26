@@ -10,17 +10,20 @@ accepted increment to the XDMF/HDF5 output. Geometry/damage-model logic and
 solver wiring both live outside this script -- see src/generation/,
 src/materialmodels/, src/problems/fracture.py, src/problems/incremental.py.
 
-Only isotropic materials are supported here (the Amor-split driving force
-and AT2 residual stiffness gather both read .lam/.mu/.k_res -- see
-materialmodels.phasefield.driving_force.lame_field's docstring); a
-transversely isotropic fibre like scripts/simulation/solve_mechanics.py's
-example can't be used until materialmodels/ grows that support.
+Anisotropic materials (e.g. transverse_isotropic, like
+scripts/simulation/solve_mechanics.py's example) are usable here too -- the
+Amor-split driving force uses an isotropized (lambda, mu) proxy of each
+material's stiffness_tensor() (materialmodels.phasefield.driving_force.
+lame_field), exact for an isotropic material, an approximation for an
+anisotropic one.
 
 ``stepping.mode`` selects how the target strain is reached -- see
-solve_mechanics.py's docstring, same three modes. ``stepping.dt_step`` (not
-``dt``) is the load-fraction increment size for "fixed" -- solve_fracture's
-own ``dt`` (fracture.eta/fracture.dt in the config) is the damage
-equation's unrelated viscous-regularisation timestep.
+solve_mechanics.py's docstring, same three modes. ``stepping.dt_step`` is
+the load-fraction increment *size* for "fixed"; the damage equation's own
+viscous-regularisation timestep (``fracture.eta``'s partner) isn't a config
+value at all -- problems.fracture.solve_fracture_incremental derives it
+itself as the real per-increment gap in load fraction, so it's always
+correct even under "automatic" stepping's varying step size.
 
 Damage/history are carried in from the input file if present (an npz
 preprocessor archive with d_init/H_init, see utils.io.reader.SimulationReader)
@@ -88,8 +91,7 @@ def main():
     print(f"Grid   : {n}   phi = {float(np.mean(phase_np > 0)):.3f}   "
           f"d_init max = {float(d_init_np.max()):.4f}")
 
-    # ── materials (list, indexed by 0-based phase id; isotropic only -- see
-    #    module docstring) ────────────────────────────────────────────────────
+    # ── materials (list, indexed by 0-based phase id; see module docstring) ──
     materials = [build_material(m) for m in fcfg["materials"]]
     for i, m in enumerate(materials):
         print(f"  phase {i}: {m}  k_res={m.k_res}  Gc={m.Gc}")
@@ -175,7 +177,6 @@ def main():
             toler_helm   = float(fcfg.get("toler_helm", 1e-4)),
             maxiter_helm = int(fcfg.get("maxiter_helm", 300)),
             eta          = float(fcfg.get("eta", 0.0)),
-            dt           = float(fcfg.get("dt", 1.0)),
             d_thres      = float(fcfg.get("d_thres", 0.95)),
             toler_st_abs = float(fcfg.get("toler_st_abs", 1e-2)),
             toler_st_rel = float(fcfg.get("toler_st_rel", 1e-3)),
