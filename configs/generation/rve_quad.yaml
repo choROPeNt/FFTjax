@@ -1,0 +1,18 @@
+# Preprocessing config — square-packed (quadratic) circular-fibre RVE
+# {geometry.type} → "quad_rve"  (used in output path)
+#
+# Deterministic 2-fibre unit cell (no K/seed -- see generate_rve.py's
+# rve_random.yaml for a randomly-packed alternative, needed above
+# phi ~ 0.7854, the square-packing limit).
+
+geometry:
+  phi:       0.55           # target fibre volume fraction (up to ~0.7854)
+  r_fib:     0.0035         # mm  fibre radius  (= 3.5 µm)
+  vox:       0.000114       # mm  voxel size
+  N_min:     32              # minimum grid size per in-plane side
+  nz:        1               # voxels through thickness
+  fibre_dir: [0.0, 0.0, 1.0]   # fibre axis in global frame
+  Vf_yarn:   1.0            # fibre packing within tow (1.0 = solid fibre)
+
+output:  output/generation
+jobname: "rve_quad_phi-{geometry.phi}"

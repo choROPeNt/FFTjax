@@ -2,14 +2,24 @@
 # {geometry.type} → "random_rve"  (used in output path)
 
 geometry:
-  phi:       0.35           # target fibre volume fraction (up to ~0.9069)
+  phi:       0.55           # target fibre volume fraction (up to ~0.9069)
   r_fib:     0.0035        # mm  fibre radius  (= 3.5 µm)
-  vox:       0.00009       # mm  voxel size    (= 0.1 µm, isotropic)
+  vox:       0.000114      # mm  voxel size -- targets a ~512^2 grid on this
+                            # domain (~0.056x0.059 mm at phi=0.35, seed=67);
+                            # also sized so fracture_example.yaml's l0 =
+                            # 4.57e-4 mm satisfies l0 >= 4*vox (standard
+                            # phase-field mesh-resolution guideline)
   nz:        1             # voxels through thickness
   fibre_dir: [0.0, 0.0, 1.0]   # fibre axis in global frame
   Vf_yarn:   1.0           # fibre packing within tow (1.0 = solid fibre)
   K:         15            # perturbation iterations (K>10 -> fully randomised)
   seed:      67            # RNG seed (omit for a fresh, non-reproducible RVE)
+  interphase_thickness: 0.0002   # mm -- adds a 3rd phase (index 2) filling
+                            # this radial ring around every fibre (an exact
+                            # analytic dilation, not voxel-structuring-element
+                            # based). Omit for plain binary fibre/matrix.
+                            # A simulation config using this RVE needs a
+                            # matching 3rd materials: entry (phase index 2).
 
 output:  output/generation
 jobname: "rve_random_phi-{geometry.phi}_seed-{geometry.seed}"
