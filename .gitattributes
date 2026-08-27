@@ -1,0 +1,4 @@
+# Tutorial/example notebooks, not the core codebase -- exclude from GitHub's
+# language-percentage stats (they're markdown-heavy walkthroughs, and every
+# embedded cell output byte would otherwise count as "Jupyter Notebook").
+*.ipynb linguist-documentation
