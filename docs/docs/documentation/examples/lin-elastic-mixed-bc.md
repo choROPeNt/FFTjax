@@ -10,44 +10,38 @@ under (axial extension imposed at the grips, lateral surfaces free to contract v
 effect). The point is to measure the composite's effective Poisson's ratios, which a fully
 strain-constrained case cannot show.
 
-This uses `solvers.mechanical.displacement_nw_cg.ddisp_nw_cg`, the displacement-based solver —
-required here because the strain-based solver's cheaper mixed-BC variant
-(`dstrain_nw_cg_mixed`) is only valid for **homogeneous** materials (the mixed-BC CG operator loses
-the symmetry a one-shot solve needs otherwise); our fibre/matrix composite is heterogeneous, so this
-is the correct choice.
+This uses `problems.mechanics.solve_mechanics(..., formulation="displacement", control=...)`, the
+displacement-based solver — required here because the reference-medium (`lippmann_schwinger`)
+formulation can't do stress-controlled macroscopic directions at all; our fibre/matrix composite is
+heterogeneous, so this is the correct choice.
 
 ```python
 import jax.numpy as jnp
 import numpy as np
 
 from generation.rve import make_square_composite_rve
-from operators.green import build_freq_grid
-from mat_models.elastic import LinearElasticIsotropic, assemble_C_field
-from solvers.mechanical.displacement_nw_cg import ddisp_nw_cg
+from materialmodels.elastic.isotropic import LinearElasticIsotropic
+from problems.mechanics import solve_mechanics
 from post.fields import field_to_grid, compute_displacement
 
 # Composite RVE: square-packed 2-fibre geometry, same as the Linear-Elastic example.
-phase_np, N, n, L, phi_act = make_square_composite_rve(
-    phi=0.5, r_fiber=0.005, spacing=0.0002, N_min=32, nz=10,
+phase_np, n, L, phi_act = make_square_composite_rve(
+    phi=0.5, r_fiber=0.005, dx=0.0002, N_min=32, nz=10,
 )
 Nv = int(np.prod(n))
 
 # Materials: glass fibre in an epoxy matrix -- a common, high-contrast (~23x) composite.
 matrix = LinearElasticIsotropic(E=3.0e3, nu=0.35, name="epoxy matrix")
 fiber = LinearElasticIsotropic(E=70.0e3, nu=0.20, name="glass fiber")
+materials = [matrix, fiber]
 
 phase = jnp.array(phase_np.reshape(-1))  # 0 = matrix, 1 = fiber
-C_field = assemble_C_field([matrix, fiber], phase)
 
 # Mixed boundary conditions and solve:
 # - control[0][0] = 0 (strain-controlled): eps_bar[0, 0] = 1e-3 sets the axial tension directly.
 # - control[1][1] = control[2][2] = 1 (stress-controlled): stress_goal is zero there, i.e. free
 #   lateral surfaces -- the solver finds whatever lateral strain makes sigma22 = sigma33 = 0.
 # - Shear components stay strain-controlled at zero (no shear loading).
-L_mm = tuple(float(Li) for Li in L)
-dx = tuple(Li / ni for Li, ni in zip(L_mm, n))
-xi_flat = build_freq_grid(n, L_mm)
-
 eps_bar = jnp.array([
     [1.0e-3, 0.0, 0.0],
     [0.0, 0.0, 0.0],
@@ -64,9 +58,13 @@ stress_goal = jnp.array([
     [0.0, 0.0, 0.0],
 ])
 
-eps, sigma, delta, eps_bar_out, converged = ddisp_nw_cg(
-    n, C_field, xi_flat, eps_bar, control, stress_goal, toler_lin=1e-6, maxiter=2000,
+results = solve_mechanics(
+    n, L, phase, materials, eps_bar,
+    formulation="displacement", control=control, stress_goal=stress_goal,
+    toler_lin=1e-6, maxiter=2000,
 )
+sol = results[0].solution
+eps, sigma, converged, eps_bar_out = sol.eps, sol.sigma, sol.converged, sol.eps_bar
 
 nu_xy = float(-eps_bar_out[1, 1] / eps_bar_out[0, 0])
 nu_xz = float(-eps_bar_out[2, 2] / eps_bar_out[0, 0])
@@ -127,9 +125,9 @@ linked via the Colab badge above.
 
 ## Next steps
 
-- For a **homogeneous** material, `solvers.mechanical.strain_nw_cg.dstrain_nw_cg_mixed` solves the
-  same kind of mixed BC more cheaply, reusing the fixed reference-medium Green's operator instead of
-  the true heterogeneous stiffness — not valid here since it loses symmetry for heterogeneous
-  materials.
-- See `solvers.damage.anderson` and the [Phase-Field Fracture example](./phase-field.md) for
-  coupling this kind of mechanical solve to damage evolution.
+- A cheaper homogeneous-only mixed-BC variant reusing the fixed reference-medium Green's operator
+  (the old `dstrain_nw_cg_mixed`) hasn't been ported to the new layout yet —
+  `formulation="displacement"` above is currently the only way to do mixed BC, heterogeneous or not.
+- See `problems.fracture.solve_fracture` and the [Phase-Field Fracture example](./phase-field.md)
+  for coupling this kind of mechanical solve to damage evolution (`formulation="displacement"` is
+  supported there too, via the same `control` argument).

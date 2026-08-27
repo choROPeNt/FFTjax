@@ -1,11 +1,10 @@
 """
 Phase-Field Fracture (AT2) -- Minimal Walkthrough
 
-A minimal walkthrough of FFTjax's staggered phase-field fracture solver: the
-strain-based Newton-CG elastic solver (solvers.mechanical.strain_nw_cg
-.solve_elastic) coupled with the AT2 Helmholtz damage solver
-(solvers.damage.pff_damage.solve_helmholtz_cg) on a homogeneous, isotropic
-cube with a small pre-damaged spherical seed at its centre.
+A minimal walkthrough of FFTjax's staggered phase-field fracture solver
+(problems.fracture.solve_fracture: Amor driving-force split, AT2 degradation,
+hybrid irreversibility) on a homogeneous, isotropic cube with a small
+pre-damaged spherical seed at its centre.
 
 The seed acts as a stress concentrator (like a void or pre-crack): under
 increasing macroscopic tensile strain, damage nucleates at its surface and
@@ -29,10 +28,8 @@ import jax.numpy as jnp
 import numpy as np
 import matplotlib.pyplot as plt
 
-from operators.green import build_freq_grid, build_green_operator
-from mat_models.elastic import LinearElasticIsotropic, assemble_C_field, lame_from_C_field, strain_energy_amor_split
-from solvers.mechanical.strain_nw_cg import solve_elastic
-from solvers.damage.pff_damage import degradation, update_history, solve_helmholtz_cg
+from materialmodels.elastic.isotropic import LinearElasticIsotropic
+from problems.fracture import solve_fracture
 
 print("JAX backend:", jax.default_backend())
 print("Devices:", jax.devices())
@@ -45,14 +42,10 @@ Nv = int(np.prod(n))
 dx = tuple(Li / ni for Li, ni in zip(L, n))
 
 material = LinearElasticIsotropic(E=20e3, nu=0.2, name="brittle solid")
+materials = [material]
 phase = jnp.zeros(Nv, dtype=int)
-C_field = assemble_C_field([material], phase)
-lam_vox, mu_vox = lame_from_C_field(C_field)
 
 print(material)
-
-xi_flat = build_freq_grid(n, L)
-G_glob = build_green_operator(xi_flat, material.lam, material.mu)
 
 
 def sphere_seed(n, L, vf):
@@ -67,13 +60,14 @@ def sphere_seed(n, L, vf):
 
 
 # A fully-open (d=1) seed is a near-void, ~1e6 stiffness contrast against the
-# k_res=1e-6 residual in `degradation()` -- the basic (non-accelerated)
-# Lippmann-Schwinger CG scheme used by `solve_elastic` does not converge at
+# material's own k_res=1e-6 residual (LinearElasticIsotropic's default) -- the
+# basic (non-accelerated) Lippmann-Schwinger CG scheme does not converge at
 # that contrast within a practical iteration budget (verified: >2000 CG
 # iterations, still not converged). Seeding at d=0.9 instead (~100x contrast,
 # a strongly pre-damaged but not fully open seed) converges in O(10-100)
 # iterations and still grows to d=1 under load.
 d_init = jnp.array(sphere_seed(n, L, vf=0.015)) * 0.9
+H_init = jnp.zeros(Nv)
 print("seed voxels:", int(jnp.sum(d_init > 0)), f"(Vf={float(jnp.mean(d_init > 0)):.4f})")
 
 # AT2 parameters: length scale a few voxels wide, moderate toughness so the
@@ -86,10 +80,7 @@ TOLER_HELM = 1e-4
 MAXITER_CG = 3000
 MAXITER_HELM = 300
 MAXITER_STAGGER = 50
-TOLER_STAGGER = 1e-3
-
-d_field = d_init
-H_field = jnp.zeros(Nv)
+TOLER_ST_ABS = 1e-3
 
 eps_dir = jnp.array([
     [1.0, 0.0, 0.0],
@@ -98,46 +89,31 @@ eps_dir = jnp.array([
 ])
 strain_levels = np.linspace(2.0e-4, 2.4e-3, 8)
 
+d_field, H_field = d_init, H_init
 results = []
 for k, eps_scale in enumerate(strain_levels):
     eps_bar = float(eps_scale) * eps_dir
-    d_st = d_field
-    for it_st in range(1, MAXITER_STAGGER + 1):
-        d_prev = d_st
 
-        g = degradation(d_st)
-        C_eff = g[None, None, None, None, :] * C_field
+    sol = solve_fracture(
+        n, L, phase, materials, eps_bar, l0, Gc, d_field, H_field,
+        toler_lin=TOLER_LIN, maxiter_cg=MAXITER_CG,
+        toler_helm=TOLER_HELM, maxiter_helm=MAXITER_HELM,
+        toler_st_abs=TOLER_ST_ABS, maxiter_st=MAXITER_STAGGER,
+    )
 
-        eps, sigma, delta, conv_mech = solve_elastic(
-            n, C_eff, G_glob, eps_bar, toler_lin=TOLER_LIN, maxiter=MAXITER_CG,
-        )
+    assert bool(sol.converged_mech), f"mechanical CG did not converge at step {k+1}"
+    d_field, H_field = sol.d, sol.H
 
-        psi_pos, _ = strain_energy_amor_split(eps, lam_vox, mu_vox)
-        H_field = update_history(H_field, psi_pos)
-
-        d_new, conv_helm = solve_helmholtz_cg(
-            H_field, xi_flat, n, l0, Gc, d_prev,
-            toler_cg=TOLER_HELM, maxiter=MAXITER_HELM,
-        )
-        d_st = d_new
-
-        change = float(jnp.max(jnp.abs(d_st - d_prev)))
-        if change < TOLER_STAGGER:
-            break
-
-    assert bool(conv_mech), f"mechanical CG did not converge at step {k+1}"
-
-    d_field = d_st
-    sigma11_ave = float(jnp.mean(sigma[0, 0]))
+    sigma11_ave = float(jnp.mean(sol.sigma[0, 0]))
     results.append({
         "eps11": float(eps_scale),
         "sigma11_ave": sigma11_ave,
         "max_d": float(jnp.max(d_field)),
-        "staggered_iters": it_st,
+        "staggered_iters": sol.iter_staggered,
     })
     print(f"step {k+1}/{len(strain_levels)}  eps11={float(eps_scale):.2e}  "
           f"sigma11_ave={sigma11_ave:8.4f} MPa  max(d)={float(jnp.max(d_field)):.4f}  "
-          f"staggered_iters={it_st:2d}")
+          f"staggered_iters={sol.iter_staggered:2d}")
 
 # Sanity checks: damage stays in [0, 1] and is monotone (irreversibility).
 assert float(jnp.min(d_field)) >= 0.0 and float(jnp.max(d_field)) <= 1.0

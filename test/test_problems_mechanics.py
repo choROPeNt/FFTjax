@@ -32,6 +32,8 @@ os.makedirs("output", exist_ok=True)
 import sys
 sys.path.insert(0, "src")
 
+from typing import cast
+
 import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on TPU, no GPU prealloc)
 import jax.numpy as jnp
 import pytest
@@ -39,6 +41,7 @@ import pytest
 from generation.rve import make_square_composite_rve
 from materialmodels.elastic.isotropic import LinearElasticIsotropic
 from problems.mechanics import solve_mechanics
+from solvers.elliptic.vector.base import ElasticitySolution
 
 
 phase_np, n, L, phi_act = make_square_composite_rve(
@@ -59,11 +62,11 @@ eps_bar = jnp.array([
 
 # ── 1. end-to-end parity with the known notebook result ─────────────────────
 
-sol = solve_mechanics(
+sol = cast(ElasticitySolution, solve_mechanics(
     n, L, phase, materials, eps_bar,
     formulation="lippmann_schwinger", scheme="rotated",
     toler_lin=1e-6, maxiter=1000,
-)[0].solution
+)[0].solution)
 tau_xy = float(jnp.mean(sol.sigma[1, 0]))
 assert bool(sol.converged), "composite RVE solve must converge"
 assert abs(tau_xy - 7.625369073063829) < 1e-6, f"tau_xy mismatch: got {tau_xy}, expected ~7.625369"
@@ -72,11 +75,11 @@ print(f"[1] rotated scheme: tau_xy = {tau_xy:.6f} MPa, converged={bool(sol.conve
 
 # ── 2. standard scheme runs and converges ────────────────────────────────────
 
-sol_std = solve_mechanics(
+sol_std = cast(ElasticitySolution, solve_mechanics(
     n, L, phase, materials, eps_bar,
     formulation="lippmann_schwinger", scheme="standard",
     toler_lin=1e-6, maxiter=2000,
-)[0].solution
+)[0].solution)
 assert bool(sol_std.converged), "standard-scheme solve must also converge"
 assert jnp.all(jnp.isfinite(sol_std.sigma)), "standard-scheme stress must be finite"
 print(f"[2] standard scheme: tau_xy = {float(jnp.mean(sol_std.sigma[1, 0])):.6f} MPa, "
@@ -85,14 +88,15 @@ print(f"[2] standard scheme: tau_xy = {float(jnp.mean(sol_std.sigma[1, 0])):.6f}
 
 # ── 3. displacement-based formulation runs, converges, and roughly agrees ────
 
-sol_disp = solve_mechanics(
+sol_disp = cast(ElasticitySolution, solve_mechanics(
     n, L, phase, materials, eps_bar,
     formulation="displacement",
     toler_lin=1e-6, maxiter=2000,
-)[0].solution
+)[0].solution)
 tau_xy_disp = float(jnp.mean(sol_disp.sigma[1, 0]))
 rel_diff = abs(tau_xy_disp - tau_xy) / abs(tau_xy)
 assert bool(sol_disp.converged), "displacement-based solve must converge"
+assert sol_disp.eps_bar is not None  # always populated for formulation="displacement"
 assert jnp.allclose(sol_disp.eps_bar, eps_bar), "pure-strain BC: eps_bar must pass through unchanged"
 assert rel_diff < 0.10, f"displacement vs. lippmann_schwinger tau_xy differ by {rel_diff:.1%}, expected <10%"
 print(f"[3] displacement formulation: tau_xy = {tau_xy_disp:.6f} MPa, "

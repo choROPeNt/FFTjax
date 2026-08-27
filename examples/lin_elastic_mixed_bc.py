@@ -8,9 +8,9 @@ along y and z, the condition an actual tensile-test specimen is under (axial ext
 the grips, lateral surfaces free to contract via Poisson's effect). The point is to measure the
 composite's effective Poisson's ratios, which a fully strain-constrained case cannot show.
 
-Uses solvers.mechanical.displacement_nw_cg.ddisp_nw_cg, the displacement-based solver -- required
-here because the strain-based solver's cheaper mixed-BC variant (dstrain_nw_cg_mixed) is only
-valid for homogeneous materials; our fibre/matrix composite is heterogeneous.
+Uses problems.mechanics.solve_mechanics(..., formulation="displacement", control=...) -- the
+displacement-based solver, required here because the reference-medium (lippmann_schwinger)
+formulation can't do stress-controlled macroscopic directions at all.
 
 Saves its plot to docs/static/img/lin_elastic_mixed_bc.png for the Examples page. Re-run this
 script and copy its printed output into
@@ -20,6 +20,7 @@ Run from the repo root: python examples/lin_elastic_mixed_bc.py
 """
 import sys
 from pathlib import Path
+from typing import cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -30,9 +31,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from generation.rve import make_square_composite_rve
-from operators.green import build_freq_grid
-from mat_models.elastic import LinearElasticIsotropic, assemble_C_field
-from solvers.mechanical.displacement_nw_cg import ddisp_nw_cg
+from materialmodels.elastic.isotropic import LinearElasticIsotropic
+from problems.mechanics import solve_mechanics
+from solvers.elliptic.vector.base import ElasticitySolution
 from post.fields import field_to_grid, compute_displacement
 
 print("JAX backend:", jax.default_backend())
@@ -40,10 +41,11 @@ print("Devices:", jax.devices())
 
 # Composite RVE: square-packed 2-fibre geometry, same as lin_elastic_strain.py's
 # composite section, so the two examples are directly comparable.
-phase_np, N, n, L, phi_act = make_square_composite_rve(
+phase_np, n, L, phi_act = make_square_composite_rve(
     phi=0.5, r_fiber=0.005, dx=0.0002, N_min=32, nz=10,
 )
 Nv = int(np.prod(n))
+dx = tuple(Li / ni for Li, ni in zip(L, n))
 
 print("grid n :", n)
 print("domain L [mm]:", tuple(float(Li) for Li in L))
@@ -52,19 +54,15 @@ print("fiber volume fraction (actual):", phi_act)
 # Materials: glass fibre in an epoxy matrix -- a common, high-contrast (~23x) composite.
 matrix = LinearElasticIsotropic(E=3.0e3, nu=0.35, name="epoxy matrix")
 fiber = LinearElasticIsotropic(E=70.0e3, nu=0.20, name="glass fiber")
+materials = [matrix, fiber]
 
 phase = jnp.array(phase_np.reshape(-1))  # 0 = matrix, 1 = fiber
-C_field = assemble_C_field([matrix, fiber], phase)
 
 print(matrix)
 print(fiber)
 
 # Mixed boundary conditions: xx strain-controlled (tension), yy/zz stress-controlled
 # (free lateral surfaces, target 0), shear strain-controlled at 0.
-L_mm = tuple(float(Li) for Li in L)
-dx = tuple(Li / ni for Li, ni in zip(L_mm, n))
-xi_flat = build_freq_grid(n, L_mm)
-
 eps_bar = jnp.array([
     [1.0e-3, 0.0, 0.0],
     [0.0, 0.0, 0.0],
@@ -81,9 +79,14 @@ stress_goal = jnp.array([
     [0.0, 0.0, 0.0],
 ])
 
-eps, sigma, delta, eps_bar_out, converged = ddisp_nw_cg(
-    n, C_field, xi_flat, eps_bar, control, stress_goal, toler_lin=1e-6, maxiter=2000,
+results = solve_mechanics(
+    n, L, phase, materials, eps_bar,
+    formulation="displacement", control=control, stress_goal=stress_goal,
+    toler_lin=1e-6, maxiter=2000,
 )
+sol = cast(ElasticitySolution, results[0].solution)
+eps, sigma, converged, eps_bar_out = sol.eps, sol.sigma, sol.converged, sol.eps_bar
+assert eps_bar_out is not None  # always populated for formulation="displacement"
 
 print("converged     :", bool(converged))
 print("eps_bar (solved):")

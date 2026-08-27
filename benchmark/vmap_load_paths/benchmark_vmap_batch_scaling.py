@@ -31,6 +31,7 @@ import json
 import os
 import time
 import datetime
+from typing import cast
 
 import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on TPU, no GPU prealloc)
 import jax
@@ -40,6 +41,7 @@ import numpy as np
 from generation.rve import make_square_composite_rve
 from materialmodels.elastic.isotropic import LinearElasticIsotropic
 from problems.mechanics import solve_mechanics
+from solvers.elliptic.vector.base import ElasticitySolution
 
 BATCH_SIZES = [1, 2, 4, 8, 16, 32, 64 , 128, 256, 512, 1024, 2048, 4096, 4608, 5120,5632, 6144]
 REPEATS     = 5
@@ -93,8 +95,8 @@ def bench(B, solve_one, solve_one_jit, n, L, phase, materials):
 
     # solve_mechanics always returns list[IncrementResult] (one element here,
     # stepping="single") -- [0].solution is the batched ElasticitySolution.
-    sol_batch = out[0].solution
-    sol_loop  = [r[0].solution for r in loop_out]
+    sol_batch = cast(ElasticitySolution, out[0].solution)
+    sol_loop  = [cast(ElasticitySolution, r[0].solution) for r in loop_out]
     converged = bool(jnp.all(sol_batch.converged))
     tau_xy_batch = float(jnp.mean(sol_batch.sigma[:, 1, 0]))
     tau_xy_loop  = float(jnp.mean(sol_loop[0].sigma[1, 0]))

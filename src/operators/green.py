@@ -1,6 +1,7 @@
 import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on TPU, no GPU prealloc)
 
 import jax.numpy as jnp
+from jax.typing import ArrayLike
 
 from materialmodels.tensors import isotropic_equivalent_lame
 from operators.base import LinearOperator
@@ -112,8 +113,8 @@ def build_willot_freq(
 
 def build_green_operator(
     xi_flat: jnp.ndarray,
-    lam0:    float,
-    mu0:     float,
+    lam0:    ArrayLike,
+    mu0:     ArrayLike,
     scheme:  str = 'standard',
     dx:      tuple[float, ...] | None = None,
 ) -> jnp.ndarray:
@@ -143,8 +144,8 @@ def build_green_operator(
     Parameters
     ----------
     xi_flat : (3, Nv)              angular-frequency grid from ``build_freq_grid``
-    lam0    : float                reference Lamé λ₀
-    mu0     : float                reference shear modulus μ₀
+    lam0    : float or 0-d array   reference Lamé λ₀
+    mu0     : float or 0-d array   reference shear modulus μ₀
     scheme  : 'standard'|'rotated' discretisation scheme (default 'standard')
     dx      : (3,) tuple or None   voxel spacing — required for scheme='rotated'
 
@@ -197,7 +198,7 @@ class GreenOperatorBasic(LinearOperator):
     Self-adjoint (major-symmetric: Γ_ijkl = Γ_klij), so ``.T`` returns self.
     """
 
-    def __init__(self, n: tuple[int, ...], L: tuple[float, ...], lam0: float, mu0: float):
+    def __init__(self, n: tuple[int, ...], L: tuple[float, ...], lam0: ArrayLike, mu0: ArrayLike):
         self.n, self.L, self.lam0, self.mu0 = n, L, lam0, mu0
         self.G = self._build_G()
 
@@ -225,8 +226,8 @@ class GreenOperatorWillot(GreenOperatorBasic):
         self,
         n: tuple[int, ...],
         L: tuple[float, ...],
-        lam0: float,
-        mu0: float,
+        lam0: ArrayLike,
+        mu0: ArrayLike,
         dx: tuple[float, ...],
     ):
         self.dx = dx
