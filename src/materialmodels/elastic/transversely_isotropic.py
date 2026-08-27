@@ -21,7 +21,7 @@ from materialmodels.tensors import (
 )
 
 
-class TransverseIsotropicFibre(ConstitutiveModel):
+class TransverseIsotropic(ConstitutiveModel):
     """
     Transversely isotropic (fibre-reinforced) material.
 
@@ -123,6 +123,6 @@ class TransverseIsotropicFibre(ConstitutiveModel):
 
     def __repr__(self) -> str:
         tag = f" ({self.name})" if self.name else ""
-        return (f"TransverseIsotropicFibre{tag}: "
+        return (f"TransverseIsotropic{tag}: "
                 f"E_L={self.E_L:.3g}  E_T={self.E_T:.3g}  G_LT={self.G_LT:.3g}  "
                 f"G_TT={self.G_TT:.3g}  nu_LT={self.nu_LT:.3g}  nu_TT={self.nu_TT:.3g}")

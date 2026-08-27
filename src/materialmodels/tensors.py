@@ -123,7 +123,7 @@ def isotropic_equivalent_lame(C4: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray
     Voigt-average isotropic Lame parameters (lam0, mu0) of a general (3,3,3,3)
     stiffness tensor -- exact for an isotropic C4 (recovers its own lam, mu),
     an isotropization for an anisotropic one (e.g. a rotated
-    TransverseIsotropicFibre). Both K = C_iijj/9 (bulk modulus) and
+    TransverseIsotropic). Both K = C_iijj/9 (bulk modulus) and
     mu0 = (C_ijij - 3K)/10 are linear in C4, so this commutes with averaging
     stiffness tensors across materials -- e.g. mean-over-materials then
     isotropize gives the same lam0/mu0 as isotropize-then-mean.

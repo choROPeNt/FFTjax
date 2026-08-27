@@ -6,7 +6,7 @@ from collections.abc import Sequence
 
 import jax.numpy as jnp
 
-from materialmodels.base import ConstitutiveModel
+from materialmodels.base import PhaseFieldMaterial
 
 
 def degradation_at2(d: jnp.ndarray, k: float | jnp.ndarray = 1e-6) -> jnp.ndarray:
@@ -70,7 +70,7 @@ def degrade_stiffness_field(
     return g[None, None, None, None, :] * C_field
 
 
-def k_res_field(materials: Sequence[ConstitutiveModel], phase: jnp.ndarray) -> jnp.ndarray:
+def k_res_field(materials: Sequence[PhaseFieldMaterial], phase: jnp.ndarray) -> jnp.ndarray:
     """
     Per-voxel AT2 residual stiffness k_res, gathered from each material's
     ``.k_res`` attribute by phase index -- same hard (sharp-interface)
@@ -79,7 +79,7 @@ def k_res_field(materials: Sequence[ConstitutiveModel], phase: jnp.ndarray) -> j
 
     Parameters
     ----------
-    materials : list of ConstitutiveModel with .k_res, indexed by phase
+    materials : list of PhaseFieldMaterial (.k_res, .Gc), indexed by phase
                 (see materialmodels.elastic.isotropic.LinearElasticIsotropic)
     phase     : (Nv,) int   phase index per voxel
 
@@ -91,7 +91,7 @@ def k_res_field(materials: Sequence[ConstitutiveModel], phase: jnp.ndarray) -> j
     return k_stack[phase]
 
 
-def Gc_field(materials: Sequence[ConstitutiveModel], phase: jnp.ndarray) -> jnp.ndarray:
+def Gc_field(materials: Sequence[PhaseFieldMaterial], phase: jnp.ndarray) -> jnp.ndarray:
     """
     Per-voxel critical energy release rate Gc, gathered from each material's
     ``.Gc`` attribute by phase index -- same hard (sharp-interface) assembly
@@ -110,7 +110,7 @@ def Gc_field(materials: Sequence[ConstitutiveModel], phase: jnp.ndarray) -> jnp.
 
     Parameters
     ----------
-    materials : list of ConstitutiveModel with .Gc, indexed by phase
+    materials : list of PhaseFieldMaterial (.k_res, .Gc), indexed by phase
                 (see materialmodels.elastic.isotropic.LinearElasticIsotropic)
     phase     : (Nv,) int   phase index per voxel
 

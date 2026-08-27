@@ -254,7 +254,7 @@ def build_reference_green_operator(
     Reference-medium (lam0, mu0) is a Voigt-isotropization of the mean
     stiffness tensor (materialmodels.tensors.isotropic_equivalent_lame) --
     exact for isotropic materials (reduces to averaging their own lam/mu),
-    also handles anisotropic ones (e.g. TransverseIsotropicFibre, which has
+    also handles anisotropic ones (e.g. TransverseIsotropic, which has
     no .lam/.mu) since it works from stiffness_tensor() rather than
     assuming those attributes exist.
 

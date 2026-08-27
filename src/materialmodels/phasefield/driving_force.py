@@ -30,7 +30,7 @@ def lame_field(materials: Sequence[ConstitutiveModel], phase: jnp.ndarray) -> tu
     Each material's (λ, μ) comes from ``isotropic_equivalent_lame`` on its
     own ``stiffness_tensor()`` -- exact for an isotropic material (recovers
     its own λ, μ bit-for-bit, verified in materialmodels.tensors), an
-    isotropization for an anisotropic one (e.g. TransverseIsotropicFibre).
+    isotropization for an anisotropic one (e.g. TransverseIsotropic).
     The Amor split itself is only defined for an isotropic elastic law, so
     an anisotropic phase's driving force is inherently approximate here --
     this is the same approximation problems.mechanics.solve_mechanics's

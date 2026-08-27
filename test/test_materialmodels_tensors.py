@@ -1,6 +1,6 @@
 """
 Standalone test for materialmodels.tensors and
-materialmodels.elastic.transversely_isotropic.TransverseIsotropicFibre.
+materialmodels.elastic.transversely_isotropic.TransverseIsotropic.
 
 Four checks
 -----------
@@ -9,7 +9,7 @@ Four checks
    transversely isotropic tensor.
 2. Symmetry checks: both tensors pass is_major_symmetric/is_minor_symmetric;
    a deliberately-broken tensor fails both.
-3. Isotropic degeneracy: TransverseIsotropicFibre with E_L=E_T=E,
+3. Isotropic degeneracy: TransverseIsotropic with E_L=E_T=E,
    nu_LT=nu_TT=nu, G_LT=G_TT=E/(2(1+nu)) must reproduce
    LinearElasticIsotropic's stiffness tensor exactly -- transverse
    isotropy is a strict generalization of isotropy.
@@ -36,7 +36,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from materialmodels.elastic.isotropic import LinearElasticIsotropic
-from materialmodels.elastic.transversely_isotropic import TransverseIsotropicFibre
+from materialmodels.elastic.transversely_isotropic import TransverseIsotropic
 from materialmodels.tensors import (
     is_major_symmetric,
     is_minor_symmetric,
@@ -49,7 +49,7 @@ from materialmodels.tensors import (
 # ── 1. Voigt round-trip ───────────────────────────────────────────────────────
 
 iso = LinearElasticIsotropic(E=210e3, nu=0.3)
-trans = TransverseIsotropicFibre(E_L=140e3, E_T=10e3, G_LT=5e3, nu_LT=0.3, nu_TT=0.4)
+trans = TransverseIsotropic(E_L=140e3, E_T=10e3, G_LT=5e3, nu_LT=0.3, nu_TT=0.4)
 
 for C4, tag in [(np.asarray(iso.stiffness_tensor()), "isotropic"),
                 (np.asarray(trans.stiffness_tensor()), "transversely isotropic")]:
@@ -78,7 +78,7 @@ print("[2] symmetry checks: PASSED (both tensors symmetric, broken tensor caught
 
 E, nu = 210e3, 0.3
 G = E / (2.0 * (1.0 + nu))
-degenerate = TransverseIsotropicFibre(E_L=E, E_T=E, G_LT=G, nu_LT=nu, nu_TT=nu)
+degenerate = TransverseIsotropic(E_L=E, E_T=E, G_LT=G, nu_LT=nu, nu_TT=nu)
 iso_ref = LinearElasticIsotropic(E=E, nu=nu)
 
 err = float(jnp.max(jnp.abs(degenerate.stiffness_tensor() - iso_ref.stiffness_tensor())))

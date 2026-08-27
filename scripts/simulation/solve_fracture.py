@@ -61,6 +61,7 @@ sys.path.insert(0, "src")
 import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on TPU, no GPU prealloc)
 import jax.numpy as jnp
 
+from materialmodels.base import PhaseFieldMaterial
 from materialmodels.factory import build_material
 from post.fields import homogenize, to_voigt
 from problems.fracture import FractureSolution, solve_fracture_incremental
@@ -92,7 +93,10 @@ def main():
           f"d_init max = {float(d_init_np.max()):.4f}")
 
     # ── materials (list, indexed by 0-based phase id; see module docstring) ──
-    materials = [build_material(m) for m in fcfg["materials"]]
+    # cast: build_material() returns the thin ConstitutiveModel ABC (no
+    # .k_res/.Gc); every concrete model this factory builds satisfies the
+    # richer PhaseFieldMaterial protocol needed for the AT2 damage solve.
+    materials = [cast(PhaseFieldMaterial, build_material(m)) for m in fcfg["materials"]]
     for i, m in enumerate(materials):
         print(f"  phase {i}: {m}  k_res={m.k_res}  Gc={m.Gc}")
 
