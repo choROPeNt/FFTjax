@@ -18,6 +18,13 @@ and solvers/ stacks so far:
   formulation="displacement" -- lippmann_schwinger's reference-medium
   approach can't do stress-controlled macroscopic directions, so a nonzero
   control there raises a clear error rather than silently ignoring it.
+- One public entry point, ``solve_mechanics``: its ``stepping`` argument
+  picks a single full-eps_bar solve or a load-stepped one (Abaqus-*STATIC
+  style, via problems.incremental) -- it always returns list[IncrementResult]
+  regardless of ``stepping``, so callers (including a jax.vmap/jax.jit'd
+  one, see notebooks/lin-elastic_strain_vmap.ipynb) have one consistent
+  return shape and don't need to special-case "single" against the two
+  load-stepped modes.
 """
 
 import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on TPU, no GPU prealloc)
@@ -40,7 +47,7 @@ from utils.io.xdmf_writer import IncrementalWriter
 _ZERO_CONTROL = ((0, 0, 0), (0, 0, 0), (0, 0, 0))
 
 
-def solve_mechanics(
+def _solve_mechanics_step(
     n:           Tuple[int, ...],
     L:           Tuple[float, ...],
     phase:       jnp.ndarray,
@@ -48,45 +55,17 @@ def solve_mechanics(
     eps_bar:     jnp.ndarray,
     formulation: str = "lippmann_schwinger",
     scheme:      str = "rotated",
-    control:     Tuple[Tuple[int, ...], ...] | None = None,
+    control:     Tuple[Tuple[int, ...], ...] = _ZERO_CONTROL,
     stress_goal: jnp.ndarray | None = None,
     toler_lin:   float = 1e-6,
     maxiter:     int = 1000,
 ) -> ElasticitySolution:
     """
-    Solve the mechanical equilibrium problem on a phase-labelled periodic
-    voxel grid under a prescribed macroscopic strain (and, for
-    formulation="displacement", optionally mixed strain/stress control).
-
-    Parameters
-    ----------
-    n, L        : grid shape and physical domain size
-    phase       : (Nv,) int      phase index per voxel (0-based)
-    materials   : list           each implements .stiffness_tensor(), .lam, .mu
-                  (see materialmodels.elastic.isotropic.LinearElasticIsotropic)
-    eps_bar     : (3, 3)         prescribed macroscopic strain; entries where
-                  ``control == 1`` are ignored (solved for instead)
-    formulation : "lippmann_schwinger" (reference-medium, strain BC only) or
-                  "displacement" (true heterogeneous tangent, supports mixed BC)
-    scheme      : "standard" (GreenOperatorBasic) or "rotated" (GreenOperatorWillot)
-                  -- only used by formulation="lippmann_schwinger"
-    control     : (3, 3) 0/1 mask, 1 = stress-controlled, 0 = strain-controlled.
-                  None (default) = pure strain BC (all zero). Only
-                  formulation="displacement" can have any nonzero entries.
-    stress_goal : formulation-specific -- see ElasticitySolver.solve's
-                  docstring. lippmann_schwinger: (3, 3, Nv) per-voxel target
-                  stress field or None (zero). displacement: (3, 3)
-                  macroscopic target stress, used only on ``control``-marked
-                  entries.
-    toler_lin, maxiter : CG tolerance / iteration cap
-
-    Returns
-    -------
-    ElasticitySolution(eps, sigma, delta, converged, eps_bar) -- a NamedTuple;
-    ``eps_bar`` is None unless formulation="displacement", in which case it's
-    the macroscopic strain with any stress-controlled entries filled in.
+    One mechanical equilibrium solve at a fixed macroscopic strain (no
+    load-stepping) -- the per-increment building block solve_mechanics
+    closes over as its ``solve_fn``. See solve_mechanics's docstring for
+    all parameters.
     """
-    control = control if control is not None else _ZERO_CONTROL
     control_nonzero = any(any(row) for row in control)
 
     C_field = assemble_C_field(materials, phase)
@@ -116,7 +95,7 @@ def solve_mechanics(
         )
 
 
-def solve_mechanics_incremental(
+def solve_mechanics(
     n:           Tuple[int, ...],
     L:           Tuple[float, ...],
     phase:       jnp.ndarray,
@@ -142,48 +121,83 @@ def solve_mechanics_incremental(
     on_increment: Callable[[IncrementResult, float], None] | None = None,
 ) -> list[IncrementResult]:
     """
-    solve_mechanics, optionally load-stepped up to the target eps_bar
-    (Abaqus-*STATIC style) -- see problems.incremental for the driver.
+    Solve the mechanical equilibrium problem on a phase-labelled periodic
+    voxel grid under a prescribed macroscopic strain (and, for
+    formulation="displacement", optionally mixed strain/stress control),
+    optionally load-stepped up to eps_bar (Abaqus-*STATIC style).
 
-    ``stepping``:
-      "single"    -- one solve_mechanics call at the full eps_bar (default).
-      "fixed"     -- equal load-fraction increments of size ``dt``
-                     (problems.incremental.solve_fixed).
-      "automatic" -- adaptive load-fraction step, grown on convergence, cut
-                     back and retried on non-convergence
-                     (problems.incremental.solve_automatic; dt_init/_min/_max,
-                     factor_inc/_dec, max_cutbacks, max_steps all forwarded to it).
-
-    ``writer``, if given, gets one write_increment(step, fields, time=t)
-    call per *accepted* increment (never for a failed cutback attempt --
-    see problems.incremental's on_increment docs) -- strain/stress/von_mises/
-    displacement, plus phase (and orientation, if given). This is the only
-    part of this function that knows about XDMF/HDF5 output; the caller
-    still owns opening/closing the writer (its file path is a script/config
-    concern, not this problem-wiring layer's).
-    ``orientation`` : (3, Nv) float, only used for the ``writer`` output
-    (constant across increments); pass None to omit it from the fields.
-    ``on_increment`` : an additional, caller-supplied callback
-    ``(result, write_time) -> None`` invoked once per accepted increment
-    (after the writer, if any) -- e.g. a print/log callback, so progress is
-    reported live as each increment converges rather than only after the
-    whole solve returns. ``write_time`` is the wall-clock seconds spent in
-    this function's own post-processing + write_increment call (0.0 if
-    ``writer`` is None) -- kept separate from ``result.wall_time`` (which is
-    the solve alone, measured in problems.incremental) so a caller can tell
-    solve cost and write cost apart instead of only seeing their sum.
-
-    All other parameters are solve_mechanics's own -- see its docstring.
+    Parameters
+    ----------
+    n, L        : grid shape and physical domain size
+    phase       : (Nv,) int      phase index per voxel (0-based)
+    materials   : list           each implements .stiffness_tensor(), .lam, .mu
+                  (see materialmodels.elastic.isotropic.LinearElasticIsotropic)
+    eps_bar     : (3, 3)         macroscopic strain at t=1 (the full load);
+                  entries where ``control == 1`` are ignored (solved for
+                  instead)
+    stepping    : "single"    -- one solve at the full eps_bar (default).
+                  "fixed"     -- equal load-fraction increments of size ``dt``
+                                 (problems.incremental.solve_fixed).
+                  "automatic" -- adaptive load-fraction step, grown on
+                                 convergence, cut back and retried on
+                                 non-convergence (problems.incremental.
+                                 solve_automatic; dt_init/_min/_max,
+                                 factor_inc/_dec, max_cutbacks, max_steps all
+                                 forwarded to it).
+    formulation : "lippmann_schwinger" (reference-medium, strain BC only) or
+                  "displacement" (true heterogeneous tangent, supports mixed BC)
+    scheme      : "standard" (GreenOperatorBasic) or "rotated" (GreenOperatorWillot)
+                  -- only used by formulation="lippmann_schwinger"
+    control     : (3, 3) 0/1 mask, 1 = stress-controlled, 0 = strain-controlled.
+                  None (default) = pure strain BC (all zero). Only
+                  formulation="displacement" can have any nonzero entries.
+    stress_goal : formulation-specific -- see ElasticitySolver.solve's
+                  docstring. lippmann_schwinger: (3, 3, Nv) per-voxel target
+                  stress field or None (zero). displacement: (3, 3)
+                  macroscopic target stress, used only on ``control``-marked
+                  entries.
+    toler_lin, maxiter : CG tolerance / iteration cap
+    dt, dt_init, dt_min, dt_max, factor_inc, factor_dec, max_cutbacks, max_steps :
+                  load-stepping controls, forwarded to solve_fixed/
+                  solve_automatic -- see problems.incremental. ``dt`` is
+                  required for stepping="fixed"; the rest are only used by
+                  stepping="automatic".
+    writer        : if given, gets one write_increment(step, fields, time=t)
+                  call per *accepted* increment (never for a failed cutback
+                  attempt -- see problems.incremental's on_increment docs) --
+                  strain/stress/von_mises/displacement, plus phase (and
+                  orientation, if given). This is the only part of this
+                  function that knows about XDMF/HDF5 output; the caller
+                  still owns opening/closing the writer (its file path is a
+                  script/config concern, not this problem-wiring layer's).
+    orientation   : (3, Nv) float, only used for the ``writer`` output
+                  (constant across increments); pass None to omit it from
+                  the fields.
+    on_increment  : an additional, caller-supplied callback
+                  ``(result, write_time) -> None`` invoked once per accepted
+                  increment (after the writer, if any) -- e.g. a print/log
+                  callback, so progress is reported live as each increment
+                  converges rather than only after the whole solve returns.
+                  ``write_time`` is the wall-clock seconds spent in this
+                  function's own post-processing + write_increment call (0.0
+                  if ``writer`` is None) -- kept separate from
+                  ``result.wall_time`` (which is the solve alone, measured
+                  in problems.incremental) so a caller can tell solve cost
+                  and write cost apart instead of only seeing their sum.
 
     Returns
     -------
     list[IncrementResult] -- always a list, even for stepping="single" (one
-    element, t=1.0), so callers have one consistent return shape
-    regardless of the stepping choice. Each element's ``.solution`` is an
-    ElasticitySolution.
+    element, t=1.0), so callers have one consistent return shape regardless
+    of the stepping choice. Each element's ``.solution`` is an
+    ElasticitySolution; its ``.eps_bar`` is None unless
+    formulation="displacement", in which case it's the macroscopic strain
+    with any stress-controlled entries filled in.
     """
+    control = control if control is not None else _ZERO_CONTROL
+
     def solve_fn(t: float) -> ElasticitySolution:
-        return solve_mechanics(
+        return _solve_mechanics_step(
             n, L, phase, materials, t * eps_bar,
             formulation=formulation, scheme=scheme, control=control,
             stress_goal=stress_goal, toler_lin=toler_lin, maxiter=maxiter,

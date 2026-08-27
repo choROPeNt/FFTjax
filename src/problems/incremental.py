@@ -8,16 +8,23 @@ Deliberately solver-agnostic: the per-increment solve is any callable
 ``solve_fn(t) -> object with a .converged usable via bool(...)``, where ``t`` is
 the cumulative load fraction in (0, 1] to scale a target load by (the
 caller's closure owns what "load" means -- e.g. ``lambda t:
-solve_mechanics(n, L, phase, materials, t * eps_bar, ...)``). Named ``t``/
-``dt`` (not ``lam``/``dlam``) to match the archived scripts' pseudo-time
-convention (``t``, ``dt``, ``t_end``) even though there's no physical time
-here, just a load proxy -- Abaqus's own *STATIC step calls this "time" too.
+_solve_mechanics_step(n, L, phase, materials, t * eps_bar, ...)``). Named
+``t``/``dt`` (not ``lam``/``dlam``) to match the archived scripts'
+pseudo-time convention (``t``, ``dt``, ``t_end``) even though there's no
+physical time here, just a load proxy -- Abaqus's own *STATIC step calls
+this "time" too.
 
 Right now the only per-increment solve in this project is
-``solve_mechanics`` (pure linear elasticity -- always converges in a single
-CG solve, so cutback only ever triggers on genuine CG non-convergence).
-Once a nonlinear (Newton) solve exists, it plugs in here unchanged -- this
-driver only reads ``.converged``, it has no idea what happened inside.
+problems.mechanics._solve_mechanics_step (pure linear elasticity -- always
+converges in a single CG solve, so cutback only ever triggers on genuine CG
+non-convergence). Once a nonlinear (Newton) solve exists, it plugs in here
+unchanged -- this driver only reads ``.converged``, it has no idea what
+happened inside.
+
+``problems.mechanics.solve_mechanics`` is the one public entry point over
+this driver -- its ``stepping`` argument picks "single" (one solve_fn call,
+no stepping), "fixed", or "automatic" and always returns
+list[IncrementResult] regardless of which.
 
 ``.converged`` is read via direct attribute access (``sol.converged``), not
 ``getattr(sol, "converged", True)`` -- measured ~30x slower in practice for
@@ -75,8 +82,8 @@ def solve_fixed(
     ``on_increment``, if given, is called exactly once per *accepted*
     increment (never on a failed attempt -- there's no cutback here, but the
     signature matches solve_automatic's for a common caller, e.g.
-    problems.mechanics.solve_mechanics_incremental writing each accepted
-    increment to disk as it's produced rather than only at the end).
+    problems.mechanics.solve_mechanics writing each accepted increment to
+    disk as it's produced rather than only at the end).
     """
     if not (0.0 < dt <= 1.0):
         raise ValueError(f"dt must be in (0, 1], got {dt}")

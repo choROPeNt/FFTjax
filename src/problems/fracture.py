@@ -298,7 +298,7 @@ def solve_fracture_incremental(
     """
     solve_fracture, load-stepped up to the target eps_bar (Abaqus-*STATIC
     style) via problems.incremental -- same pattern as
-    problems.mechanics.solve_mechanics_incremental, with one addition: the
+    problems.mechanics.solve_mechanics, with one addition: the
     damage/history state (d, H) is path-dependent, so it must be threaded
     from one accepted increment to the next rather than recomputed per call.
 
@@ -328,8 +328,8 @@ def solve_fracture_incremental(
     way as ``d``/``H``, for the same cutback-safety reason.
 
     ``stepping``, ``writer``, ``orientation``, ``on_increment`` -- see
-    problems.mechanics.solve_mechanics_incremental's docstring; the only
-    difference is the extra "damage" field written per increment here.
+    problems.mechanics.solve_mechanics's docstring; the only difference is
+    the extra "damage" field written per increment here.
     All other parameters are solve_fracture's own.
 
     Returns

@@ -268,7 +268,7 @@ def build_reference_green_operator(
     green_op : GreenOperatorBasic or GreenOperatorWillot
     """
     C_mean = jnp.mean(jnp.stack([m.stiffness_tensor() for m in materials]), axis=0)
-    lam0, mu0 = (float(v) for v in isotropic_equivalent_lame(C_mean))
+    lam0, mu0 = isotropic_equivalent_lame(C_mean)
 
     if scheme == 'standard':
         return GreenOperatorBasic(n, L, lam0, mu0)

@@ -5,8 +5,8 @@ Loads an existing microstructure (XDMF/HDF5, e.g. from
 scripts/generation/generate_weave.py or generate_rve.py) via
 utils.io.reader.SimulationReader, then solves the mechanical equilibrium
 problem under a prescribed macroscopic strain via
-problems.mechanics.solve_mechanics_incremental, which also owns writing each
-accepted increment to the XDMF/HDF5 output. Geometry logic and solver
+problems.mechanics.solve_mechanics, which also owns writing each accepted
+increment to the XDMF/HDF5 output. Geometry logic and solver
 wiring both live outside this script -- see src/generation/,
 src/materialmodels/, src/problems/mechanics.py, src/problems/incremental.py.
 
@@ -56,7 +56,7 @@ import jax.numpy as jnp
 
 from materialmodels.factory import build_material
 from post.fields import homogenize, to_voigt
-from problems.mechanics import solve_mechanics_incremental
+from problems.mechanics import solve_mechanics
 from solvers.elliptic.vector.base import ElasticitySolution
 from utils.config import load_config
 from utils.io.reader import SimulationReader
@@ -105,9 +105,9 @@ def main():
     Path(output).mkdir(parents=True, exist_ok=True)
 
     # ── solve (single/fixed/automatic all go through the same API; the writer
-    #    is handed in so solve_mechanics_incremental writes each accepted
-    #    increment itself, as it's produced -- on_increment prints live for
-    #    the same reason, instead of only after the whole solve returns) ────
+    #    is handed in so solve_mechanics writes each accepted increment
+    #    itself, as it's produced -- on_increment prints live for the same
+    #    reason, instead of only after the whole solve returns) ────────────
     # per-increment solver + homogenization stats, saved to <stem>_stats.npy
     # below -- one structured-array row per accepted increment.
     _STATS_DTYPE = np.dtype([
@@ -147,7 +147,7 @@ def main():
         }
         w.write_increment(0, step0_fields, time=0.0)
 
-        results = solve_mechanics_incremental(
+        results = solve_mechanics(
             n, L, phase, materials, eps_bar_target,
             stepping     = mode,
             formulation  = mcfg.get("formulation", "lippmann_schwinger"),

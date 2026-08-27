@@ -63,7 +63,7 @@ sol = solve_mechanics(
     n, L, phase, materials, eps_bar,
     formulation="lippmann_schwinger", scheme="rotated",
     toler_lin=1e-6, maxiter=1000,
-)
+)[0].solution
 tau_xy = float(jnp.mean(sol.sigma[1, 0]))
 assert bool(sol.converged), "composite RVE solve must converge"
 assert abs(tau_xy - 7.625369073063829) < 1e-6, f"tau_xy mismatch: got {tau_xy}, expected ~7.625369"
@@ -76,7 +76,7 @@ sol_std = solve_mechanics(
     n, L, phase, materials, eps_bar,
     formulation="lippmann_schwinger", scheme="standard",
     toler_lin=1e-6, maxiter=2000,
-)
+)[0].solution
 assert bool(sol_std.converged), "standard-scheme solve must also converge"
 assert jnp.all(jnp.isfinite(sol_std.sigma)), "standard-scheme stress must be finite"
 print(f"[2] standard scheme: tau_xy = {float(jnp.mean(sol_std.sigma[1, 0])):.6f} MPa, "
@@ -89,7 +89,7 @@ sol_disp = solve_mechanics(
     n, L, phase, materials, eps_bar,
     formulation="displacement",
     toler_lin=1e-6, maxiter=2000,
-)
+)[0].solution
 tau_xy_disp = float(jnp.mean(sol_disp.sigma[1, 0]))
 rel_diff = abs(tau_xy_disp - tau_xy) / abs(tau_xy)
 assert bool(sol_disp.converged), "displacement-based solve must converge"

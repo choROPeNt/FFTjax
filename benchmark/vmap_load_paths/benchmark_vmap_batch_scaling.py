@@ -91,10 +91,14 @@ def bench(B, solve_one, solve_one_jit, n, L, phase, materials):
         run_loop, REPEATS, lambda outs: jax.block_until_ready(outs),
     )
 
-    converged = bool(jnp.all(out.converged))
-    tau_xy_batch = float(jnp.mean(out.sigma[:, 1, 0]))
-    tau_xy_loop  = float(jnp.mean(loop_out[0].sigma[1, 0]))
-    max_abs_diff = float(jnp.max(jnp.abs(out.sigma - jnp.stack([r.sigma for r in loop_out]))))
+    # solve_mechanics always returns list[IncrementResult] (one element here,
+    # stepping="single") -- [0].solution is the batched ElasticitySolution.
+    sol_batch = out[0].solution
+    sol_loop  = [r[0].solution for r in loop_out]
+    converged = bool(jnp.all(sol_batch.converged))
+    tau_xy_batch = float(jnp.mean(sol_batch.sigma[:, 1, 0]))
+    tau_xy_loop  = float(jnp.mean(sol_loop[0].sigma[1, 0]))
+    max_abs_diff = float(jnp.max(jnp.abs(sol_batch.sigma - jnp.stack([r.sigma for r in sol_loop]))))
 
     return {
         "B": B,
