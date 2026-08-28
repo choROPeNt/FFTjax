@@ -94,7 +94,7 @@ effective nu_xy = -eps22/eps11 : 0.5173662173836436
 effective nu_xz = -eps33/eps11 : 0.051341812371163746
 ```
 
-![Fiber phase and resulting displacement field](/img/lin_elastic_mixed_bc.png)
+
 
 The free lateral surfaces let the composite contract under axial load — exactly what a real
 tensile specimen does (Poisson's effect) — which the constrained uniaxial-*strain* case in

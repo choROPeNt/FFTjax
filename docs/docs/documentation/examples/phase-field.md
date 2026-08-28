@@ -77,7 +77,7 @@ step 8/8  eps11=2.40e-03  sigma11_ave=  0.1319 MPa  max(d)=0.9933  staggered_ite
 PASSED -- mechanical CG converged at every step, damage stayed in [0, 1], and only grew (irreversibility held).
 ```
 
-![Macroscopic stress-strain response and final damage field](/img/pff_damage.png)
+
 
 The macroscopic response is the real signature of brittle AT2 fracture: the average stress rises
 elastically, plateaus as the seed drives local damage growth, then **collapses catastrophically**

@@ -1,10 +1,10 @@
 ---
-title: ⚡ Benchmark
+title:  Benchmark
 ---
 
 import BenchmarkChart from '@site/src/components/BenchmarkChart';
 
-# ⚡ Benchmark
+#  Benchmark
 
 ## Frequency grid construction
 
@@ -69,7 +69,4 @@ solver actually iterate, so **Compile** (first call: trace + XLA compile + run) 
 python benchmark/lin_elastic_strain/benchmark_lin_elastic_strain.py
 ```
 
-## Reproducing
 
-Both scripts overwrite their `docs/static/data/*.json` file with fresh numbers for your machine
-(backend/device are recorded automatically via `jax.default_backend()` / `jax.devices()`).
