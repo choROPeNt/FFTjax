@@ -1,148 +1,139 @@
 {
-  "generated": "2026-07-30",
+  "generated": "2026-08-28",
   "backend": "cpu",
   "device": "TFRT_CPU_0",
   "ndim": 3,
   "results": [
     {
-      "ndim": 3,
       "n": [
         8,
         8,
         8
       ],
-      "numpy_ms": 0.0991097333705208,
-      "jax_eager_ms": 8.73532083326912,
-      "jax_jit_compile_ms": 37.509375004447065,
-      "jax_jit_run_ms": 0.0071416664771580445,
+      "numpy_ms": 0.09511249979065421,
+      "jax_eager_ms": 5.910623633341554,
+      "jax_jit_compile_ms": 27.196292001463007,
+      "jax_jit_run_ms": 0.004295833544650425,
       "max_abs_diff": 0.0,
       "backend": "cpu",
       "device": "TFRT_CPU_0",
       "elements": 512
     },
     {
-      "ndim": 3,
       "n": [
         16,
         16,
         16
       ],
-      "numpy_ms": 0.04587223350730104,
-      "jax_eager_ms": 7.73600693331294,
-      "jax_jit_compile_ms": 39.738209001370706,
-      "jax_jit_run_ms": 0.012697199902807673,
+      "numpy_ms": 0.03443193321193879,
+      "jax_eager_ms": 5.806120833343205,
+      "jax_jit_compile_ms": 27.224375000514556,
+      "jax_jit_run_ms": 0.006881933222757652,
       "max_abs_diff": 0.0,
       "backend": "cpu",
       "device": "TFRT_CPU_0",
       "elements": 4096
     },
     {
-      "ndim": 3,
       "n": [
         24,
         24,
         24
       ],
-      "numpy_ms": 0.08831249991393027,
-      "jax_eager_ms": 8.119979166804114,
-      "jax_jit_compile_ms": 45.08654100209242,
-      "jax_jit_run_ms": 0.028791666651765507,
+      "numpy_ms": 0.04497360011252264,
+      "jax_eager_ms": 6.24890833326693,
+      "jax_jit_compile_ms": 29.557458001363557,
+      "jax_jit_run_ms": 0.019761100217389565,
       "max_abs_diff": 0.0,
       "backend": "cpu",
       "device": "TFRT_CPU_0",
       "elements": 13824
     },
     {
-      "ndim": 3,
       "n": [
         32,
         32,
         32
       ],
-      "numpy_ms": 0.11879306645520653,
-      "jax_eager_ms": 8.355669433270426,
-      "jax_jit_compile_ms": 82.48174999607727,
-      "jax_jit_run_ms": 0.05674026663958406,
+      "numpy_ms": 0.060816666518803686,
+      "jax_eager_ms": 6.446730566676706,
+      "jax_jit_compile_ms": 35.705165995750576,
+      "jax_jit_run_ms": 0.03950140016968362,
       "max_abs_diff": 0.0,
       "backend": "cpu",
       "device": "TFRT_CPU_0",
       "elements": 32768
     },
     {
-      "ndim": 3,
       "n": [
         48,
         48,
         48
       ],
-      "numpy_ms": 0.2652541666369264,
-      "jax_eager_ms": 10.331797233326748,
-      "jax_jit_compile_ms": 73.72591699822806,
-      "jax_jit_run_ms": 0.08822499997525786,
+      "numpy_ms": 0.146195833319022,
+      "jax_eager_ms": 7.533193066774402,
+      "jax_jit_compile_ms": 29.251290994579904,
+      "jax_jit_run_ms": 0.0890277668077033,
       "max_abs_diff": 0.0,
       "backend": "cpu",
       "device": "TFRT_CPU_0",
       "elements": 110592
     },
     {
-      "ndim": 3,
       "n": [
         64,
         64,
         64
       ],
-      "numpy_ms": 0.7102680666624414,
-      "jax_eager_ms": 10.028120833400559,
-      "jax_jit_compile_ms": 79.43766699463595,
-      "jax_jit_run_ms": 0.13672916684299707,
+      "numpy_ms": 0.3765708332745514,
+      "jax_eager_ms": 8.734029166710874,
+      "jax_jit_compile_ms": 29.87600000051316,
+      "jax_jit_run_ms": 0.15843056656497842,
       "max_abs_diff": 0.0,
       "backend": "cpu",
       "device": "TFRT_CPU_0",
       "elements": 262144
     },
     {
-      "ndim": 3,
       "n": [
         96,
         96,
         96
       ],
-      "numpy_ms": 2.850102766630395,
-      "jax_eager_ms": 13.163424999947893,
-      "jax_jit_compile_ms": 103.76766700210283,
-      "jax_jit_run_ms": 0.5381277667765971,
+      "numpy_ms": 1.2172222331476708,
+      "jax_eager_ms": 11.393966666704122,
+      "jax_jit_compile_ms": 31.653167003241833,
+      "jax_jit_run_ms": 0.4354596998988806,
       "max_abs_diff": 0.0,
       "backend": "cpu",
       "device": "TFRT_CPU_0",
       "elements": 884736
     },
     {
-      "ndim": 3,
       "n": [
         128,
         128,
         128
       ],
-      "numpy_ms": 6.0856416666259365,
-      "jax_eager_ms": 15.772884733451065,
-      "jax_jit_compile_ms": 94.7312919961405,
-      "jax_jit_run_ms": 1.1390902999361667,
+      "numpy_ms": 2.2615221998421475,
+      "jax_eager_ms": 14.055275000040032,
+      "jax_jit_compile_ms": 29.13895799429156,
+      "jax_jit_run_ms": 0.9117624998907559,
       "max_abs_diff": 0.0,
       "backend": "cpu",
       "device": "TFRT_CPU_0",
       "elements": 2097152
     },
     {
-      "ndim": 3,
       "n": [
         160,
         160,
         160
       ],
-      "numpy_ms": 10.755345833361693,
-      "jax_eager_ms": 18.757504166812094,
-      "jax_jit_compile_ms": 117.96416599827353,
-      "jax_jit_run_ms": 2.2979638667796585,
+      "numpy_ms": 4.438851399997172,
+      "jax_eager_ms": 15.684043066479111,
+      "jax_jit_compile_ms": 32.536624996282626,
+      "jax_jit_run_ms": 1.8127541666520604,
       "max_abs_diff": 0.0,
       "backend": "cpu",
       "device": "TFRT_CPU_0",
