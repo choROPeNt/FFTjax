@@ -2,10 +2,7 @@
 
 /**
  * Sidebar for the "documentation" docs plugin instance (routeBasePath
- * 'documentation'). API docs are a separate plugin instance — see
- * sidebarsApi.js — now that neither instance sits at the site root ('/'),
- * which is what previously made a second instance hit a known Docusaurus
- * route/plugin resolution ambiguity.
+ * 'documentation').
  *
  * @type {import('@docusaurus/plugin-content-docs').SidebarsConfig}
  */
@@ -14,7 +11,7 @@ const sidebars = {
     'installation',
     {
       type: 'category',
-      label: '📖 Theorie',
+      label: 'Theorie',
       link: {type: 'doc', id: 'theorie/index'},
       items: [
         'theorie/mechanical',
@@ -23,7 +20,7 @@ const sidebars = {
     },
     {
       type: 'category',
-      label: '🧪 Examples',
+      label: 'Examples',
       link: {type: 'doc', id: 'examples/index'},
       items: [
         {

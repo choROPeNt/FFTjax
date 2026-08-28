@@ -1,50 +1,65 @@
-# Linear-Elastic Strain Solve (Basic-Scheme)
+# Linear-Elastic Strain Solve
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/choROPeNt/FFTjax/blob/main/notebooks/lin-elastic_strain.ipynb)
 
 A minimal walkthrough of FFTjax's strain-based Newton-CG elastic solver
-(`solvers.mechanical.strain_nw_cg.solve_elastic`) on a two-phase composite: a glass-fibre
+(`problems.mechanics.solve_mechanics`) on a **two-phase composite**: a glass-fiber
 reinforcement in an epoxy matrix, arranged in a square-packed pattern via
-`generation.rve.make_square_composite_rve`, under a prescribed macroscopic shear strain.
+`generation.rve.make_square_composite_rve`, under a prescribed macroscopic strain.
+
+We want to solve the mechanical equilibrium problem on this composite subject to its governing
+PDE constraints:
+
+$$
+\nabla \cdot \sigma(\mathbf{x}) = 0, \qquad
+\sigma = \mathbb{C}(\mathbf{x}):\varepsilon, \qquad
+\varepsilon = \tfrac{1}{2}\big(\nabla u + \nabla u^\top\big)
+$$
+
+on a periodic domain, with the macroscopic average strain $\langle\varepsilon(\mathbf{x})\rangle_\Omega = \bar\varepsilon$
+prescribed below.
+
+The solver is the Krylov-based (CG-accelerated) Lippmann-Schwinger scheme: the periodic
+Lippmann-Schwinger equation, discretized via trigonometric collocation and solved directly by
+conjugate gradients against a fixed reference-medium Green's operator.
 
 Because the two phases have a large stiffness contrast (~23x), the reference-medium correction is
-nontrivial — the Newton-CG solve actually iterates, redistributing stress between the stiff fibres
-and the compliant matrix (unlike a homogeneous material, where it wouldn't need to). Uses the
-Willot `rotated` Green's-operator discretisation, which reduces spurious oscillations at phase
-interfaces compared to the `standard` scheme.
+nontrivial — the Newton-CG solve actually iterates, redistributing stress between the stiff fibers
+and the compliant matrix. For the same reason we use Willot's `rotated` frequency scheme for the
+Green's operator rather than the `standard` one: besides avoiding the 45° anisotropy bias of the
+naive DFT discretization, it converges markedly better under high stiffness contrast.
 
 ```python
+import os
+import utils.precision  # side effect: configures JAX (X64 off on TPU, no GPU prealloc)
+import jax
 import jax.numpy as jnp
 import numpy as np
+import matplotlib.pyplot as plt
+
+print("JAX backend:", jax.default_backend())
+print("Devices:", jax.devices())
+print("X64 enabled:", utils.precision.X64_ENABLED,
+      "-> dtype:", jnp.zeros(1).dtype)
 
 from generation.rve import make_square_composite_rve
-from operators.green import build_freq_grid, build_green_operator
-from mat_models.elastic import LinearElasticIsotropic, assemble_C_field
-from solvers.mechanical.strain_nw_cg import solve_elastic
-from post.fields import compute_displacement
+from materialmodels.elastic.isotropic import LinearElasticIsotropic
+from problems.mechanics import solve_mechanics
+from post.fields import field_to_grid, von_mises, compute_displacement, to_voigt
 
-# Composite RVE: square-packed 2-fibre geometry (Vf~0.5, 5 um fibre radius, 10-voxel-thick slab).
-phase_np, N, n, L, phi_act = make_square_composite_rve(
-    phi=0.5, r_fiber=0.005, spacing=0.0002, N_min=32, nz=10,
+# Composite RVE: square-packed 2-fibre geometry (Vf~0.5, 5 um fibre radius), a 1-voxel-thick slab
+# along Z -- combined with an in-plane-only eps_bar below, this gives a plane-strain solve.
+phase_np, n, L, phi_act = make_square_composite_rve(
+    phi=0.5, r_fiber=0.005, dx=0.0002, N_min=32, nz=1,
 )
 Nv = int(np.prod(n))
 
 # Materials: glass fibre in an epoxy matrix -- a common, high-contrast (~23x) composite.
 matrix = LinearElasticIsotropic(E=3.0e3, nu=0.35, name="epoxy matrix")
 fiber = LinearElasticIsotropic(E=70.0e3, nu=0.20, name="glass fiber")
+materials = [matrix, fiber]  # index 0 = matrix, 1 = fibre -- matches the phase labels below
 
-phase = jnp.array(phase_np.reshape(-1))  # 0 = matrix, 1 = fiber
-C_field = assemble_C_field([matrix, fiber], phase)
-
-# Frequency grid and Green's operator: reference medium is the average of the two phases'
-# Lame parameters, a reasonable choice when neither phase dominates.
-L_mm = tuple(float(Li) for Li in L)
-dx = tuple(Li / ni for Li, ni in zip(L_mm, n))
-xi_flat = build_freq_grid(n, L_mm)
-
-lam0 = 0.5 * (matrix.lam + fiber.lam)
-mu0 = 0.5 * (matrix.mu + fiber.mu)
-G_glob = build_green_operator(xi_flat, lam0, mu0, scheme="rotated", dx=dx)
+phase = jnp.array(phase_np.reshape(-1))  # (nx,ny,nz) -> (Nv,)
 
 # Prescribe a macroscopic shear strain in the XY plane and solve.
 eps_bar = jnp.array([
@@ -53,48 +68,62 @@ eps_bar = jnp.array([
     [0.0, 0.0, 0.0],
 ])
 
-eps, sigma, delta, converged = solve_elastic(
-    n, C_field, G_glob, eps_bar, toler_lin=1e-6, maxiter=1000,
+results = solve_mechanics(
+    n, L, phase, materials, eps_bar,
+    scheme="rotated", toler_lin=1e-6, maxiter=1000,
 )
+sol = results[0].solution
+eps, sigma, delta, converged = sol.eps, sol.sigma, sol.delta, sol.converged
+
+# Post-processing
+# return the fields to a 3-D grid for visualization and export
+eps_grid   = field_to_grid(eps, n)
+sigma_grid = field_to_grid(sigma, n)
+u_grid     = compute_displacement(eps, eps_bar, n, L)
+vm_grid    = von_mises(sigma_grid)
+
+eps_voigt   = to_voigt(eps_grid).astype(np.float64)
+sigma_voigt = to_voigt(sigma_grid).astype(np.float64)
+
+
+
 ```
 
 ```text title="Output"
 JAX backend: cpu
 Devices: [CpuDevice(id=0)]
-grid n : (89, 89, 10)
-domain L [mm]: (0.01772453850905516, 0.01772453850905516, 0.002)
-fiber volume fraction (actual): 0.5010730968312082
-LinearElasticIsotropic (epoxy matrix): E=3e+03, nu=0.35, lam=2.59e+03, mu=1.11e+03
-LinearElasticIsotropic (glass fiber): E=7e+04, nu=0.2, lam=1.94e+04, mu=2.92e+04
-converged     : True
-tau_xy (avg) : 7.625369073063829 MPa
+grid n : (89, 89, 1)
+total voxels Nv: 7921
+domain L [mm]: ('0.017725', '0.017725', '0.0002')
+fiber volume fraction (actual): 0.5011
+phase 0: LinearElasticIsotropic (epoxy matrix): E=3e+03, nu=0.35, lam=2.59e+03, mu=1.11e+03
+phase 1: LinearElasticIsotropic (glass fiber): E=7e+04, nu=0.2, lam=1.94e+04, mu=2.92e+04
+converged    : True
+tau_xy (avg) : 7.625 MPa
+G_xy (avg)   : 3812.685 MPa
 
-PASSED -- Newton-CG converged on the heterogeneous composite.
+PASSED -- CG converged on the heterogeneous composite.
 ```
 
-![Fiber phase and resulting displacement field](/img/lin_elastic_strain.png)
+
 
 Unlike a homogeneous material — where the correction field is exactly zero and the reference
-medium matches the material exactly — this composite's Newton-CG correction does real work,
-because the reference medium (the average of the two phases) doesn't match either phase exactly.
-The displacement fields above show that redistribution directly: `u_x` and `u_y` both bend around
-the stiff fibre rather than following the smooth, linear pattern a homogeneous shear would produce.
+medium matches the material exactly — this composite's correction field does real work, because the
+reference medium (the average of the two phases) doesn't match either phase exactly. The notebook's
+displacement-field plots show that redistribution directly: `u_x` and `u_y` both bend around the
+stiff fiber rather than following the smooth, linear pattern a homogeneous shear would produce.
 
 :::note[Reproducing]
-This page's code, output, and plot are generated by [`examples/lin_elastic_strain.py`](https://github.com/choROPeNt/FFTjax/blob/main/examples/lin_elastic_strain.py):
+This page's code and output are generated by
+[`notebooks/lin-elastic_strain.ipynb`](https://github.com/choROPeNt/FFTjax/blob/main/notebooks/lin-elastic_strain.ipynb)
+(linked via the Colab badge above) — there is no standalone `examples/` script for this case
+anymore, since it would just be a redundant duplicate of the notebook.
 
-```bash
-python examples/lin_elastic_strain.py
-```
-
-If the example changes, re-run the script and update the pasted output/image above — there's no
-build-time execution here (unlike the earlier Sphinx-based docs' `sphinx-gallery` integration),
-since Docusaurus can't run Python.
+If the notebook changes, re-run it and update the pasted output above — there's no build-time
+execution here, since Docusaurus can't run Python.
 
 For the full interactive version — with per-field strain/stress visualization and `.xdmf`/`.h5`
-export for ParaView — see
-[`notebooks/lin-elastic_strain.ipynb`](https://github.com/choROPeNt/FFTjax/blob/main/notebooks/lin-elastic_strain.ipynb),
-linked via the Colab badge above.
+export for ParaView — open the notebook directly.
 :::
 
 ## Next steps

@@ -22,11 +22,6 @@ dependencies = [
 [project.optional-dependencies]
 cuda = ["jax[cuda12]"]
 tpu = ["jax[tpu]"]
-docs = [
-    "sphinx",
-    "sphinx-markdown-builder",
-
-]
 
 [project.urls]
 Homepage = "https://github.com/choROPeNt/FFTjax"

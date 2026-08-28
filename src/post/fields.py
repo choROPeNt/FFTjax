@@ -6,6 +6,8 @@ All functions accept the solver's native layout — fields with shape
 ``(*grid_n, ...)`` suitable for ParaView export via ``utils.io.xdmf_writer``.
 """
 
+from typing import Sequence
+
 import numpy as np
 import jax.numpy as jnp
 
@@ -135,6 +137,39 @@ def homogenize(eps: jnp.ndarray, sigma: jnp.ndarray) -> tuple[jnp.ndarray, jnp.n
     eps_bar, sigma_bar : (3, 3)
     """
     return jnp.mean(eps, axis=-1), jnp.mean(sigma, axis=-1)
+
+
+def homogenize_response(
+    results: Sequence,
+    component: tuple[int, int] = (0, 0),
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Volume-averaged (eps_bar, sigma_bar) history for one tensor component,
+    across a sequence of load-stepped solutions -- e.g. the ``list[IncrementResult]``
+    returned by ``solve_mechanics``/``solve_fracture`` (reads each element's
+    ``.solution``), or a plain sequence of solutions/``(eps, sigma)`` pairs.
+
+    For a converged, purely strain-controlled load path this matches the
+    prescribed macroscopic strain exactly (``homogenize``'s DC-nullspace
+    guarantee); unlike reading the prescribed load directly, this also works
+    for stress-controlled/mixed-BC components, where the macroscopic strain
+    is solved for rather than prescribed.
+
+    Parameters
+    ----------
+    results   : sequence of IncrementResult (or anything with an ``.eps``/``.sigma``
+                pair directly, or via a ``.solution`` attribute)
+    component : (i, j) tensor index, e.g. (0, 0) for the 11 direction
+
+    Returns
+    -------
+    eps_bar, sigma_bar : (len(results),) volume-averaged history for that component
+    """
+    i, j = component
+    solutions = [getattr(r, "solution", r) for r in results]
+    eps_bar = np.array([float(jnp.mean(s.eps[i, j])) for s in solutions])
+    sigma_bar = np.array([float(jnp.mean(s.sigma[i, j])) for s in solutions])
+    return eps_bar, sigma_bar
 
 
 def compute_displacement(

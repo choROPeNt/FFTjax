@@ -10,15 +10,6 @@ npm install
 
 **Note**: feel free to use the package manager of your choice.
 
-**Python dependency**: the API reference under `docs/api/` is auto-generated at build/start time
-(`gen-api` script) from the `src/` docstrings via a headless Sphinx build
-(`sphinx` + `sphinx-markdown-builder`, source in `api_src/`) — install these into the same
-environment used to run `npm run build`/`start`:
-
-```bash
-pip install -e "..[docs]"
-```
-
 The example pages under `docs/docs/documentation/examples/` are **not** auto-generated
 (Docusaurus can't run Python) — their code/output/plot are pasted in by hand from the generator
 scripts in the repo-root `examples/` directory (a sibling of `docs/`, alongside `notebooks/`). If

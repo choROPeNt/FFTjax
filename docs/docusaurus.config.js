@@ -22,8 +22,7 @@ const config = {
 
   onBrokenLinks: 'throw',
 
-  // The generated API docs (docs/api/) are plain .md with no JSX/imports needed,
-  // and can contain angle-bracket text from Python reprs/defaults (e.g. `<factory>`)
+  // .md files can contain angle-bracket text (e.g. from Python reprs/defaults)
   // that MDX misparses as unclosed JSX tags. 'detect' renders .md files as plain
   // Markdown (safe) while .mdx files (installation.mdx, benchmark.mdx) still get
   // full MDX for their component imports.
@@ -60,20 +59,6 @@ const config = {
     ],
   ],
 
-  plugins: [
-    [
-      '@docusaurus/plugin-content-docs',
-      /** @type {import('@docusaurus/plugin-content-docs').Options} */
-      ({
-        id: 'api',
-        path: 'docs/api',
-        routeBasePath: 'api',
-        sidebarPath: './sidebarsApi.js',
-        editUrl: 'https://github.com/choROPeNt/FFTjax/tree/main/docs/',
-      }),
-    ],
-  ],
-
   stylesheets: [
     {
       href: 'https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css',
@@ -98,7 +83,6 @@ const config = {
         },
         items: [
           {to: '/documentation', label: 'Documentation', position: 'left'},
-          {to: '/api', label: 'API', position: 'left'},
           {
             href: 'https://github.com/choROPeNt/FFTjax',
             label: 'GitHub',
