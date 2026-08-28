@@ -8,8 +8,9 @@ import BenchmarkChart from '@site/src/components/BenchmarkChart';
 
 ## Frequency grid construction
 
-Scaling of `operators.green.set_freq` — the frequency-grid construction used by every FFT-based
-solver — comparing plain NumPy, eager JAX, and JIT-compiled JAX across grid sizes from 8³ to 160³.
+Scaling of `operators.green.build_freq_grid` — the frequency-grid construction used by every
+FFT-based solver — comparing plain NumPy, eager JAX, and JIT-compiled JAX across grid sizes from
+8³ to 160³.
 
 <BenchmarkChart
   src="/data/benchmark_set_freq.json"
@@ -32,25 +33,29 @@ solver — comparing plain NumPy, eager JAX, and JIT-compiled JAX across grid si
 :::
 
 ```bash
-python benchmark/set_freq/benchmark_set_freq_sweep.py
+python benchmark/benchmark_set_freq_sweep.py
 ```
 
-## Linear-elastic strain solve
+## Linear-elastic solve: reference-medium vs. displacement-based
 
-The strain-based Newton-CG solver ([`solvers.mechanical.strain_nw_cg.solve_elastic`](https://github.com/choROPeNt/FFTjax))
-on a simple two-phase composite: a centred spherical steel inclusion (E=210 GPa, ν=0.3, Vf≈15%) in an
-aluminium matrix (E=70 GPa, ν=0.33), under a prescribed uniaxial macroscopic strain. Unlike a
-homogeneous material — where the Newton-CG correction is exactly zero — this contrast makes the
-solver actually iterate, so **Compile** (first call: trace + XLA compile + run) and **Run**
-(steady-state, already compiled) reflect real solve cost.
+FFTjax's two elastic solver formulations ([`problems.mechanics.solve_mechanics`](https://github.com/choROPeNt/FFTjax),
+`formulation="lippmann_schwinger"` vs. `formulation="displacement"`), swept over grid resolution on
+a fixed quad_rve (square-packed 2-fibre composite, `generation.rve.make_square_composite_rve`):
+glass fibre in an epoxy matrix (E=70 GPa vs. 3 GPa, ν=0.20/0.35, Vf≈50%), under a prescribed
+macroscopic shear strain. Unlike a homogeneous material — where a reference-medium correction is
+exactly zero — this ~23x contrast makes both solvers' CG actually iterate, so **Compile** (first
+call: trace + XLA compile + run) and **Run** (steady-state, already compiled) reflect real solve
+cost.
 
 <BenchmarkChart
-  src="/data/benchmark_lin_elastic_strain.json"
+  src="/data/benchmark_lin_elastic_solve.json"
   xKey="elements"
   xLabel="grid elements (n³)"
   series={[
-    {key: 'compile_ms', label: 'Compile (first call)', color: '#ef6c00'},
-    {key: 'run_ms', label: 'Run (steady-state)', color: '#7c4dff'},
+    {key: 'ls_compile_ms', label: 'Lippmann-Schwinger — Compile', color: '#ef6c00'},
+    {key: 'ls_run_ms', label: 'Lippmann-Schwinger — Run', color: '#7c4dff'},
+    {key: 'disp_compile_ms', label: 'Displacement — Compile', color: '#c2410c'},
+    {key: 'disp_run_ms', label: 'Displacement — Run', color: '#0891b2'},
   ]}
   extraColumns={[
     {key: 'volume_fraction', label: 'Vf'},
@@ -58,7 +63,10 @@ solver actually iterate, so **Compile** (first call: trace + XLA compile + run) 
 />
 
 :::note[How to read it]
-- The solver stops as soon as it converges (`jax.scipy.sparse.linalg.cg`, early-exit via
+- Both formulations solve the *identical* problem here (pure strain BC, `control` all zero) — the
+  displacement-based solver's mixed-BC capability isn't exercised, only its true-heterogeneous-
+  tangent CG system versus the reference-medium correction.
+- Either solver stops as soon as it converges (`jax.scipy.sparse.linalg.cg`, early-exit via
   `jax.lax.while_loop`), so **Compile**/**Run** reflect the actual, data-dependent solve cost —
   `maxiter` here is just a generous safety cap, not a real cost.
 - This is CPU-only data on the machine that generated it; a GPU run would shift **Run** down
@@ -66,7 +74,7 @@ solver actually iterate, so **Compile** (first call: trace + XLA compile + run) 
 :::
 
 ```bash
-python benchmark/lin_elastic_strain/benchmark_lin_elastic_strain.py
+python benchmark/benchmark_lin_elastic_solve.py
 ```
 
 

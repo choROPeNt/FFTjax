@@ -47,7 +47,6 @@ BATCH_SIZES = [1, 2, 4, 8, 16, 32, 64 , 128, 256, 512, 1024, 2048, 4096, 4608, 5
 REPEATS     = 5
 OUT_DIR     = "output/benchmark/vmap_load_paths"
 
-RVE_KW = dict(phi=0.5, r_fiber=0.005, dx=0.0002, N_min=32, nz=1)
 EPS_SHEAR = jnp.array([
     [0.0,    1.0e-3, 0.0],
     [1.0e-3, 0.0,    0.0],
@@ -66,6 +65,7 @@ def time_ms(fn, repeats, sync):
         out = fn()
         sync(out)
         samples.append((time.perf_counter() - t0) * 1000.0)
+    assert out is not None, "time_ms requires repeats >= 1"
     return float(np.mean(samples)), float(np.std(samples)), out
 
 
@@ -119,7 +119,9 @@ def bench(B, solve_one, solve_one_jit, n, L, phase, materials):
 
 
 if __name__ == "__main__":
-    phase_np, n, L, phi_act = make_square_composite_rve(**RVE_KW)
+    phase_np, n, L, phi_act = make_square_composite_rve(
+        phi=0.5, r_fiber=0.005, dx=0.0002, N_min=32, nz=1,
+    )
     phase = jnp.array(phase_np.reshape(-1))
 
     matrix = LinearElasticIsotropic(E=3.0e3,  nu=0.35, name="epoxy matrix")
