@@ -5,7 +5,7 @@ isotropic phases in one materials: list)."""
 
 from materialmodels.base import ConstitutiveModel
 from materialmodels.elastic.isotropic import LinearElasticIsotropic
-from materialmodels.elastic.transversely_isotropic import TransverseIsotropic
+from materialmodels.elastic.transverse_isotropic import TransverseIsotropic
 
 _MODELS = {
     "isotropic_elastic":    LinearElasticIsotropic,

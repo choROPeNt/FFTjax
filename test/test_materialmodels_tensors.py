@@ -36,7 +36,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from materialmodels.elastic.isotropic import LinearElasticIsotropic
-from materialmodels.elastic.transversely_isotropic import TransverseIsotropic
+from materialmodels.elastic.transverse_isotropic import TransverseIsotropic
 from materialmodels.tensors import (
     is_major_symmetric,
     is_minor_symmetric,
