@@ -69,17 +69,23 @@ class FractureSolution(NamedTuple):
     psi_pos:             jnp.ndarray  # (Nv,)       tensile driving force (undegraded Amor split)
     converged_mech:      jnp.ndarray  # bool -- last mechanical CG solve
     converged_helm:      jnp.ndarray  # bool -- last damage CG solve
-    converged_staggered: bool         # staggered fixed-point converged within maxiter_st
+    converged_staggered: bool | jnp.ndarray  # staggered fixed-point converged within
+                                              # maxiter_st -- concrete Python bool from
+                                              # solve_fracture (early_exit=True), a JAX
+                                              # bool array from solve_fracture_fixed
+                                              # (early_exit=False, vmap-safe: no bool()
+                                              # concretization -- see _staggered_loop)
     iter_staggered:      int          # staggered iterations actually run
-    err_abs:             float        # max|d_new - d_old| at the last iteration
-    err_rel:             float        # err_abs / max|d_new|
+    err_abs:             float | jnp.ndarray  # max|d_new - d_old| at the last iteration --
+                                               # float (early_exit=True) or array (early_exit=False)
+    err_rel:             float | jnp.ndarray  # err_abs / max|d_new| -- same float/array split
     eps_bar:             jnp.ndarray | None = None  # (3, 3) macroscopic strain with
                                                      # any stress-controlled entries
                                                      # filled in -- None unless
                                                      # formulation="displacement"
 
     @property
-    def converged(self) -> bool:
+    def converged(self) -> bool | jnp.ndarray:
         """Satisfies problems.incremental's Solution protocol -- the staggered
         loop's own convergence, not the last mechanical/Helmholtz sub-solve."""
         return self.converged_staggered
@@ -213,7 +219,39 @@ def solve_fracture(
 
     if formulation == "lippmann_schwinger":
         green_op = build_reference_green_operator(n, L, materials, scheme=scheme)
+    else:
+        green_op = None
 
+    return _staggered_loop(
+        n=n, l0=l0, formulation=formulation, control=control, stress_goal_arr=stress_goal_arr,
+        C_field=C_field, lam_vox=lam_vox, mu_vox=mu_vox, xi_flat=xi_flat, k_res_arr=k_res_arr,
+        Gc=Gc, Gc_heterogeneous=Gc_heterogeneous, green_op=green_op,
+        eps_bar=eps_bar, d_init=d_init, H_init=H_init,
+        toler_lin=toler_lin, maxiter_cg=maxiter_cg,
+        toler_helm=toler_helm, maxiter_helm=maxiter_helm,
+        eta=eta, dt=dt, d_thres=d_thres,
+        toler_st_abs=toler_st_abs, toler_st_rel=toler_st_rel, maxiter_st=maxiter_st,
+        early_exit=True,
+    )
+
+
+def _staggered_loop(
+    n, l0, formulation, control, stress_goal_arr,
+    C_field, lam_vox, mu_vox, xi_flat, k_res_arr, Gc, Gc_heterogeneous, green_op,
+    eps_bar, d_init, H_init,
+    toler_lin, maxiter_cg, toler_helm, maxiter_helm, eta, dt, d_thres,
+    toler_st_abs, toler_st_rel, maxiter_st, early_exit: bool,
+) -> FractureSolution:
+    """
+    The mechanics<->damage staggered fixed-point loop shared by solve_fracture
+    (early_exit=True: Python-level break on convergence, err_abs/err_rel/
+    converged_staggered as concrete Python float/bool -- exactly
+    solve_fracture's original inline behaviour, moved here unchanged) and
+    solve_fracture_fixed (early_exit=False: always runs exactly maxiter_st
+    iterations, err_abs/err_rel/converged_staggered kept as JAX arrays
+    throughout -- no float()/bool() concretization, no data-dependent Python
+    control flow, so this path is safe under jax.vmap/jax.jit).
+    """
     d_st = d_init
     H_st = H_init
     eps_bar_cur = None
@@ -244,18 +282,200 @@ def solve_fracture(
         )
 
         diff = jnp.max(jnp.abs(d_st - d_prev_st))
-        err_abs = float(diff)
-        err_rel = float(diff / (jnp.max(jnp.abs(d_st)) + 1e-30))
-        if err_abs < toler_st_abs or err_rel < toler_st_rel:
-            break
+        if early_exit:
+            # concrete Python float/bool -- fine outside vmap/jit (eager),
+            # which is the only context solve_fracture is ever called in.
+            err_abs = float(diff)
+            err_rel = float(diff / (jnp.max(jnp.abs(d_st)) + 1e-30))
+            staggered_converged = err_abs < toler_st_abs or err_rel < toler_st_rel
+            if staggered_converged:
+                break
+        else:
+            # stay array-valued -- float()/bool() on a batched/traced value
+            # would raise under vmap; every batch lane must run the same
+            # (here: all maxiter_st) iterations regardless of its own
+            # convergence, so there's nothing to break out of anyway.
+            err_abs = diff
+            err_rel = diff / (jnp.max(jnp.abs(d_st)) + 1e-30)
+            staggered_converged = jnp.logical_or(err_abs < toler_st_abs, err_rel < toler_st_rel)
 
     return FractureSolution(
         eps=eps, sigma=sigma, delta=delta, d=d_st, H=H_st, psi_pos=psi_pos,
         converged_mech=converged_mech, converged_helm=converged_helm,
-        converged_staggered=(err_abs < toler_st_abs or err_rel < toler_st_rel),
+        converged_staggered=staggered_converged,
         iter_staggered=iter_st, err_abs=err_abs, err_rel=err_rel,
         eps_bar=eps_bar_cur,
     )
+
+
+def solve_fracture_fixed(
+    n:            Tuple[int, ...],
+    L:            Tuple[float, ...],
+    phase:        jnp.ndarray,
+    materials:    list,
+    eps_bar:      jnp.ndarray,
+    l0:           float,
+    Gc:           float | jnp.ndarray | None,
+    d_init:       jnp.ndarray,
+    H_init:       jnp.ndarray,
+    formulation:  str = "lippmann_schwinger",
+    scheme:       str = "rotated",
+    control:      Tuple[Tuple[int, ...], ...] | None = None,
+    stress_goal:  jnp.ndarray | None = None,
+    toler_lin:    float = 1e-6,
+    maxiter_cg:   int = 1000,
+    toler_helm:   float = 1e-4,
+    maxiter_helm: int = 300,
+    eta:          float = 0.0,
+    dt:           float = 1.0,
+    d_thres:      float = 0.95,
+    k_res:        float | jnp.ndarray | None = None,
+    toler_st_abs: float = 1e-2,
+    toler_st_rel: float = 1e-3,
+    maxiter_st:   int = 200,
+) -> FractureSolution:
+    """
+    vmap/jit-safe counterpart to solve_fracture: identical physics and
+    parameters, but the staggered loop always runs exactly maxiter_st
+    iterations -- no early break on convergence -- so every batch lane
+    under jax.vmap takes the same, data-independent control flow (no
+    per-lane Python bool()/float() concretization either). Trades some
+    wasted staggered iterations (every increment always runs to
+    maxiter_st) for actually being traceable/batchable.
+
+    Convergence is NOT enforced or checked here -- inspect the returned
+    FractureSolution's .converged_staggered/.converged_mech/.converged_helm
+    yourself (per batch lane, after leaving vmap) instead of relying on a
+    driver to raise for you.
+
+    See solve_fracture's docstring for every parameter's meaning; unlike it,
+    there's no early-exit path, so there's nothing else different here.
+    """
+    if formulation not in ("lippmann_schwinger", "displacement"):
+        raise ValueError(
+            f"unknown formulation {formulation!r}, expected 'lippmann_schwinger' or 'displacement'"
+        )
+
+    control = control if control is not None else _ZERO_CONTROL
+    control_nonzero = any(any(row) for row in control)
+    if formulation == "lippmann_schwinger" and control_nonzero:
+        raise ValueError(
+            "formulation='lippmann_schwinger' cannot do stress-controlled "
+            "macroscopic BC (control has nonzero entries) -- its reference-"
+            "medium approach only supports pure strain BC; "
+            "use formulation='displacement' instead"
+        )
+    stress_goal_arr = jnp.zeros((3, 3)) if stress_goal is None else stress_goal
+
+    C_field = assemble_C_field(materials, phase)
+    lam_vox, mu_vox = lame_field(materials, phase)
+    xi_flat = build_freq_grid(n, L)
+    k_res_arr = k_res_field(materials, phase) if k_res is None else k_res
+
+    # Gc_heterogeneous is decided WITHOUT inspecting any array derived from
+    # `phase` (float()/bool() on a value that traces back to `phase` breaks
+    # under jax.vmap, since `phase` is exactly the argument a caller batches
+    # different RVE realizations over). Gc=None gathers per-material -- its
+    # heterogeneity is a static property of `materials` (plain Python floats),
+    # not something to inspect on the resulting per-voxel field. An explicit
+    # array Gc is trusted at face value (no auto-collapse-if-uniform check,
+    # unlike solve_fracture) -- pass a scalar yourself if you know it's
+    # uniform and want the cheaper homogeneous solver.
+    if Gc is None:
+        Gc = Gc_field(materials, phase)
+        Gc_values = {float(m.Gc) for m in materials if m.Gc is not None}
+        Gc_heterogeneous = len(Gc_values) > 1
+    else:
+        Gc_heterogeneous = isinstance(Gc, jnp.ndarray) and jnp.ndim(Gc) > 0
+
+    if formulation == "lippmann_schwinger":
+        green_op = build_reference_green_operator(n, L, materials, scheme=scheme)
+    else:
+        green_op = None
+
+    return _staggered_loop(
+        n=n, l0=l0, formulation=formulation, control=control, stress_goal_arr=stress_goal_arr,
+        C_field=C_field, lam_vox=lam_vox, mu_vox=mu_vox, xi_flat=xi_flat, k_res_arr=k_res_arr,
+        Gc=Gc, Gc_heterogeneous=Gc_heterogeneous, green_op=green_op,
+        eps_bar=eps_bar, d_init=d_init, H_init=H_init,
+        toler_lin=toler_lin, maxiter_cg=maxiter_cg,
+        toler_helm=toler_helm, maxiter_helm=maxiter_helm,
+        eta=eta, dt=dt, d_thres=d_thres,
+        toler_st_abs=toler_st_abs, toler_st_rel=toler_st_rel, maxiter_st=maxiter_st,
+        early_exit=False,
+    )
+
+
+def solve_fracture_incremental_fixed(
+    n:            Tuple[int, ...],
+    L:            Tuple[float, ...],
+    phase:        jnp.ndarray,
+    materials:    list,
+    eps_bar:      jnp.ndarray,
+    l0:           float,
+    Gc:           float | jnp.ndarray | None,
+    d_init:       jnp.ndarray,
+    H_init:       jnp.ndarray,
+    dt_step:      float,
+    formulation:  str = "lippmann_schwinger",
+    scheme:       str = "rotated",
+    control:      Tuple[Tuple[int, ...], ...] | None = None,
+    stress_goal:  jnp.ndarray | None = None,
+    toler_lin:    float = 1e-6,
+    maxiter_cg:   int = 1000,
+    toler_helm:   float = 1e-4,
+    maxiter_helm: int = 300,
+    eta:          float = 0.0,
+    d_thres:      float = 0.95,
+    k_res:        float | jnp.ndarray | None = None,
+    toler_st_abs: float = 1e-2,
+    toler_st_rel: float = 1e-3,
+    maxiter_st:   int = 200,
+) -> list[FractureSolution]:
+    """
+    vmap/jit-safe counterpart to solve_fracture_incremental(stepping="fixed"),
+    built on solve_fracture_fixed instead of solve_fracture -- so both the
+    staggered loop AND the load-stepping loop are free of data-dependent
+    Python control flow (no bool()/float() on a convergence value, no break,
+    no cutback, no raise-on-non-convergence). ``n_steps = round(1/dt_step)``
+    is a static Python int, identical for every batch lane, so the whole
+    thing unrolls to one fixed, uniform computation graph -- this is the
+    function to jax.vmap over multiple RVE realizations (batch ``phase``,
+    keep n/L/materials/eps_bar/... shared via in_axes=None), e.g. to sample
+    several random-seed realizations at the same fibre volume fraction.
+
+    Convergence is never checked or enforced -- unlike solve_fixed, this
+    NEVER raises; a non-converged increment just keeps going with whatever
+    (possibly still-transient) d/H it produced. Inspect each returned
+    FractureSolution's .converged_staggered yourself, per batch lane, after
+    leaving vmap.
+
+    Returns list[FractureSolution], one per fixed step -- NOT
+    list[IncrementResult] like solve_fracture_incremental: there's no
+    wall-clock/writer/on_increment bookkeeping here, none of which make
+    sense once this runs inside a jax.vmap batch. See solve_fracture's
+    docstring for every other parameter's meaning.
+    """
+    if not (0.0 < dt_step <= 1.0):
+        raise ValueError(f"dt_step must be in (0, 1], got {dt_step}")
+    n_steps = max(1, round(1.0 / dt_step))
+    dt_actual = 1.0 / n_steps
+
+    d, H = d_init, H_init
+    results = []
+    for step in range(1, n_steps + 1):
+        t = step * dt_actual
+        sol = solve_fracture_fixed(
+            n, L, phase, materials, t * eps_bar, l0, Gc, d, H,
+            formulation=formulation, scheme=scheme, control=control, stress_goal=stress_goal,
+            toler_lin=toler_lin, maxiter_cg=maxiter_cg,
+            toler_helm=toler_helm, maxiter_helm=maxiter_helm,
+            eta=eta, dt=dt_actual, d_thres=d_thres, k_res=k_res,
+            toler_st_abs=toler_st_abs, toler_st_rel=toler_st_rel, maxiter_st=maxiter_st,
+        )
+        d, H = sol.d, sol.H
+        results.append(sol)
+    return results
 
 
 def solve_fracture_incremental(
