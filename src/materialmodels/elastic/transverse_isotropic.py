@@ -10,7 +10,6 @@ the shared, general versions of those same operations instead.
 """
 
 import jax.numpy as jnp
-import numpy as np
 
 from materialmodels.base import ConstitutiveModel
 from materialmodels.tensors import (
@@ -35,10 +34,19 @@ class TransverseIsotropic(ConstitutiveModel):
     E_T   : Young's modulus perpendicular to the fibre (transverse)
     G_LT  : Shear modulus in planes that contain the fibre axis
     nu_LT : Poisson's ratio  (-eps_T / eps_L when loaded uniaxially along L)
-    nu_TT : Poisson's ratio in the transverse isotropic plane
+    nu_TT, G_TT : the transverse-transverse plane's Poisson's ratio and
+                shear modulus are *not* independent (isotropic plane:
+                G_TT = E_T / (2*(1 + nu_TT))) -- give exactly one, the
+                other is derived. G_TT is often the one actually reported
+                in test data/literature, so it's accepted directly instead
+                of forcing a manual nu_TT = E_T/(2*G_TT) - 1 conversion at
+                the call site. Either way, the resulting nu_TT is checked
+                against the physically valid range for a 2-D isotropic
+                plane (-1, 1) -- an inconsistent E_T/G_TT pair raises
+                immediately rather than silently building a nonphysical
+                material.
 
     Derived:
-    G_TT  = E_T / (2(1 + nu_TT))    transverse-transverse shear modulus
     nu_TL = nu_LT * E_T / E_L       reciprocal Poisson ratio (symmetry of S)
 
     k_res, Gc : AT2 phase-field residual stiffness / critical energy release
@@ -58,40 +66,71 @@ class TransverseIsotropic(ConstitutiveModel):
         E_T: float,
         G_LT: float,
         nu_LT: float,
-        nu_TT: float,
+        nu_TT: float | None = None,
+        G_TT: float | None = None,
         name: str = "",
         k_res: float = 1e-6,
         Gc: float | None = None,
     ):
+        if (nu_TT is None) == (G_TT is None):
+            raise ValueError(
+                "TransverseIsotropic: specify exactly one of nu_TT or G_TT -- "
+                "they're not independent for the isotropic transverse plane "
+                "(G_TT = E_T / (2*(1 + nu_TT))), so giving both (or neither) "
+                "is ambiguous."
+            )
+
         self.E_L = float(E_L)
         self.E_T = float(E_T)
         self.G_LT = float(G_LT)
         self.nu_LT = float(nu_LT)
-        self.nu_TT = float(nu_TT)
         self.name = name
         self.k_res = float(k_res)
         self.Gc = float(Gc) if Gc is not None else None
-        self.G_TT = float(E_T / (2.0 * (1.0 + nu_TT)))
+
+        if G_TT is not None:
+            self.G_TT = float(G_TT)
+            self.nu_TT = float(self.E_T / (2.0 * self.G_TT) - 1.0)
+        else:
+            assert nu_TT is not None  # narrows for type checkers; guaranteed by the xor check above
+            self.nu_TT = float(nu_TT)
+            self.G_TT = float(self.E_T / (2.0 * (1.0 + self.nu_TT)))
+
+        # double check: nu_TT (given directly, or derived from G_TT) must be
+        # physically valid for a 2-D isotropic plane -- unlike the usual 3-D
+        # bound of 0.5, a plane-stress/strain isotropic sheet's Poisson's
+        # ratio range is (-1, 1); outside that, G_TT and E_T were given an
+        # inconsistent pair.
+        if not (-1.0 < self.nu_TT < 1.0):
+            raise ValueError(
+                f"TransverseIsotropic: nu_TT={self.nu_TT:.4g} (E_T={self.E_T:.4g}, "
+                f"G_TT={self.G_TT:.4g}) is outside the physically valid range "
+                f"(-1, 1) for an isotropic transverse plane -- check E_T/G_TT/nu_TT "
+                f"are mutually consistent."
+            )
+
         self.nu_TL = float(nu_LT * E_T / E_L)   # S symmetry: nu_LT/E_L = nu_TL/E_T
 
     # ------------------------------------------------------------------
     # Stiffness representations
     # ------------------------------------------------------------------
 
-    def _compliance_engineering(self) -> np.ndarray:
+    def _compliance_engineering(self) -> jnp.ndarray:
         """6x6 engineering compliance S (fibre along Z = Voigt index 2)."""
-        S = np.zeros((6, 6))
-        S[0, 0] = S[1, 1] = 1.0 / self.E_T
-        S[2, 2] = 1.0 / self.E_L
-        S[0, 1] = S[1, 0] = -self.nu_TT / self.E_T
-        S[0, 2] = S[2, 0] = S[1, 2] = S[2, 1] = -self.nu_LT / self.E_L
-        S[3, 3] = 1.0 / self.G_TT    # 12  transverse shear
-        S[4, 4] = S[5, 5] = 1.0 / self.G_LT    # 13, 23  longitudinal shear
-        return S
+        s_tt = -self.nu_TT / self.E_T
+        s_lt = -self.nu_LT / self.E_L
+        return jnp.array([
+            [1.0 / self.E_T, s_tt,           s_lt,           0.0,             0.0,             0.0],
+            [s_tt,           1.0 / self.E_T, s_lt,           0.0,             0.0,             0.0],
+            [s_lt,           s_lt,           1.0 / self.E_L, 0.0,             0.0,             0.0],
+            [0.0,            0.0,            0.0,            1.0 / self.G_TT, 0.0,             0.0],
+            [0.0,            0.0,            0.0,            0.0,             1.0 / self.G_LT, 0.0],
+            [0.0,            0.0,            0.0,            0.0,             0.0,             1.0 / self.G_LT],
+        ])
 
     def stiffness_tensor(self) -> jnp.ndarray:
         """(3, 3, 3, 3) stiffness in the reference frame (fibre along Z)."""
-        C_eng = np.linalg.inv(self._compliance_engineering())
+        C_eng = jnp.linalg.inv(self._compliance_engineering())
         return jnp.array(voigt_to_tensor4(C_eng, engineering=True))
 
     def stiffness_tensor_rotated(self, fiber_dir: jnp.ndarray) -> jnp.ndarray:
@@ -114,8 +153,11 @@ class TransverseIsotropic(ConstitutiveModel):
         with ``post.fields.to_voigt`` and the FFT solver).
         engineering=True            -> Abaqus / UMAT gamma convention.
         """
-        C4 = np.asarray(self.stiffness_tensor())
-        return jnp.array(tensor4_to_voigt(C4, engineering=engineering))
+        # tensor4_to_voigt's own param type is np.ndarray (materialmodels.tensors
+        # is deliberately plain numpy -- one-time setup, not per-voxel; see its
+        # module docstring), but it np.asarray()s its input internally regardless,
+        # so a jax array works fine at runtime despite the nominal type mismatch.
+        return jnp.array(tensor4_to_voigt(self.stiffness_tensor(), engineering=engineering))  # type: ignore[arg-type]
 
     def stress_voigt(self, eps_voigt: jnp.ndarray, engineering: bool = False) -> jnp.ndarray:
         """Compute Voigt stress from Voigt strain (..., 6) -> (..., 6)."""
