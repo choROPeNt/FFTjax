@@ -20,7 +20,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-cuda = ["jax[cuda12]"]
+cuda = ["jax[cuda13]"]
 tpu = ["jax[tpu]"]
 
 [project.urls]
