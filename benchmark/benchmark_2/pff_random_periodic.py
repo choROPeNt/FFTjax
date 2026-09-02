@@ -92,21 +92,21 @@ jax.config.update("jax_enable_x64", True)
 
 # ── RVE generation (shared by every load path) ───────────────────────────────
 
-PHI_SWEEP = [0.35, 0.55, 0.75]   # default sweep -- the phi values assets/ has reference data for
-PHI      = PHI_SWEEP[-1]   # current phi being run -- set per iteration in main(); the
-                            # module-level default only matters if run_case/build_rve
-                            # are called directly (e.g. from a notebook/REPL), not via main()
-R_FIBER  = 0.0035     # mm
-VOX      = 0.0005     # mm  target voxel size
-SIZE_IN_R = 15        # domain side ~ 15*r_fiber (Catalanotti 2016 convention)
-K_PERTURB = 15        # perturbation iterations (K>10 -> fully randomised)
-SEED      = None      # None = random seed, else int for reproducibility
-N_REALIZATIONS = 1    # random-seed realizations (SEED, SEED+1, ...) batched via
-                       # jax.vmap per (loading case, phi) -- see run_case
+PHI_SWEEP = [0.35, 0.55, 0.75]      # default sweep -- the phi values assets/ has reference data for
+PHI      = PHI_SWEEP[-1]            # current phi being run -- set per iteration in main(); the
+                                    # module-level default only matters if run_case/build_rve
+                                    # are called directly (e.g. from a notebook/REPL), not via main()
+R_FIBER  = 0.0035                   # mm
+VOX      = 0.00035                  # mm  target voxel size
+SIZE_IN_R = 15                      # domain side ~ 15*r_fiber (Catalanotti 2016 convention)
+K_PERTURB = 15                      # perturbation iterations (K>10 -> fully randomised)
+SEED      = None                    # None = random seed, else int for reproducibility
+N_REALIZATIONS = 10                 # random-seed realizations (SEED, SEED+1, ...) batched via
+                                    # jax.vmap per (loading case, phi) -- see run_case
 
-EPS_TENSION_MAX = 1.0e-2    # target macroscopic strain at t=1, tension branch
-EPS_COMP_MAX    = 1.0e-2    # target macroscopic strain at t=1, compression branch (magnitude)
-l0_factor = 3.0      # phase-field length scale, in voxels
+EPS_TENSION_MAX = 1.0e-2            # target macroscopic strain at t=1, tension branch
+EPS_COMP_MAX    = 1.0e-2            # target macroscopic strain at t=1, compression branch (magnitude)
+l0_factor = 3.0                     # phase-field length scale, in voxels
 
 MATRIX = LinearElasticIsotropic(E=3.76e3, nu=0.39,
                                 Gc=1000,
@@ -115,13 +115,13 @@ MATRIX = LinearElasticIsotropic(E=3.76e3, nu=0.39,
 FIBER  = TransverseIsotropic(
     E_L=234000.0, E_T=15000.0, G_LT=15000.0,
     nu_LT=0.20,
-    G_TT=7000.0,      # transverse-transverse shear modulus, given directly --
-                      # nu_TT is derived (~0.0714) instead of manually rounded
+    G_TT=7000.0,                    # transverse-transverse shear modulus, given directly --
+                                    # nu_TT is derived (~0.0714) instead of manually rounded
     Gc=1000,
-    k_res=1.0,    # damage-immune -- g(d) == 1 regardless of d, matching
-                  # notebooks/pff-damage.ipynb's carbon fibre; keeps the fibre
-                  # as a rigid load-bearing skeleton instead of softening
-                  # alongside the matrix, which is what flattens the snap-back
+    k_res=1.0,                      # damage-immune -- g(d) == 1 regardless of d, matching
+                                    # notebooks/pff-damage.ipynb's carbon fibre; keeps the fibre
+                                    # as a rigid load-bearing skeleton instead of softening
+                                    # alongside the matrix, which is what flattens the snap-back
     name="carbon fiber",
 )
 MATERIALS = [MATRIX, FIBER]
@@ -165,24 +165,30 @@ class LoadCase:
 
 
 LOADING_CASES: dict[str, LoadCase] = {
-    # "tension_x": LoadCase(
-    #     eps_goal=EPS_TENSION_MAX * jnp.array([[1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]),
-    #     i=0, j=0, comp_symbol="εxx", stress_symbol="σxx",
-    #     label="tension x", color="tab:blue",
-    #     ref_branch="tension",
-    # ),
-    # "compression_x": LoadCase(
-    #     eps_goal=-EPS_COMP_MAX * jnp.array([[1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]),
-    #     i=0, j=0, comp_symbol="εxx", stress_symbol="σxx",
-    #     label="compression x", color="tab:red",
-    #     ref_branch="comp", plot_abs=True,
-    # ),
-    # "shear_xy": LoadCase(
-    #     eps_goal=EPS_TENSION_MAX * jnp.array([[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 0.0]]),
-    #     i=0, j=1, comp_symbol="εxy", stress_symbol="σxy",
-    #     label="xy", color="tab:green",
-    #     ref_branch="shear",
-    # ),
+        "tension_z": LoadCase(
+        eps_goal=EPS_TENSION_MAX * jnp.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 1.0]]),
+        i=2, j=2, comp_symbol="εzz", stress_symbol="σzz",
+        label="tension z", color="tab:blue",
+        ref_branch="tension",
+    ),
+    "tension_x": LoadCase(
+        eps_goal=EPS_TENSION_MAX * jnp.array([[1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]),
+        i=0, j=0, comp_symbol="εxx", stress_symbol="σxx",
+        label="tension x", color="tab:blue",
+        ref_branch="tension",
+    ),
+    "compression_x": LoadCase(
+        eps_goal=-EPS_COMP_MAX * jnp.array([[1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]),
+        i=0, j=0, comp_symbol="εxx", stress_symbol="σxx",
+        label="compression x", color="tab:red",
+        ref_branch="comp", plot_abs=True,
+    ),
+    "shear_xy": LoadCase(
+        eps_goal=EPS_TENSION_MAX * jnp.array([[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 0.0]]),
+        i=0, j=1, comp_symbol="εxy", stress_symbol="σxy",
+        label="xy", color="tab:green",
+        ref_branch="shear",
+    ),
     "shear_zx": LoadCase(
         eps_goal=EPS_TENSION_MAX * jnp.array([[0.0, 0.0, 1.0], [0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]),
         i=0, j=2, comp_symbol="εzx", stress_symbol="σzx",
@@ -239,7 +245,7 @@ def mixed_control(case: LoadCase) -> tuple[tuple[int, int, int], ...]:
         diag = [1, 1, 1]
         diag[case.i] = 0
         return ((diag[0], 0, 0), (0, diag[1], 0), (0, 0, diag[2]))
-    return ((0, 0, 0), (0, 0, 0), (0, 0, 0))
+    return ((1, 0, 0), (0, 1, 0), (0, 0, 1))
 
 
 def load_reference(phi: float, case: LoadCase) -> np.ndarray | None:
