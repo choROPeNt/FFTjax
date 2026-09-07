@@ -32,9 +32,9 @@ import matplotlib.pyplot as plt
 
 from generation.rve import make_square_composite_rve
 from materialmodels.elastic.isotropic import LinearElasticIsotropic
-from problems.mechanics import solve_mechanics
-from solvers.elliptic.vector.base import ElasticitySolution
 from post.fields import field_to_grid, compute_displacement
+from problems.mechanics import solve_mechanics
+from solvers.solution import ElasticitySolution
 
 print("JAX backend:", jax.default_backend())
 print("Devices:", jax.devices())

@@ -61,7 +61,7 @@ import numpy as np
 from generation.rve import make_square_composite_rve
 from materialmodels.elastic.isotropic import LinearElasticIsotropic
 from problems.mechanics import solve_mechanics
-from solvers.elliptic.vector.base import ElasticitySolution
+from solvers.solution import ElasticitySolution
 
 # Divisible by every candidate device count below (1, 2, 4, 8) so every
 # (B, n_devices) pair in the sweep splits evenly -- no ragged remainder to

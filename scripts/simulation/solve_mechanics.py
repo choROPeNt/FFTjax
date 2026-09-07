@@ -57,7 +57,7 @@ import jax.numpy as jnp
 from materialmodels.factory import build_material
 from post.fields import homogenize, to_voigt
 from problems.mechanics import solve_mechanics
-from solvers.elliptic.vector.base import ElasticitySolution
+from solvers.solution import ElasticitySolution
 from utils.config import load_config
 from utils.io.reader import SimulationReader
 from utils.io.xdmf_writer import IncrementalWriter

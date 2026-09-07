@@ -8,8 +8,9 @@ import jax.numpy as jnp
 from operators.base import LinearOperator
 from operators.general_functions import ddot42
 from operators.projection import Gamma0Operator
-from solvers.elliptic.vector.base import ElasticitySolver, ElasticitySolution
+from solvers.elliptic.vector.base import ElasticitySolver
 from solvers.krylov.cg import cg_solve
+from solvers.solution import ElasticitySolution
 
 
 def solve_lippmann_schwinger(

@@ -25,8 +25,9 @@ import jax.numpy as jnp
 from jax import jit
 
 from operators.green import nyquist_safe_xi
-from solvers.elliptic.vector.base import ElasticitySolver, ElasticitySolution
+from solvers.elliptic.vector.base import ElasticitySolver
 from solvers.krylov.cg import cg_solve
+from solvers.solution import ElasticitySolution
 
 _ZERO_CONTROL = ((0, 0, 0), (0, 0, 0), (0, 0, 0))
 

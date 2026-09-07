@@ -31,7 +31,7 @@ import numpy as np
 from generation.rve import make_square_composite_rve
 from materialmodels.elastic.isotropic import LinearElasticIsotropic
 from problems.mechanics import solve_mechanics
-from solvers.elliptic.vector.base import ElasticitySolution
+from solvers.solution import ElasticitySolution
 
 GRID_SIZES = [16, 24, 32, 48, 64, 96]
 PHI = 0.5           # target fibre volume fraction

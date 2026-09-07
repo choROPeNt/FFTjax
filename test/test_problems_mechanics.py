@@ -41,7 +41,7 @@ import pytest
 from generation.rve import make_square_composite_rve
 from materialmodels.elastic.isotropic import LinearElasticIsotropic
 from problems.mechanics import solve_mechanics
-from solvers.elliptic.vector.base import ElasticitySolution
+from solvers.solution import ElasticitySolution
 
 
 phase_np, n, L, phi_act = make_square_composite_rve(

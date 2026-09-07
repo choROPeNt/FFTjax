@@ -39,9 +39,9 @@ from materialmodels.assembly import assemble_C_field
 from operators.green import build_freq_grid, build_reference_green_operator
 from post.fields import compute_displacement, field_to_grid, to_voigt, von_mises
 from problems.incremental import IncrementResult, solve_automatic, solve_fixed
-from solvers.elliptic.vector.base import ElasticitySolution
 from solvers.elliptic.vector.displacement_based import DisplacementBasedSolver
 from solvers.elliptic.vector.lippmann_schwinger import LippmannSchwingerSolver
+from solvers.solution import ElasticitySolution
 from utils.io.xdmf_writer import IncrementalWriter
 
 _ZERO_CONTROL = ((0, 0, 0), (0, 0, 0), (0, 0, 0))

@@ -1,6 +1,6 @@
 """
-Standalone test for ElasticitySolver / ElasticitySolution
-(solvers/elliptic/vector/base.py).
+Standalone test for ElasticitySolver (solvers/elliptic/vector/base.py) /
+ElasticitySolution (solvers/solution.py).
 
 Three checks
 ------------
@@ -29,7 +29,8 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from solvers.elliptic.vector.base import ElasticitySolver, ElasticitySolution
+from solvers.elliptic.vector.base import ElasticitySolver
+from solvers.solution import ElasticitySolution
 
 
 # ── 1. ElasticitySolver is a real ABC ────────────────────────────────────────
