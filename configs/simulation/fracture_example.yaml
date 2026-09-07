@@ -15,6 +15,11 @@
 
 fracture:
   input: output/generation/rve_quad_phi-0.55.xdmf
+  # input_L/input_dx (mm) -- only needed if `input` is .npy or a bare .h5
+  # with no n/L attrs, since those formats carry no physical length of their
+  # own (.xdmf/.vtu/.vti/.npz are all self-describing and ignore this).
+  # Give exactly one; the other is derived (L = n * dx).
+  # input_dx: [0.001, 0.001, 0.001]
 
   # indexed by 0-based phase id (0=matrix, 1=fibre). `model` selects the
   # materialmodels.factory class; k_res is the AT2 residual stiffness for

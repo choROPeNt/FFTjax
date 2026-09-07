@@ -76,9 +76,17 @@ def main():
     print(f"Config : {args.config}")
 
     # ── load microstructure ──────────────────────────────────────────────────
+    # input_L/input_dx are only needed for a metadata-less input (.npy, or a
+    # bare .h5 with no n/L attrs) -- every other format (.xdmf/.vtu/.vti/.npz)
+    # carries its own grid length and ignores these (with a warning if given
+    # anyway). See utils.io.reader.SimulationReader.
     src = mcfg["input"]
+    input_L  = tuple(mcfg["input_L"])  if mcfg.get("input_L")  else None
+    input_dx = tuple(mcfg["input_dx"]) if mcfg.get("input_dx") else None
     print(f"Input  : {src}")
-    n, L, phase_np, orientations_np, _, vf_np, _, _ = SimulationReader(src).read()
+    n, L, phase_np, orientations_np, _, vf_np, _, _ = SimulationReader(
+        src, L=input_L, dx=input_dx,
+    ).read()
     phase = jnp.array(phase_np)
     print(f"Grid   : {n}   phi = {float(np.mean(phase_np > 0)):.3f}")
 

@@ -2,14 +2,23 @@
 Readers for the file formats used in FFTjax.
 
     read_xdmf  — load field arrays from an HDF5/XDMF simulation output
+                 (also accepts a bare/metadata-less .h5, given L or dx)
     read_vtu   — load a TexGen (or generate_weave) voxel mesh
+    read_vti   — load a vtkImageData (.vti) field file
     read_npz   — load a numpy .npz archive (e.g. preproc output)
+    read_npy   — load a bare numpy .npy phase array, given L or dx
+
+Self-describing formats (.xdmf, .vtu, .vti, .npz) carry their own grid
+length -- L is read straight from the file, no extra argument needed.
+Metadata-less formats (.npy, and a bare .h5 with no n/L attrs) carry only
+the array itself, so the caller must supply exactly one of L (physical
+domain size) or dx (voxel size); the other is derived (L = n * dx).
 
 All functions return plain numpy arrays in FFTjax C-order (X slowest).
 
 Quick reference
 ---------------
->>> from utils.io.reader import read_xdmf, read_vtu, read_npz
+>>> from utils.io.reader import read_xdmf, read_vtu, read_vti, read_npz, read_npy
 
 # simulation output
 >>> n, L, fields = read_xdmf("output/simulation/myrun.h5")
@@ -18,17 +27,48 @@ Quick reference
 # voxel geometry
 >>> n, L, phase, orient, yarn_index, vf = read_vtu("data/200.vtu")
 
+# vtkImageData field file
+>>> n, L, fields = read_vti("data/geometry.vti")
+
 # preprocessor output
 >>> data = read_npz("output/preprocessed/myrun_delam_preproc.npz")
 >>> d_init = data["d_init"]
+
+# bare phase array -- no embedded length, must be given
+>>> n, L, phase = read_npy("output/generation/geom.npy", dx=(0.001, 0.001, 0.001))
 """
 
 from __future__ import annotations
 
-import xml.etree.ElementTree as ET  # used for VTU parsing
+import warnings
+import xml.etree.ElementTree as ET  # used for VTU/VTI parsing
 from pathlib import Path
 
 import numpy as np
+
+
+def _resolve_grid_length(
+    n: tuple[int, ...],
+    L: tuple[float, ...] | None,
+    dx: tuple[float, ...] | None,
+) -> tuple[float, ...]:
+    """
+    Resolve a grid's physical length from exactly one of L or dx -- shared
+    by every metadata-less reader (read_npy, read_xdmf's bare-.h5 fallback)
+    since a bare array has no other source for it.
+    """
+    if L is not None and dx is not None:
+        raise ValueError(
+            "specify at most one of L or dx -- they're redundant (L = n * dx)"
+        )
+    if L is not None:
+        return tuple(float(v) for v in L)
+    if dx is not None:
+        return tuple(float(ni) * float(di) for ni, di in zip(n, dx))
+    raise ValueError(
+        f"grid shape {n} has no embedded physical length -- pass L=(Lx,Ly,Lz) "
+        "or dx=(dx,dy,dz)"
+    )
 
 
 # ── XDMF / HDF5 ──────────────────────────────────────────────────────────────
@@ -36,9 +76,13 @@ import numpy as np
 def read_xdmf(
     path: str | Path,
     increment: int = 0,
+    L: tuple[float, ...] | None = None,
+    dx: tuple[float, ...] | None = None,
 ) -> tuple[tuple[int, int, int], tuple[float, float, float], dict[str, np.ndarray]]:
     """
-    Read field arrays from a simulation HDF5 file (companion to .xdmf).
+    Read field arrays from a simulation HDF5 file (companion to .xdmf), or
+    from a bare/metadata-less .h5 that just holds one dataset (no
+    IncrementalWriter increment_NNNNNN structure, no n/L root attrs).
 
     Accepts either the ``.h5`` or ``.xdmf`` path — the HDF5 file is located
     automatically by replacing the suffix with ``.h5``.
@@ -51,7 +95,12 @@ def read_xdmf(
     Parameters
     ----------
     path      : .h5 or .xdmf file path
-    increment : increment index to read (default 0)
+    increment : increment index to read (default 0) -- only meaningful for
+                an IncrementalWriter-produced file with n/L root attrs.
+    L, dx     : only used as a fallback when the file has no n/L root
+                attrs (a bare .h5, not one of ours) -- exactly one of them,
+                see _resolve_grid_length. Ignored (with the file's own
+                value used instead) when n/L attrs are present.
 
     Returns
     -------
@@ -70,38 +119,46 @@ def read_xdmf(
         # grid metadata (stored as root attributes by IncrementalWriter / preproc)
         if "n" in f.attrs and "L" in f.attrs:
             n = tuple(int(v) for v in np.array(f.attrs["n"]))
-            L = tuple(float(v) for v in np.array(f.attrs["L"]))
+            L_out = tuple(float(v) for v in np.array(f.attrs["L"]))
+
+            grp_name = f"increment_{increment:06d}"
+            if grp_name not in f:
+                available = [k for k in f.keys() if k.startswith("increment_")]
+                raise KeyError(
+                    f"Increment {increment} not found in {h5_path}. "
+                    f"Available: {sorted(available)}"
+                )
+            grp = f[grp_name]
+            assert isinstance(grp, h5py.Group)
+
+            for name in grp.keys():
+                ds = grp[name]
+                assert isinstance(ds, h5py.Dataset)
+                arr = np.array(ds)
+                # IncrementalWriter stores spatial dims in ZYX (XDMF
+                # CoRectMesh convention) -- transpose back to XYZ.
+                if arr.ndim == 3:                    # scalar (nz, ny, nx)
+                    arr = arr.transpose(2, 1, 0)
+                elif arr.ndim == 4:                  # vector/tensor (nz, ny, nx, k)
+                    arr = arr.transpose(2, 1, 0, 3)
+                fields[name] = arr
         else:
-            raise KeyError(
-                f"HDF5 file {h5_path} has no 'n'/'L' root attributes. "
-                "Was it written by IncrementalWriter with h5.attrs set?"
-            )
+            # Bare .h5: no IncrementalWriter attrs/structure, so no ZYX
+            # storage convention to undo either -- each top-level dataset is
+            # taken at face value (same as read_npy), physical length
+            # supplied by the caller since the file can't carry it itself.
+            dataset_names = [name for name in f.keys() if isinstance(f[name], h5py.Dataset)]
+            if not dataset_names:
+                raise KeyError(
+                    f"HDF5 file {h5_path} has no 'n'/'L' root attributes and no "
+                    "top-level datasets either -- nothing to read."
+                )
+            for name in dataset_names:
+                fields[name] = np.array(f[name])
+            n = tuple(int(v) for v in fields[dataset_names[0]].shape[:3])
+            L_out = _resolve_grid_length(n, L, dx)
 
-        grp_name = f"increment_{increment:06d}"
-        if grp_name not in f:
-            available = [k for k in f.keys() if k.startswith("increment_")]
-            raise KeyError(
-                f"Increment {increment} not found in {h5_path}. "
-                f"Available: {sorted(available)}"
-            )
-        grp = f[grp_name]
-        assert isinstance(grp, h5py.Group)
-
-        nx, ny, nz = n
-        for name in grp.keys():
-            ds = grp[name]
-            assert isinstance(ds, h5py.Dataset)
-            arr = np.array(ds)
-
-            # HDF5 stores spatial dims in ZYX; transpose back to XYZ
-            if arr.ndim == 3:                    # scalar (nz, ny, nx)
-                arr = arr.transpose(2, 1, 0)
-            elif arr.ndim == 4:                  # vector/tensor (nz, ny, nx, k)
-                arr = arr.transpose(2, 1, 0, 3)
-
-            fields[name] = arr
-
-    return n, L, fields   # type: ignore[return-value]
+    return n, L_out, fields   # type: ignore[return-value]
 
 
 # ── VTU ──────────────────────────────────────────────────────────────────────
@@ -219,6 +276,95 @@ def read_vtu(
     return _read_texgen_vtu(path)
 
 
+# ── VTI ──────────────────────────────────────────────────────────────────────
+
+def _read_vti(
+    path: str | Path,
+) -> tuple[tuple[int, int, int], tuple[float, float, float], dict[str, np.ndarray]]:
+    """
+    Parse a vtkImageData (.vti) file -- a regular/uniform grid, unlike the
+    unstructured hex mesh read_vtu handles, so its own physical length is
+    read straight off the file's Spacing/WholeExtent, no centroid-spacing
+    derivation needed.
+
+    Only inline ascii DataArrays are supported (no binary-appended/base64
+    payloads -- not needed for this project's own writers, and would need a
+    separate decode path if a file ever shows up using it).
+
+    CellData is preferred over PointData (one value per voxel, matching this
+    project's phase/field convention); PointData is used only as a fallback,
+    in which case n is the point-grid shape (one larger per dimension than
+    the corresponding cell grid).
+    """
+    tree  = ET.parse(str(path))
+    image = tree.getroot().find('ImageData')
+    assert image is not None, f"No <ImageData> found in {path}"
+    piece = image.find('Piece')
+    assert piece is not None, f"No <ImageData/Piece> found in {path}"
+
+    x0, x1, y0, y1, z0, z1 = (int(v) for v in image.attrib['WholeExtent'].split())
+    spacing = tuple(float(v) for v in image.attrib['Spacing'].split())
+
+    cell_data  = piece.find('CellData')
+    point_data = piece.find('PointData')
+    if cell_data is not None and len(cell_data):
+        n = (x1 - x0, y1 - y0, z1 - z0)
+        data_node = cell_data
+    elif point_data is not None and len(point_data):
+        n = (x1 - x0 + 1, y1 - y0 + 1, z1 - z0 + 1)
+        data_node = point_data
+    else:
+        raise KeyError(f"No <CellData> or <PointData> arrays found in {path}")
+
+    nx, ny, nz = n
+    L = tuple(ni * di for ni, di in zip(n, spacing))
+
+    fields: dict[str, np.ndarray] = {}
+    for da in data_node.findall('DataArray'):
+        name = da.attrib.get('Name', 'field')
+        fmt  = da.attrib.get('format', 'ascii')
+        if fmt != 'ascii':
+            raise NotImplementedError(
+                f"VTI DataArray '{name}' in {path} uses format={fmt!r} -- only "
+                "inline ascii is supported (binary-appended/base64 VTI is not)."
+            )
+        ncomp = int(da.attrib.get('NumberOfComponents', 1))
+        raw   = np.fromstring(da.text or "", sep=' ')
+
+        # VTK ImageData orders points/cells with X fastest, then Y, then Z --
+        # same flat layout as HDF5's ZYX storage in read_xdmf, so the same
+        # reshape-then-transpose-back-to-XYZ recipe applies.
+        if ncomp == 1:
+            arr = raw.reshape(nz, ny, nx).transpose(2, 1, 0)
+        else:
+            arr = raw.reshape(nz, ny, nx, ncomp).transpose(2, 1, 0, 3)
+        fields[name] = arr
+
+    return n, L, fields
+
+
+def read_vti(
+    path: str | Path,
+) -> tuple[tuple[int, int, int], tuple[float, float, float], dict[str, np.ndarray]]:
+    """
+    Read a vtkImageData (.vti) field file.
+
+    Self-describing like read_xdmf/read_vtu -- L comes straight from the
+    file's Spacing/WholeExtent, no separate argument needed.
+
+    Parameters
+    ----------
+    path : .vti file path
+
+    Returns
+    -------
+    n      : (nx, ny, nz)
+    L      : (Lx, Ly, Lz)  mm
+    fields : dict[name → numpy array in XYZ order]
+    """
+    return _read_vti(path)
+
+
 # ── NPZ ──────────────────────────────────────────────────────────────────────
 
 def read_npz(path: str | Path) -> dict[str, np.ndarray]:
@@ -243,19 +389,60 @@ def read_npz(path: str | Path) -> dict[str, np.ndarray]:
     return dict(np.load(path))
 
 
+# ── NPY ──────────────────────────────────────────────────────────────────────
+
+def read_npy(
+    path: str | Path,
+    L: tuple[float, ...] | None = None,
+    dx: tuple[float, ...] | None = None,
+) -> tuple[tuple[int, ...], tuple[float, ...], np.ndarray]:
+    """
+    Load a bare numpy .npy phase array.
+
+    Unlike every other reader here, a .npy file carries no physical-length
+    metadata at all -- just give exactly one of L (domain size) or dx
+    (voxel size); the other is derived (L = n * dx). n itself still comes
+    for free from the array's own shape.
+
+    Parameters
+    ----------
+    path : .npy file path
+    L    : (Lx, Ly, [Lz])  mm -- physical domain size
+    dx   : (dx, dy, [dz])  mm -- voxel size
+
+    Returns
+    -------
+    n     : array.shape
+    L     : physical domain size, resolved from L or dx
+    array : the loaded array, unmodified (FFTjax C-order XYZ already assumed,
+            same as any other plain numpy array in this codebase)
+    """
+    array = np.load(path)
+    n = tuple(int(v) for v in array.shape)
+    L_out = _resolve_grid_length(n, L, dx)
+    return n, L_out, array
+
+
 # ── Unified simulation input loader ──────────────────────────────────────────
 
 class SimulationReader:
     """
     Load geometry + optional pre-crack state from any supported format.
 
-    Dispatches by file suffix — ``.vtu`` → read_vtu, ``.h5``/``.xdmf`` →
-    read_xdmf, ``.npz`` → read_npz — then normalizes each format's fields
-    into one common set of arrays.
+    Dispatches by file suffix — ``.vtu``/``.vti`` → read_vtu/read_vti,
+    ``.h5``/``.xdmf`` → read_xdmf, ``.npz`` → read_npz, ``.npy`` → read_npy —
+    then normalizes each format's fields into one common set of arrays.
+
+    ``.vtu``/``.vti``/``.npz`` are self-describing (carry their own grid
+    length); ``.xdmf``/``.h5`` normally are too (IncrementalWriter output),
+    but a bare/metadata-less ``.h5`` falls back to ``L``/``dx`` like ``.npy``
+    does unconditionally — see ``L``, ``dx`` below.
 
     >>> n, L, phase, orientations, yarn_index, vf, d_init, H_init = (
     ...     SimulationReader(path).read()
     ... )
+    >>> # a bare phase array -- no embedded length, must be given
+    >>> SimulationReader("geom.npy", dx=(0.001, 0.001, 0.001)).read()
 
     Returns (from ``.read()``)
     ---------------------------
@@ -271,20 +458,41 @@ class SimulationReader:
 
     _DISPATCH = {
         ".vtu":  "_from_vtu",
+        ".vti":  "_from_vti",
         ".h5":   "_from_xdmf",
         ".xdmf": "_from_xdmf",
         ".npz":  "_from_npz",
+        ".npy":  "_from_npy",
     }
 
-    def __init__(self, path: str | Path):
+    # formats that always carry their own grid length -- an L/dx override
+    # would silently contradict the file, so warn instead of using it.
+    _ALWAYS_SELF_DESCRIBING = {".vtu", ".vti", ".npz"}
+
+    def __init__(
+        self,
+        path: str | Path,
+        L: tuple[float, ...] | None = None,
+        dx: tuple[float, ...] | None = None,
+    ):
         self.path = Path(path)
         suffix = self.path.suffix.lower()
         if suffix not in self._DISPATCH:
             raise ValueError(
                 f"Unsupported file format '{suffix}'. "
-                "Use .vtu, .h5, .xdmf, or .npz."
+                "Use .vtu, .vti, .h5, .xdmf, .npz, or .npy."
             )
         self._method_name = self._DISPATCH[suffix]
+
+        if (L is not None or dx is not None) and suffix in self._ALWAYS_SELF_DESCRIBING:
+            warnings.warn(
+                f"L/dx given for a {suffix} file, which is always self-describing -- "
+                "ignoring the override and using the file's own grid length.",
+                stacklevel=2,
+            )
+            L = dx = None
+        self.L = L
+        self.dx = dx
 
     def read(self):
         return getattr(self, self._method_name)()
@@ -307,7 +515,7 @@ class SimulationReader:
         return n, L, phase, orientations, yarn_index, vf, np.zeros(Nv), np.zeros(Nv)
 
     def _from_xdmf(self):
-        n, L, fields = read_xdmf(self.path)
+        n, L, fields = read_xdmf(self.path, L=self.L, dx=self.dx)
         Nv    = int(np.prod(n))
         phase = fields.get("phase", np.zeros(Nv)).ravel().astype(int)
         ori_def, yi_def, vf_def, d_def, H_def = self._defaults(n, phase)
@@ -319,6 +527,29 @@ class SimulationReader:
         _vf = fields.get("volume_fraction")
         vf           = _vf.ravel() if _vf is not None else vf_def
         return n, L, phase, orientations, yarn_index, vf, d_def, H_def
+
+    def _from_vti(self):
+        n, L, fields = read_vti(self.path)
+        Nv    = int(np.prod(n))
+        phase = fields.get("phase", np.zeros(Nv)).ravel().astype(int)
+        ori_def, yi_def, vf_def, d_def, H_def = self._defaults(n, phase)
+        _ori = fields.get("orientation")
+        orientations = (_ori.reshape(-1, 3).T if _ori is not None
+                        else ori_def)
+        _yi = fields.get("yarn_index")
+        yarn_index   = _yi.ravel().astype(int) if _yi is not None else yi_def
+        _vf = fields.get("volume_fraction")
+        vf           = _vf.ravel() if _vf is not None else vf_def
+        return n, L, phase, orientations, yarn_index, vf, d_def, H_def
+
+    def _from_npy(self):
+        n_raw, L_raw, array = read_npy(self.path, L=self.L, dx=self.dx)
+        # promote 2-D grids to 3-D (nz = 1), same convention as _from_npz
+        n = n_raw if len(n_raw) == 3 else (*n_raw, 1)
+        L = L_raw if len(L_raw) == 3 else (*L_raw, min(L_raw) / n_raw[0])
+        phase = array.ravel().astype(int)
+        ori_def, yi_def, vf_def, d_def, H_def = self._defaults(n, phase)
+        return n, L, phase, ori_def, yi_def, vf_def, d_def, H_def
 
     def _from_npz(self):
         data  = read_npz(self.path)

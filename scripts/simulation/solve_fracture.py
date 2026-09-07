@@ -83,9 +83,17 @@ def main():
     print(f"Config : {args.config}")
 
     # ── load microstructure (+ any prior damage state) ───────────────────────
+    # input_L/input_dx are only needed for a metadata-less input (.npy, or a
+    # bare .h5 with no n/L attrs) -- every other format (.xdmf/.vtu/.vti/.npz)
+    # carries its own grid length and ignores these (with a warning if given
+    # anyway). See utils.io.reader.SimulationReader.
     src = fcfg["input"]
+    input_L  = tuple(fcfg["input_L"])  if fcfg.get("input_L")  else None
+    input_dx = tuple(fcfg["input_dx"]) if fcfg.get("input_dx") else None
     print(f"Input  : {src}")
-    n, L, phase_np, orientations_np, _, vf_np, d_init_np, H_init_np = SimulationReader(src).read()
+    n, L, phase_np, orientations_np, _, vf_np, d_init_np, H_init_np = SimulationReader(
+        src, L=input_L, dx=input_dx,
+    ).read()
     phase = jnp.array(phase_np)
     d_init = jnp.array(d_init_np)
     H_init = jnp.array(H_init_np)
