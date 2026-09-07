@@ -14,10 +14,16 @@ raises MemoryError/XLA RESOURCE_EXHAUSTED, the parent sees a non-zero/negative
 return code, stops the sweep there, and still writes out every size that
 completed before it -- one grid size running out of memory doesn't lose the
 results already collected.
+
+Usage
+-----
+    python benchmark/benchmark_set_freq_sweep.py
+    python benchmark/benchmark_set_freq_sweep.py --grid-sizes 16 32 64 --repeats 10 --out /tmp/out.json
 """
 import sys
 sys.path.insert(0, "src")
 
+import argparse
 import json
 import os
 import subprocess
@@ -32,6 +38,7 @@ from operators.green import build_freq_grid
 
 GRID_SIZES = [8, 16, 24, 32, 48, 64, 96, 128, 160, 192, 224, 256, 320, 384, 448, 512]
 L = (1.0, 1.0, 1.0)
+REPEATS = 30
 OUT_PATH = "docs/static/data/benchmark_set_freq.json"
 OOM_EXIT_CODE = 137  # conventional 128 + SIGKILL(9), also used when we catch the error ourselves
 
@@ -58,12 +65,12 @@ def time_ms(fn, repeats=30, sync=None):
     return (t1 - t0) * 1000.0 / repeats, out
 
 
-def bench(n, L, repeats_np=30, repeats_jax=30):
-    np_ms, out_np = time_ms(lambda: set_freq_np(n, L), repeats=repeats_np)
+def bench(n, L, repeats=30):
+    np_ms, out_np = time_ms(lambda: set_freq_np(n, L), repeats=repeats)
 
     jax_ms, _ = time_ms(
         lambda: build_freq_grid(n, L),
-        repeats=repeats_jax,
+        repeats=repeats,
         sync=lambda x: x.block_until_ready(),
     )
 
@@ -76,7 +83,7 @@ def bench(n, L, repeats_np=30, repeats_jax=30):
     # run
     jax_jit_ms, out_jit = time_ms(
         lambda: build_freq_grid_jit(n, L),
-        repeats=repeats_jax,
+        repeats=repeats,
         sync=lambda x: x.block_until_ready(),
     )
 
@@ -106,10 +113,11 @@ def _run_single(n: int) -> None:
     Worker mode (``--single N``): run ``bench`` for exactly one grid size and
     print the result as one JSON line on stdout. Run in its own subprocess by
     ``main`` so a crash/OOM here only ends this one grid size, not the whole
-    sweep.
+    sweep. Reads module globals directly (L/REPEATS) -- __main__ has already
+    applied any CLI overrides to them in this same (sub)process.
     """
     try:
-        r = bench(n=(n, n, n), L=L)
+        r = bench(n=(n, n, n), L=L, repeats=REPEATS)
     except Exception as exc:
         if _is_oom_error(exc):
             print(f"n={n}: out of memory ({exc})", file=sys.stderr)
@@ -120,11 +128,13 @@ def _run_single(n: int) -> None:
     print(json.dumps(r))
 
 
-def main() -> None:
+def main(forward_args: list[str]) -> None:
+    """``forward_args``: the CLI flags (minus --single) to re-pass to each
+    worker subprocess, so it sees the same overrides this process resolved."""
     results = []
     for n in GRID_SIZES:
         proc = subprocess.run(
-            [sys.executable, __file__, "--single", str(n)],
+            [sys.executable, __file__, "--single", str(n), *forward_args],
             capture_output=True, text=True,
         )
         if proc.returncode != 0:
@@ -165,7 +175,19 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) == 3 and sys.argv[1] == "--single":
-        _run_single(int(sys.argv[2]))
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--grid-sizes", type=int, nargs="+", default=GRID_SIZES)
+    parser.add_argument("--repeats", type=int, default=REPEATS)
+    parser.add_argument("--out", default=OUT_PATH)
+    parser.add_argument("--single", type=int, default=None, metavar="N",
+                         help="internal: run one grid size in a worker subprocess")
+    args = parser.parse_args()
+
+    GRID_SIZES = args.grid_sizes
+    REPEATS    = args.repeats
+    OUT_PATH   = args.out
+
+    if args.single is not None:
+        _run_single(args.single)
     else:
-        main()
+        main(["--repeats", str(REPEATS), "--out", OUT_PATH])

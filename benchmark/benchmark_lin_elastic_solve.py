@@ -22,10 +22,20 @@ subprocess (SIGKILL, uncatchable in-process) or it raises MemoryError/XLA
 RESOURCE_EXHAUSTED, the parent sees a non-zero/negative return code, stops the
 sweep there, and still writes out every size that completed before it -- one
 grid size running out of memory doesn't lose the results already collected.
+
+Usage
+-----
+    python benchmark/benchmark_lin_elastic_solve.py
+    python benchmark/benchmark_lin_elastic_solve.py --grid-sizes 16 32 64 --maxiter 500 --out /tmp/out.json
+
+Materials (matrix/fiber) and the macroscopic eps_bar aren't exposed as CLI
+flags -- edit the MATRIX/FIBER/EPS_BAR constants below directly if a
+different pairing or load case is needed; not natural fits for a flat flag.
 """
 import sys
 sys.path.insert(0, "src")
 
+import argparse
 import json
 import os
 import subprocess
@@ -53,6 +63,7 @@ DX_COARSE = 1.0      # deliberately >> the RVE's side length, so N_min alone
                       # ceil(...) to 1, leaving N_min as the only lever)
 TOLER_LIN = 1e-6
 MAXITER = 2000
+REPEATS = 3
 OUT_PATH = "docs/static/data/benchmark_lin_elastic_solve.json"
 
 MATRIX = LinearElasticIsotropic(E=3.0e3, nu=0.35, name="epoxy matrix")
@@ -72,7 +83,8 @@ SOLVER_FORMULATIONS: list[tuple[str, str, str]] = [
 ]
 
 
-def bench(N, repeats=3):
+def bench(N, repeats=None):
+    repeats = REPEATS if repeats is None else repeats
     phase_np, n, L, phi_act = make_square_composite_rve(
         phi=PHI, r_fiber=R_FIBER, dx=DX_COARSE, N_min=N, nz=N,
     )
@@ -122,7 +134,8 @@ def _run_single(N: int) -> None:
     Worker mode (``--single N``): run ``bench`` for exactly one grid size and
     print the result as one JSON line on stdout. Run in its own subprocess by
     ``main`` so a crash/OOM here only ends this one grid size, not the whole
-    sweep.
+    sweep. Reads module globals directly (PHI/TOLER_LIN/etc.) -- __main__ has
+    already applied any CLI overrides to them in this same (sub)process.
     """
     try:
         r = bench(N)
@@ -134,11 +147,13 @@ def _run_single(N: int) -> None:
     print(json.dumps(r))
 
 
-def main() -> None:
+def main(forward_args: list[str]) -> None:
+    """``forward_args``: the CLI flags (minus --single) to re-pass to each
+    worker subprocess, so it sees the same overrides this process resolved."""
     results = []
     for N in GRID_SIZES:
         proc = subprocess.run(
-            [sys.executable, __file__, "--single", str(N)],
+            [sys.executable, __file__, "--single", str(N), *forward_args],
             capture_output=True, text=True,
         )
         if proc.returncode != 0:
@@ -191,7 +206,33 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) == 3 and sys.argv[1] == "--single":
-        _run_single(int(sys.argv[2]))
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--grid-sizes", type=int, nargs="+", default=GRID_SIZES)
+    parser.add_argument("--phi", type=float, default=PHI)
+    parser.add_argument("--r-fiber", type=float, default=R_FIBER)
+    parser.add_argument("--dx-coarse", type=float, default=DX_COARSE)
+    parser.add_argument("--toler-lin", type=float, default=TOLER_LIN)
+    parser.add_argument("--maxiter", type=int, default=MAXITER)
+    parser.add_argument("--repeats", type=int, default=REPEATS)
+    parser.add_argument("--out", default=OUT_PATH)
+    parser.add_argument("--single", type=int, default=None, metavar="N",
+                         help="internal: run one grid size in a worker subprocess")
+    args = parser.parse_args()
+
+    GRID_SIZES = args.grid_sizes
+    PHI        = args.phi
+    R_FIBER    = args.r_fiber
+    DX_COARSE  = args.dx_coarse
+    TOLER_LIN  = args.toler_lin
+    MAXITER    = args.maxiter
+    REPEATS    = args.repeats
+    OUT_PATH   = args.out
+
+    if args.single is not None:
+        _run_single(args.single)
     else:
-        main()
+        main([
+            "--phi", str(PHI), "--r-fiber", str(R_FIBER), "--dx-coarse", str(DX_COARSE),
+            "--toler-lin", str(TOLER_LIN), "--maxiter", str(MAXITER),
+            "--repeats", str(REPEATS), "--out", OUT_PATH,
+        ])
