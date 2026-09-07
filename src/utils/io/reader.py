@@ -438,6 +438,13 @@ class SimulationReader:
     but a bare/metadata-less ``.h5`` falls back to ``L``/``dx`` like ``.npy``
     does unconditionally — see ``L``, ``dx`` below.
 
+    ``phase_key`` names which field in the file holds the phase array —
+    default ``"phase"``, override when a file stores it under another name
+    (e.g. a YAML run config's ``phase_key: material_id``). Only meaningful
+    for ``.xdmf``/``.h5``/``.vti``/``.npz`` (named-field formats); ``.vtu``
+    derives phase structurally from ``YarnIndex`` and ``.npy`` is a bare
+    array, so neither has a field name to look up.
+
     >>> n, L, phase, orientations, yarn_index, vf, d_init, H_init = (
     ...     SimulationReader(path).read()
     ... )
@@ -474,6 +481,7 @@ class SimulationReader:
         path: str | Path,
         L: tuple[float, ...] | None = None,
         dx: tuple[float, ...] | None = None,
+        phase_key: str = "phase",
     ):
         self.path = Path(path)
         suffix = self.path.suffix.lower()
@@ -493,6 +501,7 @@ class SimulationReader:
             L = dx = None
         self.L = L
         self.dx = dx
+        self.phase_key = phase_key
 
     def read(self):
         return getattr(self, self._method_name)()
@@ -517,7 +526,7 @@ class SimulationReader:
     def _from_xdmf(self):
         n, L, fields = read_xdmf(self.path, L=self.L, dx=self.dx)
         Nv    = int(np.prod(n))
-        phase = fields.get("phase", np.zeros(Nv)).ravel().astype(int)
+        phase = fields.get(self.phase_key, np.zeros(Nv)).ravel().astype(int)
         ori_def, yi_def, vf_def, d_def, H_def = self._defaults(n, phase)
         _ori = fields.get("orientation")
         orientations = (_ori.reshape(-1, 3).T if _ori is not None
@@ -531,7 +540,7 @@ class SimulationReader:
     def _from_vti(self):
         n, L, fields = read_vti(self.path)
         Nv    = int(np.prod(n))
-        phase = fields.get("phase", np.zeros(Nv)).ravel().astype(int)
+        phase = fields.get(self.phase_key, np.zeros(Nv)).ravel().astype(int)
         ori_def, yi_def, vf_def, d_def, H_def = self._defaults(n, phase)
         _ori = fields.get("orientation")
         orientations = (_ori.reshape(-1, 3).T if _ori is not None
@@ -558,7 +567,7 @@ class SimulationReader:
         # promote 2-D grids to 3-D (nz = 1)
         n = n_raw if len(n_raw) == 3 else (*n_raw, 1)
         L = L_raw if len(L_raw) == 3 else (*L_raw, min(L_raw) / n_raw[0])
-        phase = data["phase"].ravel().astype(int)
+        phase = data[self.phase_key].ravel().astype(int)
         ori_def, yi_def, vf_def, d_def, H_def = self._defaults(n, phase)
         # accept both "orientations" (3, Nv) and "orientation" (*spatial, 3)
         _ori = data.get("orientations") or data.get("orientation")

@@ -83,9 +83,10 @@ def main():
     src = mcfg["input"]
     input_L  = tuple(mcfg["input_L"])  if mcfg.get("input_L")  else None
     input_dx = tuple(mcfg["input_dx"]) if mcfg.get("input_dx") else None
+    phase_key = mcfg.get("phase_key", "phase")
     print(f"Input  : {src}")
     n, L, phase_np, orientations_np, _, vf_np, _, _ = SimulationReader(
-        src, L=input_L, dx=input_dx,
+        src, L=input_L, dx=input_dx, phase_key=phase_key,
     ).read()
     phase = jnp.array(phase_np)
     print(f"Grid   : {n}   phi = {float(np.mean(phase_np > 0)):.3f}")

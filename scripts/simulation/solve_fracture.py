@@ -91,9 +91,10 @@ def main():
     src = fcfg["input"]
     input_L  = tuple(fcfg["input_L"])  if fcfg.get("input_L")  else None
     input_dx = tuple(fcfg["input_dx"]) if fcfg.get("input_dx") else None
+    phase_key = fcfg.get("phase_key", "phase")
     print(f"Input  : {src}")
     n, L, phase_np, orientations_np, _, vf_np, d_init_np, H_init_np = SimulationReader(
-        src, L=input_L, dx=input_dx,
+        src, L=input_L, dx=input_dx, phase_key=phase_key,
     ).read()
     phase = jnp.array(phase_np)
     d_init = jnp.array(d_init_np)

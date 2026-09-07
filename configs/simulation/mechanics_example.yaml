@@ -11,9 +11,13 @@ mechanics:
   input: output/generation/rve_random_phi-0.35_seed-67.xdmf
   # input_L/input_dx (mm) -- only needed if `input` is .npy or a bare .h5
   # with no n/L attrs, since those formats carry no physical length of their
-  # own (.xdmf/.vtu/.vti/.npz are all self-describing and ignore this).
+  # own (.xdmf/.vtu/.vti are all self-describing and ignore this).
   # Give exactly one; the other is derived (L = n * dx).
   # input_dx: [0.001, 0.001, 0.001]
+  # phase_key -- field name to read as the phase array from `input`, for the
+  # named-field formats (.xdmf/.h5/.vti/.npz -- .vtu/.npy don't use a key).
+  # Default "phase"; override if the file stores it under another name.
+  # phase_key: phase
 
   # indexed by 0-based phase id (0=matrix, 1=fibre). `model` selects the
   # materialmodels.factory class; remaining keys are forwarded to its
