@@ -56,6 +56,12 @@ cd FFTjax
 pip install -e ".[cuda]"
 ```
 
+:::caution[Linux only]
+JAX's CUDA GPU support is Linux-only — on Windows it works **only under WSL2**, not natively. See
+[JAX's installation guide](https://docs.jax.dev/en/latest/installation.html) for the up-to-date
+platform support matrix. On native Windows, use the CPU install instead.
+:::
+
   </TabItem>
   <TabItem value="tpu" label={<TabIcon><GoogleIcon /> Google TPU</TabIcon>}>
 
@@ -124,35 +130,31 @@ Check the package installed:
 python -c "from importlib.metadata import version; print(version('fftjax'))"
 ```
 
-Then run a full smoke test — builds a frequency grid, assembles an elastic stiffness field, and runs
-one Newton-CG strain solve, so a pass means JAX, the accelerator-aware precision configuration, and
-the FFT solver machinery are all actually working, not just importable. No manual precision setup
-needed — importing `operators.green` already configures it:
+Then run one of the project's own tests as a smoke test — ``test/test_problems_mechanics.py``
+assembles an elastic stiffness field for a real glass-fiber/epoxy composite RVE and solves the
+mechanical equilibrium problem through three code paths (Lippmann-Schwinger rotated/standard
+schemes, and the displacement-based formulation), checking each against a known reference value. A
+pass means JAX, the accelerator-aware precision configuration, and the full
+operators/materialmodels/solvers/problems stack are all actually working, not just importable. No
+manual precision setup needed — importing any FFTjax module already configures it:
 
 ```bash
-python - <<'PY'
-import jax
-from operators.green import build_freq_grid, build_green_operator
-from mat_models.elastic import LinearElasticIsotropic, assemble_C_field
-from solvers.mechanical.strain_nw_cg import solve_elastic
-import jax.numpy as jnp
+python test/test_problems_mechanics.py
+```
 
-n, L = (8, 8, 8), (1.0, 1.0, 1.0)
-mat = LinearElasticIsotropic(E=210e3, nu=0.3)
-C_field = assemble_C_field([mat], jnp.zeros(8**3, dtype=int))
-xi = build_freq_grid(n, L)
-G = build_green_operator(xi, mat.lam, mat.mu)
-eps_bar = jnp.array([[1e-3, 0, 0], [0, 0, 0], [0, 0, 0]])
-eps, sigma, delta, it, conv = solve_elastic(n, C_field, G, eps_bar)
+Expected output:
 
-expected_dtype = jnp.float32 if jax.default_backend() == "tpu" else jnp.float64
-actual_dtype = jnp.zeros(1).dtype
-assert actual_dtype == expected_dtype, f"expected {expected_dtype}, got {actual_dtype}"
-assert bool(conv), "solver did not converge"
-print("backend:", jax.default_backend(), "| devices:", jax.devices())
-print("dtype:", actual_dtype, "| solve converged in", int(it), "iterations")
-print("FFTjax install OK")
-PY
+```
+[1] rotated scheme: tau_xy = 7.625369 MPa, converged=True
+[2] standard scheme: tau_xy = 7.604799 MPa, converged=True
+[3] displacement formulation: tau_xy = 7.604801 MPa, converged=True, rel. diff from LS = 0.27%
+test_problems_mechanics: all checks passed
+```
+
+To confirm JAX itself sees the expected backend/precision on a GPU or TPU install:
+
+```bash
+python -c "import utils.precision, jax, jax.numpy as jnp; print(jax.default_backend(), jax.devices(), jnp.zeros(1).dtype)"
 ```
 
 :::tip[GPU/TPU install]
