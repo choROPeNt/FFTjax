@@ -13,12 +13,22 @@ trivially in one step.
 
 Writes results to docs/static/data/benchmark_lin_elastic_solve.json for the
 interactive Benchmark page (docs/docs/documentation/benchmark.mdx).
+
+Grid sizes go up to 512 -- an isotropic N^3 grid (N_min=N, nz=N), so N=512 is
+134M voxels; C_field alone is (3,3,3,3,Nv) float64, ~87GB at that size, well
+beyond most machines, on top of whatever the CG solve itself needs. Each size
+therefore runs in its own subprocess (--single below): if the OS OOM-kills a
+subprocess (SIGKILL, uncatchable in-process) or it raises MemoryError/XLA
+RESOURCE_EXHAUSTED, the parent sees a non-zero/negative return code, stops the
+sweep there, and still writes out every size that completed before it -- one
+grid size running out of memory doesn't lose the results already collected.
 """
 import sys
 sys.path.insert(0, "src")
 
 import json
 import os
+import subprocess
 import time
 import datetime
 from typing import cast
@@ -33,7 +43,8 @@ from materialmodels.elastic.isotropic import LinearElasticIsotropic
 from problems.mechanics import solve_mechanics
 from solvers.solution import ElasticitySolution
 
-GRID_SIZES = [16, 24, 32, 48, 64, 96]
+GRID_SIZES = [16, 24, 32, 48, 64, 96, 128, 160, 192, 224, 256, 320, 384, 448, 512]
+OOM_EXIT_CODE = 137  # conventional 128 + SIGKILL(9), also used when we catch the error ourselves
 PHI = 0.5           # target fibre volume fraction
 R_FIBER = 0.005      # fibre radius [mm]
 DX_COARSE = 1.0      # deliberately >> the RVE's side length, so N_min alone
@@ -99,14 +110,59 @@ def bench(N, repeats=3):
     return out
 
 
-if __name__ == "__main__":
+def _is_oom_error(exc: BaseException) -> bool:
+    if isinstance(exc, MemoryError):
+        return True
+    msg = str(exc).upper()
+    return "RESOURCE_EXHAUSTED" in msg or "OUT OF MEMORY" in msg
+
+
+def _run_single(N: int) -> None:
+    """
+    Worker mode (``--single N``): run ``bench`` for exactly one grid size and
+    print the result as one JSON line on stdout. Run in its own subprocess by
+    ``main`` so a crash/OOM here only ends this one grid size, not the whole
+    sweep.
+    """
+    try:
+        r = bench(N)
+    except Exception as exc:
+        if _is_oom_error(exc):
+            print(f"N={N}: out of memory ({exc})", file=sys.stderr)
+            sys.exit(OOM_EXIT_CODE)
+        raise
+    print(json.dumps(r))
+
+
+def main() -> None:
     results = []
     for N in GRID_SIZES:
-        r = bench(N)
+        proc = subprocess.run(
+            [sys.executable, __file__, "--single", str(N)],
+            capture_output=True, text=True,
+        )
+        if proc.returncode != 0:
+            if proc.returncode < 0:
+                reason = f"killed by signal {-proc.returncode} (likely OS OOM-kill)"
+            elif proc.returncode == OOM_EXIT_CODE:
+                reason = "out of memory"
+            else:
+                reason = f"exited with code {proc.returncode}"
+            print(f"\nn={N:>4}: {reason} -- stopping sweep, keeping "
+                  f"{len(results)} completed size(s)")
+            if proc.stderr.strip():
+                print(proc.stderr.strip().splitlines()[-1])
+            break
+
+        r = json.loads(proc.stdout)
         results.append(r)
         print(f"n={N:>4}  Vf={r['volume_fraction']:.3f}  "
               f"ls: converged={r['ls_converged']}  compile={r['ls_compile_ms']:8.1f}ms  run={r['ls_run_ms']:8.1f}ms  |  "
               f"disp: converged={r['disp_converged']}  compile={r['disp_compile_ms']:8.1f}ms  run={r['disp_run_ms']:8.1f}ms")
+
+    if not results:
+        print("No grid size completed -- nothing written.")
+        return
 
     payload = {
         "generated": datetime.date.today().isoformat(),
@@ -132,3 +188,10 @@ if __name__ == "__main__":
     with open(OUT_PATH, "w") as f:
         json.dump(payload, f, indent=2)
     print(f"\nWrote {len(results)} results to {OUT_PATH}")
+
+
+if __name__ == "__main__":
+    if len(sys.argv) == 3 and sys.argv[1] == "--single":
+        _run_single(int(sys.argv[2]))
+    else:
+        main()
