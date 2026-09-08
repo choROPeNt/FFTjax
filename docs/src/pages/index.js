@@ -49,20 +49,20 @@ function HomepageHeader() {
   );
 }
 
-function WorkflowDiagram() {
-  return (
-    <div className={styles.workflowImage}>
-      <ThemedImage
-        alt="FFTjax workflow"
-        sources={{
-          light: useBaseUrl('/img/fftjax_workflow_light.svg'),
-          dark: useBaseUrl('/img/fftjax_workflow_dark.svg'),
-        }}
-        width="500"
-      />
-    </div>
-  );
-}
+// function WorkflowDiagram() {
+//   return (
+//     <div className={styles.workflowImage}>
+//       <ThemedImage
+//         alt="FFTjax workflow"
+//         sources={{
+//           light: useBaseUrl('/img/fftjax_workflow_light.svg'),
+//           dark: useBaseUrl('/img/fftjax_workflow_dark.svg'),
+//         }}
+//         width="500"
+//       />
+//     </div>
+//   );
+// }
 
 export default function Home() {
   const {siteConfig} = useDocusaurusContext();
@@ -72,7 +72,7 @@ export default function Home() {
       description={siteConfig.tagline}>
       <HomepageHeader />
       <main>
-        <WorkflowDiagram />
+        {/* <WorkflowDiagram /> */}
         <CardGrid cards={CARDS} />
       </main>
     </Layout>
