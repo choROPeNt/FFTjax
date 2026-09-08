@@ -8,7 +8,7 @@ import CardGrid from '@site/src/components/CardGrid';
 
 Worked examples demonstrating FFTjax in practice.
 
-## Mechanical Solvers
+## Mechanical
 
 <CardGrid
   cards={[
@@ -17,6 +17,12 @@ Worked examples demonstrating FFTjax in practice.
       description: 'A two-phase glass-fibre/epoxy composite RVE under a prescribed macroscopic shear strain, where the ~23x stiffness contrast makes the Newton-CG solve actually iterate, redistributing stress between the stiff fibre and compliant matrix.',
       to: '/documentation/examples/lin-elastic-strain',
       image: '/img/lin_elastic_shear_strain.png',
+    },
+    {
+      title: 'Batched RVE Solves (jax.vmap)',
+      description: 'The same two-phase composite RVE and elastic solver, but solving three macroscopic load cases (shear, uniaxial x, uniaxial y) in one call via jax.vmap instead of a Python loop -- one XLA compilation for the whole batch.',
+      to: '/documentation/examples/lin-elastic-strain-vmap',
+      image: '/img/lin_elastic_strain_vmap.png',
     },
     {
       title: 'Linear-Elastic Solve (mixed boundary conditions)',
@@ -33,7 +39,7 @@ Worked examples demonstrating FFTjax in practice.
   ]}
 />
 
-## Damage \& Fracture Solvers
+## Damage \& Fracture 
 
 <CardGrid
   cards={[
@@ -69,7 +75,7 @@ Worked examples demonstrating FFTjax in practice.
   ]}
 /> */}
 
-## Diffusion  Thermal Solvers
+## Diffusion  Thermal 
 
 {/* <CardGrid
   cards={[

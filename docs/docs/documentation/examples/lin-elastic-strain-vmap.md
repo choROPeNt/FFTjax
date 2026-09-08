@@ -1,0 +1,126 @@
+# Batched RVE Solves via `jax.vmap`
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/choROPeNt/FFTjax/blob/main/notebooks/lin-elastic_strain_vmap.ipynb)
+
+A companion to [Linear-Elastic Solve](./lin-elastic-strain.md): the same two-phase composite RVE
+and elastic solver (`problems.mechanics.solve_mechanics`), but solving **multiple macroscopic
+load cases in one call** via `jax.vmap` instead of a Python loop.
+
+`solve_mechanics` was written as an ordinary single-example function — it has no batch dimension
+anywhere in its implementation. `jax.vmap` adds one automatically: it traces the function once,
+inserts JAX's batching rules for every primitive op inside it (FFT, `einsum`, the CG solve's
+`lax.while_loop`, ...), and returns a new function that accepts a stacked batch of `eps_bar` and
+returns the same result structure `solve_mechanics` always returns, with every array leaf inside
+it carrying the extra batch axis. No changes to `solve_mechanics` itself.
+
+Only `eps_bar` is batched here; `n`, `L`, `phase`, `materials` are shared across the whole batch
+(same RVE, same materials, different loading).
+
+```python
+import jax
+import jax.numpy as jnp
+import numpy as np
+
+from generation.rve import make_square_composite_rve
+from materialmodels.elastic.isotropic import LinearElasticIsotropic
+from problems.mechanics import solve_mechanics
+from post.fields import field_to_grid, von_mises
+
+# Composite RVE: same square-packed geometry as the Linear-Elastic example.
+phase_np, n, L, phi_act = make_square_composite_rve(
+    phi=0.5, r_fiber=0.005, dx=0.0002, N_min=32, nz=1,
+)
+matrix = LinearElasticIsotropic(E=3.0e3, nu=0.35, name="epoxy matrix")
+fiber = LinearElasticIsotropic(E=70.0e3, nu=0.20, name="glass fiber")
+materials = [matrix, fiber]
+phase = jnp.array(phase_np.reshape(-1))
+
+# Three canonical load cases, stacked along a new leading axis -- the only
+# "batching" needed. jax.vmap handles the rest.
+eps_shear   = jnp.array([[0.0, 1.0e-3, 0.0], [1.0e-3, 0.0, 0.0], [0.0, 0.0, 0.0]])
+eps_uniax_x = jnp.array([[1.0e-3, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
+eps_uniax_y = jnp.array([[0.0, 0.0, 0.0], [0.0, 1.0e-3, 0.0], [0.0, 0.0, 0.0]])
+eps_bar_batch = jnp.stack([eps_shear, eps_uniax_x, eps_uniax_y])
+load_case_labels = ["xy shear", "uniaxial x", "uniaxial y"]
+
+# solve_mechanics takes several non-batched arguments (n, L, phase, materials)
+# ahead of eps_bar; wrapping it in a one-argument closure keeps jax.vmap's
+# default in_axes=0 instead of spelling out an in_axes tuple by position.
+# jax.jit(jax.vmap(...)) additionally compiles the whole batch as one XLA
+# program -- one traced function, one compilation regardless of batch size --
+# and the same composition works with jax.grad too, since nothing here is
+# vmap- or batch-specific code.
+def solve_one(eps_bar):
+    return solve_mechanics(
+        n, L, phase, materials, eps_bar,
+        scheme="rotated", toler_lin=1e-6, maxiter=1000,
+    )
+
+solve_batch = jax.jit(jax.vmap(solve_one))
+
+sol_batch = solve_batch(eps_bar_batch)[0].solution
+eps_batch, sigma_batch, converged_batch = sol_batch.eps, sol_batch.sigma, sol_batch.converged
+
+# Sanity check -- jax.vmap doesn't change *what* gets computed, only how it's
+# expressed and executed; confirming that here is cheap insurance against
+# vmap's batching rules doing something unexpected to the CG solve's
+# lax.while_loop internals.
+sigma_ref = jnp.stack([solve_one(eps_bar_batch[i])[0].solution.sigma for i in range(3)])
+assert jnp.allclose(sigma_batch, sigma_ref, atol=1e-8)
+```
+
+```text title="Output"
+JAX backend: cpu
+Devices: [CpuDevice(id=0)]
+X64 enabled: True -> dtype: float64
+grid n : (89, 89, 1)
+total voxels Nv: 7921
+domain L [mm]: ('0.017725', '0.017725', '0.0002')
+fiber volume fraction (actual): 0.5011
+phase 0: LinearElasticIsotropic (epoxy matrix): E=3e+03, nu=0.35, lam=2.59e+03, mu=1.11e+03
+phase 1: LinearElasticIsotropic (glass fiber): E=7e+04, nu=0.2, lam=1.94e+04, mu=2.92e+04
+eps_bar_batch shape: (3, 3, 3)
+
+eps_batch shape   : (3, 3, 3, 7921)
+sigma_batch shape : (3, 3, 3, 7921)
+  xy shear     converged: True
+  uniaxial x   converged: True
+  uniaxial y   converged: True
+
+load case       sigma_xx    sigma_yy      tau_xy
+xy shear          -0.000      -0.000       7.625
+uniaxial x        10.128       5.459      -0.000
+uniaxial y         5.459      10.128       0.000
+
+vmap matches sequential solve_mechanics calls: True
+```
+
+![Batched RVE Solves via jax.vmap](/img/lin_elastic_strain_vmap.png)
+
+Each load case's von Mises field looks exactly like what a standalone single-case solve would
+produce (uniaxial x and uniaxial y are mirror images of each other, as expected for this
+square-packed, doubly-symmetric geometry) — `jax.vmap` traced `solve_mechanics` once and executed
+all three as one batched XLA program, not three separate compilations.
+
+:::note[Reproducing]
+This page's code and output are generated by
+[`notebooks/lin-elastic_strain_vmap.ipynb`](https://github.com/choROPeNt/FFTjax/blob/main/notebooks/lin-elastic_strain_vmap.ipynb)
+(linked via the Colab badge above) — there is no standalone `examples/` script for this case,
+since it would just be a redundant duplicate of the notebook.
+
+If the notebook changes, re-run it and update the pasted output above — there's no build-time
+execution here, since Docusaurus can't run Python.
+:::
+
+## Next steps
+
+- Batching over `eps_bar` is one axis choice; the same pattern applies to batching over
+  microstructures (different `phase` fields) or materials, as long as every batch element shares
+  the same grid shape `n` — `vmap` needs uniformly-shaped arrays.
+- `jax.jit(jax.vmap(...))` compiles once per batch size; changing the batch size triggers a
+  recompile, same as any other JIT-traced shape change.
+- Since `solve_mechanics` is an ordinary JAX function with no batch-specific code,
+  `jax.vmap(jax.grad(...))` composes the same way — differentiating through a batch of solves
+  needs no special-casing either.
+- See `benchmark/benchmark_vmap_batch_scaling.py` for how batch size and grid size trade off in
+  practice.
