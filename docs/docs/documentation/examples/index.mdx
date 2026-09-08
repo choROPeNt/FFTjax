@@ -53,15 +53,16 @@ Worked examples demonstrating FFTjax in practice.
 
 ## Inverse Calibration
 
-{/* <CardGrid
+<CardGrid
   cards={[
     {
-      title: 'Inverse Calibration',
-      description: '',
+      title: 'Recovering the Matrix Modulus',
+      description: 'Calibrates an unknown matrix Young\'s modulus against a synthetic shear stress-strain curve by differentiating the FFT solve itself (jax.jacfwd) and stepping downhill with optax -- recovers the true value to well under 1% error.',
       to: '/documentation/examples/inverse-calibration',
+      image: '/img/lin_elastic_inverse_calibration_fit.png',
     },
   ]}
-/> */}
+/>
 
 ## Structure-Property
 

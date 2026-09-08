@@ -38,9 +38,13 @@ const sidebars = {
           label: 'Damage & Fracture Solvers',
           items: ['examples/phase-field'],
         },
-        // Inverse Calibration and Structure-Property groups are placeholders
-        // on the Examples page (no doc pages yet) -- add matching categories
-        // here once real pages exist under examples/.
+        {
+          type: 'category',
+          label: 'Inverse Calibration',
+          items: ['examples/inverse-calibration'],
+        },
+        // Structure-Property is still a placeholder on the Examples page
+        // (no doc page yet) -- add a matching category here once one exists.
       ],
     },
     'benchmark',
