@@ -25,22 +25,40 @@ and solvers/ stacks so far:
   one, see notebooks/lin-elastic_strain_vmap.ipynb) have one consistent
   return shape and don't need to special-case "single" against the two
   load-stepped modes.
+
+``solve_displacement_based_nonlinear`` (bottom of this file) is a second,
+separate entry point: a Newton-outer/CG-inner driver for a nonlinear local
+constitutive law (e.g. materialmodels.inelastic.plasticity_j2.J2Plasticity),
+where the tangent depends on the unknown strain and can't be assembled once
+up front the way solve_mechanics's C_field is. It lives here rather than in
+solvers/ for the same reason problems.fracture's staggered loop does (see
+that module's docstring): it's an iterative scheme built by repeatedly
+calling solvers/ primitives (here, one linear CG solve per Newton
+iteration), not itself a reusable numerical algorithm the way
+solvers.krylov.cg.cg_solve is -- keeping it here keeps solvers/ to its usual
+habit (operate on prepared arrays, no outer-loop control flow of its own).
+Unlike solve_mechanics, it does NOT go through materialmodels.assembly
+(the caller's own ``local_update`` callable already resolves materials/phase
+into a per-voxel stress+tangent), and it only supports pure strain BC (no
+mixed strain/stress ``control``, unlike solve_displacement_based).
 """
 
 import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on TPU, no GPU prealloc)
 
 import time
-from typing import Callable, Tuple, cast
+from typing import Any, Callable, Tuple, cast
+from math import prod
 
 import jax.numpy as jnp
 import numpy as np
 
 from materialmodels.assembly import assemble_C_field
-from operators.green import build_freq_grid, build_reference_green_operator
+from operators.green import build_freq_grid, build_reference_green_operator, nyquist_safe_xi
 from post.fields import compute_displacement, field_to_grid, to_voigt, von_mises
 from problems.incremental import IncrementResult, solve_automatic, solve_fixed
 from solvers.elliptic.vector.displacement_based import DisplacementBasedSolver
 from solvers.elliptic.vector.lippmann_schwinger import LippmannSchwingerSolver
+from solvers.krylov.cg import cg_solve
 from solvers.solution import ElasticitySolution
 from utils.io.xdmf_writer import IncrementalWriter
 
@@ -257,3 +275,180 @@ def solve_mechanics(
         raise ValueError(
             f"unknown stepping {stepping!r}, expected 'single', 'fixed', or 'automatic'"
         )
+
+
+def solve_displacement_based_nonlinear(
+    n:            Tuple[int, ...],
+    xi_flat:      jnp.ndarray,
+    eps_bar:      jnp.ndarray,
+    local_update: Callable[[jnp.ndarray, Any], Tuple[jnp.ndarray, jnp.ndarray, Any]],
+    state_init:   Any,
+    toler_lin:    float = 1e-6,
+    maxiter_lin:  int = 1000,
+    toler_nr:     float = 1e-8,
+    maxiter_nr:   int = 50,
+    C0:           jnp.ndarray | None = None,
+    delta_init:   jnp.ndarray | None = None,
+):
+    """
+    Newton-outer / CG-inner solve for a nonlinear local constitutive law:
+    div(sigma(eps)) = 0 on a periodic voxel grid, prescribed macroscopic
+    strain ``eps_bar``, pure strain BC only (no mixed strain/stress
+    ``control`` -- that generalization, analogous to
+    solve_displacement_based's, is not built here).
+
+    Same FFT-based grad/div machinery as solve_displacement_based (frequency
+    grid, Nyquist-safe xi, strain-from-fluctuation via the DC-bin trick),
+    reused directly rather than re-derived, to avoid a second, possibly
+    inconsistent implementation of the same operator. The difference is what
+    drives each linear CG solve: solve_displacement_based solves once
+    against a FIXED C_field; this solves repeatedly, at each outer (Newton)
+    iteration evaluating the actual nonlinear stress and its tangent at the
+    CURRENT trial strain via ``local_update``, using CG only for the
+    *linearized correction* -- true Newton, not a fixed-point/secant scheme.
+
+    ``local_update(eps_field, state) -> (sigma_field, C_tan_field, new_state)``
+    is any per-voxel nonlinear stress/tangent/state map, already
+    vmapped/materials-resolved by the caller (e.g. a per-phase combination of
+    materialmodels.inelastic.plasticity_j2.J2Plasticity.stress_and_tangent_field
+    for a plastic phase and a plain einsum against a constant elastic C for
+    others -- see notebooks/in-elastic_J2.ipynb, section 4). ``state`` is
+    caller-defined; this driver only carries it from iteration to iteration.
+
+    Parameters
+    ----------
+    n            : grid shape (nx, ny, nz)
+    xi_flat      : (3, Nv)  angular-frequency grid (operators.green.build_freq_grid)
+    eps_bar      : (3, 3)   prescribed macroscopic strain (pure strain BC --
+                   every component is prescribed, none solved for)
+    local_update : eps_field (3,3,Nv), state -> (sigma_field (3,3,Nv),
+                   C_tan_field (3,3,3,3,Nv), new_state)
+    state_init   : initial per-voxel state (caller-defined; e.g. (eps_p, alpha)
+                   from the end of the previous load increment)
+    toler_lin, maxiter_lin : CG tolerance/cap for each Newton iteration's
+                   linearized correction
+    toler_nr, maxiter_nr   : Newton relative-residual tolerance and iteration cap
+    delta_init   : (3,3,Nv) or None -- initial strain-fluctuation guess (i.e.
+                   eps - eps_bar broadcast). None starts from zero fluctuation
+                   (a uniform-strain guess) -- fine for a single, isolated
+                   solve, but a genuinely bad starting point once far enough
+                   into load-stepping that the true fluctuation field is
+                   large (e.g. deep in a plastic regime): Newton then needs
+                   many more iterations, or fails to converge in maxiter_nr,
+                   purely from a poor initial guess, not a solver defect.
+                   Load-stepping callers should warm-start each step with the
+                   PREVIOUS step's converged full strain field minus this
+                   step's new eps_bar broadcast -- see
+                   notebooks/in-elastic_J2.ipynb, section 4, for the pattern.
+                   Projected to zero mean internally regardless of what's
+                   passed in (see below) -- the macroscopic strain is always
+                   carried by eps0, never by delta.
+    C0           : (3,3,3,3) or None -- fixed reference stiffness for the CG
+                   preconditioner; None re-derives it from the CURRENT tangent
+                   field every Newton iteration (voxel-mean of C_tan), matching
+                   solve_displacement_based's default. Passing a fixed elastic
+                   C0 avoids rebuilding/inverting the preconditioner each
+                   iteration -- standard practice for FFT-based Newton-Krylov
+                   plasticity, not yet benchmarked either way in this project.
+
+    Returns
+    -------
+    eps       : (3, 3, Nv)
+    sigma     : (3, 3, Nv)
+    state     : final per-voxel state
+    converged : bool -- True if the Newton residual met toler_nr within maxiter_nr
+    n_iter    : int  -- Newton iterations actually run
+    """
+    Nv = prod(n)
+    iq = 1j * nyquist_safe_xi(xi_flat, n)  # (3, Nv)
+
+    def fft_(x):
+        s = x.shape
+        return jnp.fft.fftn(x.reshape(s[:-1] + n), axes=(-3, -2, -1)).reshape(s)
+
+    def ifft_(x):
+        s = x.shape
+        return jnp.fft.ifftn(x.reshape(s[:-1] + n), axes=(-3, -2, -1)).real.reshape(s)
+
+    def div_of(sigma_field):
+        """div(sigma), (3,3,Nv) -> (3,Nv)."""
+        sigma_hat = fft_(sigma_field)
+        return ifft_(jnp.einsum("ijm,jm->im", sigma_hat, iq))
+
+    def strain_from_correction(dU):
+        """Pure-fluctuation strain from a Newton correction's displacement-like
+        unknown -- zero mean (DC bin), unlike solve_displacement_based's
+        strain_from_u (which embeds a macroscopic correction there instead):
+        eps_bar is already fixed as the baseline here, nothing left to solve
+        for in the mean."""
+        dU_hat   = fft_(dU)
+        grad_hat = jnp.einsum("im,jm->ijm", dU_hat, iq)
+        eps_hat  = 0.5 * (grad_hat + jnp.transpose(grad_hat, (1, 0, 2)))
+        eps_hat  = eps_hat.at[:, :, 0].set(0.0)
+        return ifft_(eps_hat)
+
+    eps0  = jnp.ones((3, 3, Nv)) * eps_bar[:, :, None]
+    delta = jnp.zeros((3, 3, Nv)) if delta_init is None else delta_init
+    # The macroscopic strain is carried entirely by eps0 above; delta must be
+    # a zero-mean fluctuation on top of it, or the true average strain
+    # silently drifts away from eps_bar. Newton's own corrections are always
+    # zero-mean by construction (strain_from_correction zeros the DC bin
+    # below), but a caller-supplied delta_init has no such guarantee -- e.g.
+    # a naive load-stepping warm start using the previous step's full field
+    # minus THIS step's new baseline has a nonzero mean whenever eps_bar
+    # changed, and in the worst case that alone can satisfy div(sigma)=0
+    # trivially (e.g. at eps=0) well short of the actual target strain,
+    # reporting false convergence. Project unconditionally rather than
+    # trusting the caller to have gotten this right.
+    delta_hat = fft_(delta)
+    delta_hat = delta_hat.at[:, :, 0].set(0.0)
+    delta = ifft_(delta_hat)
+    state = state_init
+    converged = False
+    n_iter = 0
+
+    for n_iter in range(1, maxiter_nr + 1):
+        eps_k = eps0 + delta
+        sigma_k, C_tan_k, new_state = local_update(eps_k, state)
+
+        residual   = div_of(sigma_k)                     # (3, Nv) -- want 0
+        resid_norm = float(jnp.linalg.norm(residual))
+        ref_norm   = float(jnp.linalg.norm(sigma_k)) + 1e-30
+        if resid_norm / ref_norm < toler_nr:
+            converged = True
+            state = new_state
+            break
+
+        def A_op(x_flat):
+            eps_trial   = strain_from_correction(x_flat.reshape(3, Nv))
+            sigma_trial = jnp.einsum("ijklm,klm->ijm", C_tan_k, eps_trial)
+            return div_of(sigma_trial).reshape(-1)
+
+        C0_ref  = jnp.mean(C_tan_k, axis=-1) if C0 is None else C0
+        K0_hat  = jnp.einsum("jm,ijkl,lm->ikm", iq.imag, C0_ref, iq.imag)
+        null_pt = jnp.all(iq.imag == 0.0, axis=0)
+        K0_hat  = jnp.where(null_pt[None, None, :], jnp.eye(3)[:, :, None], K0_hat)
+        K0_inv  = jnp.moveaxis(jnp.linalg.inv(jnp.moveaxis(K0_hat, -1, 0)), 0, -1)
+
+        def M(r_flat):
+            r_hat = fft_(r_flat.reshape(3, Nv))
+            z_hat = jnp.einsum("ikm,km->im", K0_inv, r_hat)
+            return ifft_(z_hat).reshape(-1)
+
+        bb = (-residual).reshape(-1)
+        x0 = jnp.zeros_like(bb)
+        Delta_flat, _cg_converged = cg_solve(A_op, bb, x0, toler_lin, maxiter_lin, M=M)
+
+        # Delta_flat is the CG unknown -- a displacement-like field (3, Nv),
+        # not a strain tensor -- the actual strain correction is its
+        # symmetric gradient, same as A_op's own eps_trial above.
+        delta = delta + strain_from_correction(Delta_flat.reshape(3, Nv))
+        state = new_state
+    else:
+        # loop exhausted maxiter_nr without an early break -- last iterate's
+        # state/residual stand, converged stays False
+        pass
+
+    eps_final = eps0 + delta
+    sigma_final, _, _ = local_update(eps_final, state)
+    return eps_final, sigma_final, state, converged, n_iter
