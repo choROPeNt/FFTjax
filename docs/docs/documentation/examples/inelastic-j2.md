@@ -115,7 +115,7 @@ plastic matrix voxels: 3524/3952
 max accumulated plastic strain: 1.8632e-01
 ```
 
-![In-Elastic Solve (J2 elastoplasticity)](/img/in-elastic_J2.png)
+![In-Elastic Solve (J2 elastoplasticity)](/img/in-elastic_J2_random-rve.png)
 
 The unloading branch (left) has the elastic modulus's slope, not the plastic tangent's —
 correct, since unloading from a plastic state is purely elastic until the reversed yield

@@ -160,7 +160,7 @@ fig.colorbar(im, ax=axes[1], fraction=0.046)
 
 fig.tight_layout()
 
-out_path = Path(__file__).resolve().parents[1] / "docs" / "static" / "img" / "in-elastic_J2.png"
+out_path = Path(__file__).resolve().parents[1] / "docs" / "static" / "img" / "in-elastic_J2_random-rve.png"
 out_path.parent.mkdir(parents=True, exist_ok=True)
 fig.savefig(out_path, dpi=150)
 print(f"\nSaved plot to {out_path}")
