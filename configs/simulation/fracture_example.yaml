@@ -15,28 +15,24 @@
 
 fracture:
   input: output/generation/rve_quad_phi-0.55.xdmf
-  # input_L/input_dx (mm) -- only needed if `input` is .npy or a bare .h5
-  # with no n/L attrs, since those formats carry no physical length of their
-  # own (.xdmf/.vtu/.vti/.npz are all self-describing and ignore this).
-  # Give exactly one; the other is derived (L = n * dx).
+  # input_L / input_dx (mm): domain size, for .npy or a bare .h5 only (no
+  #   embedded length). Give exactly one -- the other is derived (L = n*dx).
   # input_dx: [0.001, 0.001, 0.001]
-  # phase_key -- field name to read as the phase array from `input`, for the
-  # named-field formats (.xdmf/.h5/.vti/.npz -- .vtu/.npy don't use a key).
-  # Default "phase"; override if the file stores it under another name.
+
+  # phase_key (default "phase"): field name for the phase array.
   # phase_key: phase
 
-  # indexed by 0-based phase id (0=matrix, 1=fibre). `model` selects the
-  # materialmodels.factory class; k_res is the AT2 residual stiffness for
-  # that phase -- 1.0 makes a phase damage-immune (fibre here), the default
-  # ~1e-6 lets it fully degrade (matrix). Gc is the critical energy release
-  # rate for that phase's damage -- gathered per-material by
-  # materialmodels.phasefield.degradation.Gc_field when fracture.Gc (below)
-  # is omitted. May differ per material now -- problems.fracture.
-  # solve_fracture dispatches to the heterogeneous (divergence-form) damage
-  # solver automatically whenever the gathered values aren't uniform, and
-  # to the cheaper homogeneous one when they are (as here, kept equal on
-  # both phases; change the fibre's value below to exercise the
-  # heterogeneous path).
+  # orientation_key (default "orientation"): field name for the per-voxel
+  #   fibre direction, used by a `fiber_dir: from_input` material below.
+  # orientation_key: orientation
+
+  # materials: indexed by 0-based phase id (0=matrix, 1=fibre). `model`
+  #   selects the materialmodels.factory class.
+  #   k_res: AT2 residual stiffness (default ~1e-6 = fully degrades;
+  #     1.0 = damage-immune, e.g. the fibre here).
+  #   Gc: critical energy release rate. Equal across materials (as here)
+  #     uses the cheaper homogeneous-Gc solver; differing values switch to
+  #     the heterogeneous (divergence-form) one automatically.
   materials:
     - model: isotropic_elastic
       E:     3.760e3            # MPa
@@ -59,6 +55,9 @@ fracture:
                                   # solver path (k_res=1.0 already makes this
                                   # phase damage-immune regardless)
       name: carbon fibre
+      # fiber_dir is required for transverse_isotropic
+      # see mechanics_example.yaml for the [x,y,z] / from_input alternatives.
+      fiber_dir: [0.0, 0.0, 1.0]
 
   eps_bar:                    # prescribed macroscopic strain (3x3), reached at t=1
     - [1.0e-2, 0.0, 0.0]

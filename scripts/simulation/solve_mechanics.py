@@ -84,15 +84,20 @@ def main():
     input_L  = tuple(mcfg["input_L"])  if mcfg.get("input_L")  else None
     input_dx = tuple(mcfg["input_dx"]) if mcfg.get("input_dx") else None
     phase_key = mcfg.get("phase_key", "phase")
+    orientation_key = mcfg.get("orientation_key", "orientation")
     print(f"Input  : {src}")
     n, L, phase_np, orientations_np, _, vf_np, _, _ = SimulationReader(
-        src, L=input_L, dx=input_dx, phase_key=phase_key,
+        src, L=input_L, dx=input_dx, phase_key=phase_key, orientation_key=orientation_key,
     ).read()
     phase = jnp.array(phase_np)
     print(f"Grid   : {n}   phi = {float(np.mean(phase_np > 0)):.3f}")
 
     # ── materials (list, indexed by 0-based phase id) ───────────────────────
-    materials = [build_material(m) for m in mcfg["materials"]]
+    # orientations: passed through so a phase config'd with `fiber_dir:
+    # from_input` (transverse_isotropic only) picks up this geometry's own
+    # per-voxel orientation field -- ignored by every other config.
+    orientations = jnp.array(orientations_np)
+    materials = [build_material(m, orientations=orientations) for m in mcfg["materials"]]
     for i, m in enumerate(materials):
         print(f"  phase {i}: {m}")
 

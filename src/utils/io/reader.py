@@ -317,7 +317,8 @@ def _read_vti(
         raise KeyError(f"No <CellData> or <PointData> arrays found in {path}")
 
     nx, ny, nz = n
-    L = tuple(ni * di for ni, di in zip(n, spacing))
+    dx_, dy_, dz_ = spacing
+    L = (nx * dx_, ny * dy_, nz * dz_)
 
     fields: dict[str, np.ndarray] = {}
     for da in data_node.findall('DataArray'):
@@ -445,6 +446,14 @@ class SimulationReader:
     derives phase structurally from ``YarnIndex`` and ``.npy`` is a bare
     array, so neither has a field name to look up.
 
+    ``orientation_key`` is the same idea for the per-voxel fibre orientation
+    field — default ``"orientation"`` (matching ``generation.weave``'s own
+    output), used e.g. by ``materialmodels.factory.build_material``'s
+    ``fiber_dir: from_input``. Same format restriction as ``phase_key``
+    (``.vtu`` derives orientation structurally from ``YarnTangent`` instead).
+    A ``.npz`` archive also accepts the legacy plural ``"orientations"`` as a
+    fallback if ``orientation_key`` isn't found under its exact name.
+
     >>> n, L, phase, orientations, yarn_index, vf, d_init, H_init = (
     ...     SimulationReader(path).read()
     ... )
@@ -482,6 +491,7 @@ class SimulationReader:
         L: tuple[float, ...] | None = None,
         dx: tuple[float, ...] | None = None,
         phase_key: str = "phase",
+        orientation_key: str = "orientation",
     ):
         self.path = Path(path)
         suffix = self.path.suffix.lower()
@@ -502,6 +512,7 @@ class SimulationReader:
         self.L = L
         self.dx = dx
         self.phase_key = phase_key
+        self.orientation_key = orientation_key
 
     def read(self):
         return getattr(self, self._method_name)()
@@ -528,7 +539,7 @@ class SimulationReader:
         Nv    = int(np.prod(n))
         phase = fields.get(self.phase_key, np.zeros(Nv)).ravel().astype(int)
         ori_def, yi_def, vf_def, d_def, H_def = self._defaults(n, phase)
-        _ori = fields.get("orientation")
+        _ori = fields.get(self.orientation_key)
         orientations = (_ori.reshape(-1, 3).T if _ori is not None
                         else ori_def)
         _yi = fields.get("yarn_index")
@@ -542,7 +553,7 @@ class SimulationReader:
         Nv    = int(np.prod(n))
         phase = fields.get(self.phase_key, np.zeros(Nv)).ravel().astype(int)
         ori_def, yi_def, vf_def, d_def, H_def = self._defaults(n, phase)
-        _ori = fields.get("orientation")
+        _ori = fields.get(self.orientation_key)
         orientations = (_ori.reshape(-1, 3).T if _ori is not None
                         else ori_def)
         _yi = fields.get("yarn_index")
@@ -569,8 +580,11 @@ class SimulationReader:
         L = L_raw if len(L_raw) == 3 else (*L_raw, min(L_raw) / n_raw[0])
         phase = data[self.phase_key].ravel().astype(int)
         ori_def, yi_def, vf_def, d_def, H_def = self._defaults(n, phase)
-        # accept both "orientations" (3, Nv) and "orientation" (*spatial, 3)
-        _ori = data.get("orientations") or data.get("orientation")
+        # self.orientation_key first; legacy plural "orientations" as a
+        # fallback for archives that predate orientation_key existing
+        _ori = data.get(self.orientation_key)
+        if _ori is None:
+            _ori = data.get("orientations")
         if _ori is not None:
             arr = np.asarray(_ori)
             # (*, 3) spatial grid → (3, Nv)

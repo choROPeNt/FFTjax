@@ -9,6 +9,7 @@ hand-rolled its own private Voigt-conversion/rotation helpers; this version call
 the shared, general versions of those same operations instead.
 """
 
+import jax
 import jax.numpy as jnp
 
 from materialmodels.base import ConstitutiveModel
@@ -24,9 +25,20 @@ class TransverseIsotropic(ConstitutiveModel):
     """
     Transversely isotropic (fibre-reinforced) material.
 
-    The *reference* fibre axis is local  **Z = [0, 0, 1]**.
-    Call ``stiffness_tensor_rotated(fiber_dir)`` to obtain the stiffness
-    for an arbitrary fibre direction in the global frame.
+    The *reference* fibre axis is local **Z = [0, 0, 1]**. ``fiber_dir``
+    (constructor arg, default Z i.e. no rotation) is this material's own
+    fixed orientation in the global frame -- ``stiffness_tensor()`` always
+    returns the tensor already rotated into it, so
+    ``materialmodels.assembly.assemble_C_field`` (or any other caller that
+    just calls ``.stiffness_tensor()``) gets a correctly oriented per-phase
+    stiffness automatically, with no special-case rotation plumbing needed
+    at the assembly layer. ``stiffness_tensor_rotated(fiber_dir)`` and
+    ``stiffness_field_oriented(orientations)`` are a different pair of
+    functions: they rotate the *reference* tensor by an explicitly given
+    direction (one, or a per-voxel field), overriding this material's own
+    stored ``fiber_dir`` rather than composing with it -- for a one-off
+    direction, or a spatially varying orientation field, independent of
+    whatever this material's default is.
 
     5 independent elastic constants (engineering / test-data notation):
 
@@ -49,6 +61,23 @@ class TransverseIsotropic(ConstitutiveModel):
     Derived:
     nu_TL = nu_LT * E_T / E_L       reciprocal Poisson ratio (symmetry of S)
 
+    fiber_dir : (3,) unit vector (global frame), default None -> Z = [0, 0, 1]
+                (identity rotation, i.e. stiffness_tensor() then returns
+                exactly the reference-frame tensor, same as before this
+                parameter existed). Not required to be pre-normalized --
+                rotation_from_direction normalizes internally.
+
+                Also accepts a per-voxel field, (3, Nv) -- one direction per
+                voxel, spanning the WHOLE grid (e.g. straight from
+                utils.io.reader.read_vtu's orientations output), not just
+                this material's own phase -- in which case stiffness_tensor()
+                returns the (3,3,3,3,Nv) rotated FIELD instead of a single
+                (3,3,3,3) tensor (vmapped internally, same machinery as
+                stiffness_field_oriented). materialmodels.assembly.
+                assemble_C_field detects this automatically and mixes it
+                correctly with other, constant-tensor materials in the same
+                materials: list -- see its own docstring.
+
     k_res, Gc : AT2 phase-field residual stiffness / critical energy release
                 rate -- see materialmodels.elastic.isotropic.
                 LinearElasticIsotropic's docstring for what these do; same
@@ -68,6 +97,7 @@ class TransverseIsotropic(ConstitutiveModel):
         nu_LT: float,
         nu_TT: float | None = None,
         G_TT: float | None = None,
+        fiber_dir: jnp.ndarray | None = None,
         name: str = "",
         k_res: float = 1e-6,
         Gc: float | None = None,
@@ -84,6 +114,8 @@ class TransverseIsotropic(ConstitutiveModel):
         self.E_T = float(E_T)
         self.G_LT = float(G_LT)
         self.nu_LT = float(nu_LT)
+        self.fiber_dir = (jnp.array([0.0, 0.0, 1.0]) if fiber_dir is None
+                           else jnp.asarray(fiber_dir, dtype=float))
         self.name = name
         self.k_res = float(k_res)
         self.Gc = float(Gc) if Gc is not None else None
@@ -128,26 +160,88 @@ class TransverseIsotropic(ConstitutiveModel):
             [0.0,            0.0,            0.0,            0.0,             0.0,             1.0 / self.G_LT],
         ])
 
-    def stiffness_tensor(self) -> jnp.ndarray:
-        """(3, 3, 3, 3) stiffness in the reference frame (fibre along Z)."""
+    def _stiffness_tensor_reference(self) -> jnp.ndarray:
+        """(3, 3, 3, 3) stiffness in the reference frame (fibre along Z),
+        before this material's own ``fiber_dir`` is applied. Internal --
+        ``stiffness_tensor_rotated``/``stiffness_field_oriented`` build on
+        this directly (an explicitly given direction overrides, rather than
+        composes with, ``fiber_dir``); external callers wanting the
+        reference tensor itself can still get it via
+        ``stiffness_tensor_rotated([0, 0, 1])``."""
         C_eng = jnp.linalg.inv(self._compliance_engineering())
         return jnp.array(voigt_to_tensor4(C_eng, engineering=True))
 
+    def stiffness_tensor(self) -> jnp.ndarray:
+        """
+        Stiffness rotated into this material's own ``fiber_dir`` (default Z,
+        i.e. identity rotation) -- the ConstitutiveModel-required
+        no-argument method, so ``materialmodels.assembly.assemble_C_field``
+        (or any other caller that just calls ``.stiffness_tensor()``) gets
+        the correctly oriented tensor automatically for a fixed per-phase
+        fibre direction.
+
+        Shape follows ``fiber_dir``: ``(3, 3, 3, 3)`` for a single direction
+        (the common case), or ``(3, 3, 3, 3, Nv)`` if ``fiber_dir`` was
+        given as a per-voxel field -- ``assemble_C_field`` handles both
+        shapes automatically, including mixed with other materials.
+        """
+        if self.fiber_dir.ndim > 1:
+            return self.stiffness_field_oriented(self.fiber_dir)
+        R = rotation_from_direction(self.fiber_dir)
+        return rotate_tensor4(R, self._stiffness_tensor_reference())
+
     def stiffness_tensor_rotated(self, fiber_dir: jnp.ndarray) -> jnp.ndarray:
         """
-        (3, 3, 3, 3) stiffness rotated so the fibre axis aligns with
-        ``fiber_dir`` in the global frame.
+        (3, 3, 3, 3) stiffness rotated so the fibre axis aligns with an
+        explicitly given ``fiber_dir`` in the global frame -- overrides this
+        material's own stored ``fiber_dir`` rather than composing with it
+        (rotates the *reference* tensor, not ``stiffness_tensor()``'s
+        already-rotated one). For a one-off direction different from this
+        material's default; see ``stiffness_field_oriented`` for a per-voxel
+        orientation field instead of a single direction.
 
         Parameters
         ----------
         fiber_dir : (3,) unit vector (global frame)
         """
         R = rotation_from_direction(jnp.asarray(fiber_dir, float))
-        return rotate_tensor4(R, self.stiffness_tensor())
+        return rotate_tensor4(R, self._stiffness_tensor_reference())
+
+    def stiffness_field_oriented(self, orientations: jnp.ndarray) -> jnp.ndarray:
+        """
+        Per-voxel rotated stiffness field, vmapped over a fibre orientation
+        field -- the field-valued counterpart of ``stiffness_tensor_rotated``
+        (one direction) for a spatially varying orientation (e.g. from
+        ``utils.io.reader.read_vtu``'s ``orientations`` output). Like
+        ``stiffness_tensor_rotated``, this overrides this material's own
+        stored ``fiber_dir`` rather than composing with it.
+
+        The reference-frame tensor is computed once and shared across every
+        voxel; only the rotation itself (``rotation_from_direction`` +
+        ``rotate_tensor4``, both already written to be vmap-safe) runs
+        per-voxel.
+
+        Parameters
+        ----------
+        orientations : (3, Nv)  unit fibre direction per voxel (global frame)
+
+        Returns
+        -------
+        C_field : (3, 3, 3, 3, Nv)
+        """
+        C_ref = self._stiffness_tensor_reference()
+
+        def _one(d):
+            R = rotation_from_direction(d)
+            return rotate_tensor4(R, C_ref)
+
+        C_vox = jax.vmap(_one, in_axes=1)(orientations)   # (Nv, 3, 3, 3, 3)
+        return jnp.moveaxis(C_vox, 0, -1)                  # (3, 3, 3, 3, Nv)
 
     def stiffness_voigt(self, engineering: bool = False) -> jnp.ndarray:
         """
-        6x6 Voigt stiffness in the reference frame (fibre along Z).
+        6x6 Voigt form of ``stiffness_tensor()`` -- this material's own
+        ``fiber_dir`` orientation (default Z, i.e. the reference frame).
 
         engineering=False (default) -> tensor shear convention (compatible
         with ``post.fields.to_voigt`` and the FFT solver).

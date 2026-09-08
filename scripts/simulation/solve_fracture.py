@@ -92,9 +92,10 @@ def main():
     input_L  = tuple(fcfg["input_L"])  if fcfg.get("input_L")  else None
     input_dx = tuple(fcfg["input_dx"]) if fcfg.get("input_dx") else None
     phase_key = fcfg.get("phase_key", "phase")
+    orientation_key = fcfg.get("orientation_key", "orientation")
     print(f"Input  : {src}")
     n, L, phase_np, orientations_np, _, vf_np, d_init_np, H_init_np = SimulationReader(
-        src, L=input_L, dx=input_dx, phase_key=phase_key,
+        src, L=input_L, dx=input_dx, phase_key=phase_key, orientation_key=orientation_key,
     ).read()
     phase = jnp.array(phase_np)
     d_init = jnp.array(d_init_np)
@@ -106,7 +107,12 @@ def main():
     # cast: build_material() returns the thin ConstitutiveModel ABC (no
     # .k_res/.Gc); every concrete model this factory builds satisfies the
     # richer PhaseFieldMaterial protocol needed for the AT2 damage solve.
-    materials = [cast(PhaseFieldMaterial, build_material(m)) for m in fcfg["materials"]]
+    # orientations: passed through so a phase config'd with `fiber_dir:
+    # from_input` (transverse_isotropic only) picks up this geometry's own
+    # per-voxel orientation field -- ignored by every other config.
+    orientations = jnp.array(orientations_np)
+    materials = [cast(PhaseFieldMaterial, build_material(m, orientations=orientations))
+                 for m in fcfg["materials"]]
     for i, m in enumerate(materials):
         print(f"  phase {i}: {m}  k_res={m.k_res}  Gc={m.Gc}")
 
