@@ -73,3 +73,63 @@ def describe_materials(materials: Sequence[ConstitutiveModel]) -> None:
     """Print each material next to the phase index assemble_C_field/solve_mechanics assign it."""
     for i, m in enumerate(materials):
         print(f"phase {i}: {m}")
+
+
+def assemble_local_update(materials: Sequence[ConstitutiveModel], phase: jnp.ndarray):
+    """
+    Build a ``local_update(eps_field, state) -> (sigma, C_tan, new_state)``
+    callable for ``problems.mechanics.solve_displacement_based_nonlinear``
+    from a per-phase materials list -- the stateful analogue of
+    ``assemble_C_field``, generalizing the elastic-fiber/plastic-matrix
+    ``local_update`` combinator from ``notebooks/in-elastic_J2.ipynb`` to any
+    number of phases and any mix of stateless (plain ``ConstitutiveModel``,
+    e.g. ``LinearElasticIsotropic``) and stateful (duck-typed via a
+    ``stress_and_tangent_field(eps_field, eps_p_field, alpha_field)``
+    method, e.g. ``J2Plasticity``) materials.
+
+    State is one shared ``(eps_p_field, alpha_field)`` pair spanning the
+    whole grid, same shapes ``J2Plasticity.stress_and_tangent_field`` uses
+    -- each stateful material only ever updates its own phase's voxels (via
+    ``jnp.where``); a purely elastic phase leaves that portion of the state
+    untouched. This works even with several distinct plastic phases, since
+    every voxel belongs to exactly one phase and each material's own state
+    update never touches another phase's voxels.
+
+    Parameters
+    ----------
+    materials : list of ConstitutiveModel, indexed by phase (0-based) -- any
+                mix of stateless and stateful (stress_and_tangent_field) materials
+    phase     : (Nv,) int   phase index per voxel
+
+    Returns
+    -------
+    local_update : callable, state0 : (eps_p_field, alpha_field) initialized to zero
+    """
+    Nv = phase.shape[0]
+
+    def local_update(eps_field, state):
+        eps_p_field, alpha_field = state
+        sigma  = jnp.zeros((3, 3, Nv))
+        C_tan  = jnp.zeros((3, 3, 3, 3, Nv))
+        eps_p_out = eps_p_field
+        alpha_out = alpha_field
+
+        for i, m in enumerate(materials):
+            mask = (phase == i)
+            if hasattr(m, "stress_and_tangent_field"):
+                sigma_i, C_i, (eps_p_i, alpha_i) = m.stress_and_tangent_field(
+                    eps_field, eps_p_field, alpha_field
+                )
+                eps_p_out = jnp.where(mask, eps_p_i, eps_p_out)
+                alpha_out = jnp.where(mask, alpha_i, alpha_out)
+            else:
+                C_i = m.stiffness_tensor()
+                sigma_i = jnp.einsum("ijkl,klm->ijm", C_i, eps_field)
+                C_i = jnp.broadcast_to(C_i[..., None], (3, 3, 3, 3, Nv))
+            sigma = jnp.where(mask, sigma_i, sigma)
+            C_tan = jnp.where(mask, C_i, C_tan)
+
+        return sigma, C_tan, (eps_p_out, alpha_out)
+
+    state0 = (jnp.zeros((3, 3, Nv)), jnp.zeros(Nv))
+    return local_update, state0

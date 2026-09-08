@@ -6,10 +6,12 @@ isotropic phases in one materials: list)."""
 from materialmodels.base import ConstitutiveModel
 from materialmodels.elastic.isotropic import LinearElasticIsotropic
 from materialmodels.elastic.transverse_isotropic import TransverseIsotropic
+from materialmodels.inelastic.plasticity_j2 import J2Plasticity
 
 _MODELS = {
     "isotropic_elastic":    LinearElasticIsotropic,
     "transverse_isotropic": TransverseIsotropic,
+    "j2_plasticity":        J2Plasticity,
 }
 
 
