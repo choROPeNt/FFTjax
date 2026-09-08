@@ -1,0 +1,54 @@
+# J2 (von Mises) elastoplastic homogenization config — loads a microstructure,
+# drives a macroscopic shear strain through a load/unload/reload hysteresis
+# cycle. {inelastic.input.stem} -> "rve_random_small_phi-0.35_seed-67" (used in output path)
+#
+# `input` below must already exist -- generate it first with
+# scripts/generation/generate_rve.py and configs/generation/rve_random_small.yaml
+# (a coarser-voxel RVE than configs/simulation/mechanics_example.yaml's --
+# each load step here is a full Newton-CG solve, not just one CG solve, so a
+# ~630^2 grid would make this example impractically slow).
+
+inelastic:
+  input: output/generation/rve_random_small_phi-0.35_seed-67.xdmf
+  # input_L / input_dx (mm): domain size, for .npy or a bare .h5 only (no
+  #   embedded length). Give exactly one -- the other is derived (L = n*dx).
+  # input_dx: [0.001, 0.001, 0.001]
+
+  # phase_key (default "phase"): field name for the phase array.
+  # phase_key: phase
+
+  # indexed by 0-based phase id (0=matrix, 1=fibre). `model` selects the
+  # materialmodels.factory class; remaining keys are forwarded to its
+  # constructor -- see src/materialmodels/factory.py for the model registry.
+  # Any mix of plain elastic and j2_plasticity phases works -- see
+  # materialmodels.assembly.assemble_local_update.
+  materials:
+    - model: j2_plasticity
+      E:        3.76e3           # MPa
+      nu:       0.39
+      sigma_y0: 50.0              # MPa, initial yield stress
+      H:        1.0e3             # MPa, linear isotropic hardening modulus
+      name: epoxy matrix (plastic)
+    - model: isotropic_elastic
+      E:    70.0e3                # MPa
+      nu:   0.20
+      name: glass fibre
+
+  # macroscopic shear-strain cycle: 0 -> gamma_max -> -gamma_max -> gamma_max,
+  # plus the virgin gamma=0 state -- traces a hysteresis loop in the
+  # homogenized sigma[component] response. component picks which eps_bar
+  # entry is driven (symmetrized: eps_bar[i,j] = eps_bar[j,i] = gamma/2).
+  loading:
+    component:  [0, 1]           # shear in the 1-2 plane
+    gamma_max:  0.03
+    n_load:     10
+    n_unload:   15
+    n_reload:   15
+
+  toler_lin:   1.0e-7
+  maxiter_lin: 2000
+  toler_nr:    1.0e-7
+  maxiter_nr:  50
+
+output:  output/simulation
+jobname: "{inelastic.input.stem}_j2"

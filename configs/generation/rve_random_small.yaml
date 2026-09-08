@@ -1,0 +1,22 @@
+# Preprocessing config — randomly-packed circular-fibre RVE (Catalanotti 2016),
+# coarse voxel size (same phi/seed as rve_random.yaml) so a demo consuming it
+# through many nonlinear (e.g. J2 plasticity) load steps stays fast --
+# see configs/simulation/inelastic_j2_example.yaml.
+# {geometry.type} → "random_rve"  (used in output path)
+
+geometry:
+  phi:       0.35           # target fibre volume fraction
+  r_fib:     0.0035         # mm  fibre radius  (= 3.5 µm)
+  size_in_r: 15              # target domain side length = 15*r_fib
+  vox:       0.0006         # mm  voxel size -- coarser than rve_random.yaml's
+                             # 0.0001 on purpose, giving a ~88^2 grid instead
+                             # of ~630^2 (fine for a single linear solve, far
+                             # too slow for a 40-step Newton-CG hysteresis sweep)
+  nz:        1               # voxels through thickness
+  fibre_dir: [0.0, 0.0, 1.0]
+  Vf_yarn:   1.0
+  K:         15
+  seed:      67
+
+output:  output/generation
+jobname: "rve_random_small_phi-{geometry.phi}_seed-{geometry.seed}"
