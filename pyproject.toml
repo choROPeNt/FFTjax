@@ -17,6 +17,8 @@ dependencies = [
     "h5py",
     "pyyaml",
     "matplotlib",
+    "optax",
+    "gpjax"
 ]
 
 [project.optional-dependencies]
