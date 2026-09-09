@@ -62,6 +62,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from materialmodels.elastic.isotropic import LinearElasticIsotropic
+from materialmodels.phasefield.isotropic import PhaseFieldIsotropic
 from post.fields              import homogenize
 from utils.io.xdmf_writer     import IncrementalWriter
 from problems.fracture        import solve_fracture_incremental
@@ -76,7 +77,11 @@ Nv = int(np.prod(n))
 dx = tuple(Li / ni for Li, ni in zip(L, n))
 
 materials = [
-    LinearElasticIsotropic(E=210e3, nu=0.3, name="steel"),
+    # PhaseFieldIsotropic (Amor split + AT2, autodiff tangent) rather than
+    # plain LinearElasticIsotropic + degrade_stiffness_field -- this
+    # benchmark is this material's validation against the published
+    # reference curve, see materialmodels/phasefield/isotropic.py.
+    PhaseFieldIsotropic(E=210e3, nu=0.3, Gc=2.7, name="steel"),
     LinearElasticIsotropic(E=1e-6*210e3,  nu=0.3, name="void"),
 ]
 

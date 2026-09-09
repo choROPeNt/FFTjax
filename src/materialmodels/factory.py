@@ -8,10 +8,12 @@ from materialmodels.elastic.isotropic import LinearElasticIsotropic
 from materialmodels.elastic.transverse_isotropic import TransverseIsotropic
 from materialmodels.inelastic.plasticity_drucker_prager import DruckerPrager
 from materialmodels.inelastic.plasticity_j2 import J2Plasticity
+from materialmodels.phasefield.isotropic import PhaseFieldIsotropic
 
 _MODELS = {
     "isotropic_elastic":    LinearElasticIsotropic,
     "transverse_isotropic": TransverseIsotropic,
+    "phasefield_isotropic": PhaseFieldIsotropic,
     "j2_plasticity":        J2Plasticity,
     "drucker_prager":       DruckerPrager,
 }
@@ -25,6 +27,14 @@ def build_material(cfg: dict, orientations=None) -> ConstitutiveModel:
     ("name" passed through as-is, everything else cast to float -- YAML's
     float regex doesn't recognize exponents without an explicit sign, e.g.
     "3.0e3" loads as a str, not 3000.0).
+
+    "phasefield_isotropic" (PhaseFieldIsotropic -- autodiff Amor-split/AT2
+    tangent, see materialmodels.phasefield.isotropic) needs no special-casing
+    here: its one non-optional extra parameter, ``Gc``, is just another
+    kwarg the blanket float-cast forwards -- but it IS required (the class
+    itself has no default for it), so a config that omits it fails
+    immediately with a missing-argument error naming this material, not
+    later inside a fracture solve.
 
     ``fiber_dir`` (transverse_isotropic only -- see TransverseIsotropic's
     docstring) is handled specially, before the blanket float-cast, since it

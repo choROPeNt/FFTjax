@@ -1,12 +1,14 @@
 """
 Crack driving force for phase-field fracture: the tensile part ψ⁺ of the
-elastic strain energy density (Amor et al. 2009 volumetric-deviatoric
-split), and the irreversibility law that turns ψ⁺ into a monotone history
-variable H.
+elastic strain energy density, and the irreversibility law that turns ψ⁺
+into a monotone history variable H.
 
-Only Amor is implemented -- it's what the single-notch-plate benchmark
-(benchmark/single_notch_plate/pff_single_notch.py) uses; add a Miehe/spectral
-split here if a future problem needs it.
+The split itself (Amor et al. 2009 volumetric-deviatoric -- currently the
+only one implemented; see materialmodels.phasefield.splits for where a
+Miehe/spectral split would go) lives in materialmodels.phasefield.splits,
+shared with materialmodels.phasefield.isotropic.PhaseFieldIsotropic's
+autodiff path. This module only adds field-level (vmap) batching and the
+irreversibility bookkeeping on top of it.
 """
 
 import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on TPU, no GPU prealloc)
@@ -17,6 +19,7 @@ import jax
 import jax.numpy as jnp
 
 from materialmodels.base import ConstitutiveModel
+from materialmodels.phasefield.splits import amor_split
 from materialmodels.tensors import isotropic_equivalent_lame
 
 
@@ -58,18 +61,12 @@ def strain_energy_amor_split(
     mu_vox: jnp.ndarray,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """
-    Per-voxel volumetric-deviatoric energy split (Amor et al. 2009).
-
-    Decomposes  ψ_e = ψ⁺ + ψ⁻  by separating volumetric tension from
-    compression; all deviatoric energy is assigned to the tensile part:
-
-        K   = λ + 2μ/3          (3-D bulk modulus)
-        ψ⁺  = K/2 ⟨tr ε⟩₊²  +  μ ε_dev : ε_dev
-        ψ⁻  = K/2 ⟨tr ε⟩₋²
-
-    where  ε_dev = ε − (tr ε / 3) I  is the deviatoric strain.
-    ψ⁺ + ψ⁻ = ψ_e exactly. Only ψ⁺ drives crack growth -- a crack shouldn't
-    heal or grow under compression.
+    Per-voxel volumetric-deviatoric energy split (Amor et al. 2009) --
+    field-level vmap wrapper over materialmodels.phasefield.splits.
+    amor_split, the shared single-voxel formula (see its docstring for the
+    split itself). ψ⁺ + ψ⁻ reproduces the ordinary elastic energy exactly;
+    only ψ⁺ drives crack growth -- a crack shouldn't heal or grow under
+    compression.
 
     Parameters
     ----------
@@ -81,18 +78,8 @@ def strain_energy_amor_split(
     -------
     psi_pos, psi_neg : (Nv,), (Nv,)
     """
-    def _one(args):
-        eps, lam, mu = args
-        K = lam + 2.0 * mu / 3.0
-        tr_eps = jnp.trace(eps)
-        eps_dev = eps - (tr_eps / 3.0) * jnp.eye(3)
-        dev_norm_sq = jnp.sum(eps_dev ** 2)
-        psi_pos = 0.5 * K * jnp.maximum(tr_eps, 0.0) ** 2 + mu * dev_norm_sq
-        psi_neg = 0.5 * K * jnp.minimum(tr_eps, 0.0) ** 2
-        return psi_pos, psi_neg
-
     eps_vox = eps_loc.transpose(2, 0, 1)   # (Nv, 3, 3)
-    psi_pos, psi_neg = jax.vmap(_one)((eps_vox, lam_vox, mu_vox))
+    psi_pos, psi_neg = jax.vmap(amor_split)(eps_vox, lam_vox, mu_vox)
     return psi_pos, psi_neg
 
 

@@ -40,8 +40,8 @@ from typing import Callable, Tuple, cast
 import jax.numpy as jnp
 import numpy as np
 
-from materialmodels.assembly import assemble_C_field
-from materialmodels.phasefield.degradation import Gc_field, degrade_stiffness_field, k_res_field
+from materialmodels.assembly import assemble_pff_local_update
+from materialmodels.phasefield.degradation import Gc_field, k_res_field
 from materialmodels.phasefield.driving_force import lame_field, strain_energy_amor_split, update_history_hybrid
 from operators.green import build_freq_grid, build_reference_green_operator
 from post.fields import compute_displacement, field_to_grid, to_voigt, von_mises
@@ -88,7 +88,12 @@ def solve_fracture(
 
     Per staggered iteration
     ------------------------
-        1. Degrade stiffness:  C_eff = g(d) * C_field   (g = AT2 degradation)
+        1. Degraded tangent:   C_eff = pff_local_update(eps_prev, d) -- per-
+                                material stress/tangent (materialmodels.
+                                assembly.assemble_pff_local_update), evaluated
+                                at the PREVIOUS iteration's eps (frozen-
+                                tangent scheme -- see _staggered_loop's
+                                docstring for why)
         2. Mechanical solve:   (eps, sigma) = solve_lippmann_schwinger(C_eff, ...)
                                 or solve_displacement_based(C_eff, ...)
         3. Driving force:      psi+ from the undegraded Amor split
@@ -164,7 +169,7 @@ def solve_fracture(
         )
     stress_goal_arr = jnp.zeros((3, 3)) if stress_goal is None else stress_goal
 
-    C_field = assemble_C_field(materials, phase)
+    pff_local_update = assemble_pff_local_update(materials, phase)
     lam_vox, mu_vox = lame_field(materials, phase)
     xi_flat = build_freq_grid(n, L)
     k_res_arr = k_res_field(materials, phase) if k_res is None else k_res
@@ -188,7 +193,7 @@ def solve_fracture(
 
     return _staggered_loop(
         n=n, l0=l0, formulation=formulation, control=control, stress_goal_arr=stress_goal_arr,
-        C_field=C_field, lam_vox=lam_vox, mu_vox=mu_vox, xi_flat=xi_flat, k_res_arr=k_res_arr,
+        pff_local_update=pff_local_update, lam_vox=lam_vox, mu_vox=mu_vox, xi_flat=xi_flat, k_res_arr=k_res_arr,
         Gc=Gc, Gc_heterogeneous=Gc_heterogeneous, green_op=green_op,
         eps_bar=eps_bar, d_init=d_init, H_init=H_init,
         toler_lin=toler_lin, maxiter_cg=maxiter_cg,
@@ -201,7 +206,7 @@ def solve_fracture(
 
 def _staggered_loop(
     n, l0, formulation, control, stress_goal_arr,
-    C_field, lam_vox, mu_vox, xi_flat, k_res_arr, Gc, Gc_heterogeneous, green_op,
+    pff_local_update, lam_vox, mu_vox, xi_flat, k_res_arr, Gc, Gc_heterogeneous, green_op,
     eps_bar, d_init, H_init,
     toler_lin, maxiter_cg, toler_helm, maxiter_helm, eta, dt, d_thres,
     toler_st_abs, toler_st_rel, maxiter_st, early_exit: bool,
@@ -215,15 +220,36 @@ def _staggered_loop(
     iterations, err_abs/err_rel/converged_staggered kept as JAX arrays
     throughout -- no float()/bool() concretization, no data-dependent Python
     control flow, so this path is safe under jax.vmap/jax.jit).
+
+    Frozen-tangent mechanical sub-solve: ``pff_local_update``
+    (materialmodels.assembly.assemble_pff_local_update) is evaluated at
+    ``eps_prev`` -- the PREVIOUS staggered iteration's converged strain,
+    seeded from eps_bar before the first iteration -- rather than the
+    current, still-unknown ``eps``. A PhaseFieldIsotropic material's stress
+    is nonlinear in eps even at fixed d (the Amor split), so a fully
+    consistent tangent would need eps itself, which only the mechanical
+    solve about to run produces; freezing it at the previous iterate keeps
+    this loop's linear CG solvers (solve_lippmann_schwinger/
+    solve_displacement_based) usable unchanged instead of a nonlinear
+    Newton-CG mechanical sub-solve, exactly mirroring how ``d`` is already
+    frozen within one mechanical solve and only updated once per staggered
+    iteration. ``eps_prev`` is refreshed every iteration, so the loop still
+    converges to the fully self-consistent solution at staggered
+    convergence (eps_prev == eps there). Materials without ``psi_split``
+    (plain LinearElasticIsotropic) ignore eps_prev entirely in
+    ``pff_local_update``'s fallback branch, so this changes nothing for an
+    all-elastic ``materials`` list.
     """
     d_st = d_init
     H_st = H_init
     eps_bar_cur = None
+    Nv = lam_vox.shape[0]
+    eps_prev = jnp.ones((3, 3, Nv)) * eps_bar[:, :, None]
 
     for iter_st in range(1, maxiter_st + 1):
         d_prev_st = d_st
 
-        C_eff = degrade_stiffness_field(C_field, d_st, k=k_res_arr)
+        _, C_eff = pff_local_update(eps_prev, d_st)
 
         if formulation == "lippmann_schwinger":
             eps, sigma, delta, converged_mech = solve_lippmann_schwinger(
@@ -235,6 +261,7 @@ def _staggered_loop(
                 n, C_eff, xi_flat, eps_bar, control, stress_goal_arr,
                 toler_lin=toler_lin, maxiter=maxiter_cg,
             )
+        eps_prev = eps
 
         psi_pos, _ = strain_energy_amor_split(eps, lam_vox, mu_vox)
         H_st = update_history_hybrid(H_st, psi_pos, d_prev_st, d_thres=d_thres)
@@ -331,7 +358,7 @@ def solve_fracture_fixed(
         )
     stress_goal_arr = jnp.zeros((3, 3)) if stress_goal is None else stress_goal
 
-    C_field = assemble_C_field(materials, phase)
+    pff_local_update = assemble_pff_local_update(materials, phase)
     lam_vox, mu_vox = lame_field(materials, phase)
     xi_flat = build_freq_grid(n, L)
     k_res_arr = k_res_field(materials, phase) if k_res is None else k_res
@@ -359,7 +386,7 @@ def solve_fracture_fixed(
 
     return _staggered_loop(
         n=n, l0=l0, formulation=formulation, control=control, stress_goal_arr=stress_goal_arr,
-        C_field=C_field, lam_vox=lam_vox, mu_vox=mu_vox, xi_flat=xi_flat, k_res_arr=k_res_arr,
+        pff_local_update=pff_local_update, lam_vox=lam_vox, mu_vox=mu_vox, xi_flat=xi_flat, k_res_arr=k_res_arr,
         Gc=Gc, Gc_heterogeneous=Gc_heterogeneous, green_op=green_op,
         eps_bar=eps_bar, d_init=d_init, H_init=H_init,
         toler_lin=toler_lin, maxiter_cg=maxiter_cg,

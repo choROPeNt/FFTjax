@@ -10,6 +10,7 @@ from collections.abc import Sequence
 import jax.numpy as jnp
 
 from materialmodels.base import ConstitutiveModel
+from materialmodels.phasefield.degradation import degradation_at2
 
 
 def assemble_C_field(
@@ -135,3 +136,60 @@ def assemble_local_update(materials: Sequence[ConstitutiveModel], phase: jnp.nda
 
     state0 = (jnp.zeros((3, 3, Nv)), jnp.zeros(Nv))
     return local_update, state0
+
+
+def assemble_pff_local_update(materials: Sequence[ConstitutiveModel], phase: jnp.ndarray):
+    """
+    Build a ``local_update(eps_field, d_field) -> (sigma, C_tan)`` callable
+    for ``problems.fracture``'s staggered loop -- the phase-field analogue of
+    ``assemble_local_update``, for materials whose degraded stress/tangent
+    depend on both strain and damage rather than damage alone.
+
+    Duck-types on ``hasattr(m, "psi_split")`` (only
+    ``materialmodels.phasefield.isotropic.PhaseFieldIsotropic``-style
+    materials have it) to call their autodiff
+    ``stress_and_tangent_field(eps_field, d_field)``, discarding the
+    ``psi_pos`` it also returns -- the staggered loop still gets the driving
+    force from ``materialmodels.phasefield.driving_force.
+    strain_energy_amor_split`` directly (same formula, verified bit-for-bit
+    in ``test/test_materialmodels_phasefield_isotropic.py``), so it isn't
+    needed here. A material without ``psi_split`` (plain
+    ``LinearElasticIsotropic``, no Amor split) falls back to
+    ``degradation_at2(d) * stiffness_tensor()``, reproducing
+    ``materialmodels.phasefield.degradation.degrade_stiffness_field``'s
+    per-phase behavior exactly -- so a ``materials`` list can freely mix
+    old-style and new-style materials.
+
+    Parameters
+    ----------
+    materials : list of ConstitutiveModel, indexed by phase (0-based) -- any
+                mix of PhaseFieldIsotropic (psi_split) and plain elastic
+                (stiffness_tensor + k_res) materials
+    phase     : (Nv,) int   phase index per voxel
+
+    Returns
+    -------
+    local_update : callable(eps_field: (3,3,Nv), d_field: (Nv,)) ->
+                    (sigma_field: (3,3,Nv), C_tan_field: (3,3,3,3,Nv))
+    """
+    Nv = phase.shape[0]
+
+    def local_update(eps_field, d_field):
+        sigma = jnp.zeros((3, 3, Nv))
+        C_tan = jnp.zeros((3, 3, 3, 3, Nv))
+
+        for i, m in enumerate(materials):
+            mask = (phase == i)
+            if hasattr(m, "psi_split"):
+                sigma_i, C_i, _psi_pos_i = m.stress_and_tangent_field(eps_field, d_field)
+            else:
+                g = degradation_at2(d_field, k=m.k_res)
+                C_elastic = m.stiffness_tensor()
+                C_i = g[None, None, None, None, :] * C_elastic[..., None]
+                sigma_i = jnp.einsum("ijklm,klm->ijm", C_i, eps_field)
+            sigma = jnp.where(mask, sigma_i, sigma)
+            C_tan = jnp.where(mask, C_i, C_tan)
+
+        return sigma, C_tan
+
+    return local_update
