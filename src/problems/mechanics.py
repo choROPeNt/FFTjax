@@ -39,8 +39,13 @@ solvers.krylov.cg.cg_solve is -- keeping it here keeps solvers/ to its usual
 habit (operate on prepared arrays, no outer-loop control flow of its own).
 Unlike solve_mechanics, it does NOT go through materialmodels.assembly
 (the caller's own ``local_update`` callable already resolves materials/phase
-into a per-voxel stress+tangent), and it only supports pure strain BC (no
-mixed strain/stress ``control``, unlike solve_displacement_based).
+into a per-voxel stress+tangent). It supports the same mixed strain/stress
+``control``/``stress_goal`` convention as solve_displacement_based, ported
+into the Newton loop: the macroscopic strain on stress-controlled
+directions is its own Newton unknown (``eps_bar_free``), accumulated across
+iterations separately from the fluctuation ``delta`` -- see
+solve_displacement_based_nonlinear's own docstring for why that separation
+matters.
 """
 
 import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on TPU, no GPU prealloc)
@@ -56,7 +61,7 @@ from materialmodels.assembly import assemble_C_field
 from operators.green import build_freq_grid, build_reference_green_operator, nyquist_safe_xi
 from post.fields import compute_displacement, field_to_grid, to_voigt, von_mises
 from problems.incremental import IncrementResult, solve_automatic, solve_fixed
-from solvers.elliptic.vector.displacement_based import DisplacementBasedSolver
+from solvers.elliptic.vector.displacement_based import DisplacementBasedSolver, _active_pairs
 from solvers.elliptic.vector.lippmann_schwinger import LippmannSchwingerSolver
 from solvers.krylov.cg import cg_solve
 from solvers.solution import ElasticitySolution
@@ -278,24 +283,28 @@ def solve_mechanics(
 
 
 def solve_displacement_based_nonlinear(
-    n:            Tuple[int, ...],
-    xi_flat:      jnp.ndarray,
-    eps_bar:      jnp.ndarray,
-    local_update: Callable[[jnp.ndarray, Any], Tuple[jnp.ndarray, jnp.ndarray, Any]],
-    state_init:   Any,
-    toler_lin:    float = 1e-6,
-    maxiter_lin:  int = 1000,
-    toler_nr:     float = 1e-8,
-    maxiter_nr:   int = 50,
-    C0:           jnp.ndarray | None = None,
-    delta_init:   jnp.ndarray | None = None,
+    n:                 Tuple[int, ...],
+    xi_flat:           jnp.ndarray,
+    eps_bar:           jnp.ndarray,
+    local_update:      Callable[[jnp.ndarray, Any], Tuple[jnp.ndarray, jnp.ndarray, Any]],
+    state_init:        Any,
+    toler_lin:         float = 1e-6,
+    maxiter_lin:       int = 1000,
+    toler_nr:          float = 1e-8,
+    maxiter_nr:        int = 50,
+    C0:                jnp.ndarray | None = None,
+    delta_init:        jnp.ndarray | None = None,
+    control:           Tuple[Tuple[int, ...], ...] | None = None,
+    stress_goal:       jnp.ndarray | None = None,
+    eps_bar_free_init: jnp.ndarray | None = None,
 ):
     """
     Newton-outer / CG-inner solve for a nonlinear local constitutive law:
     div(sigma(eps)) = 0 on a periodic voxel grid, prescribed macroscopic
-    strain ``eps_bar``, pure strain BC only (no mixed strain/stress
-    ``control`` -- that generalization, analogous to
-    solve_displacement_based's, is not built here).
+    strain ``eps_bar``, optionally with mixed strain/stress macroscopic BC
+    via ``control``/``stress_goal`` (same convention as
+    solve_displacement_based); ``control`` omitted or all-zero (default) is
+    pure strain BC.
 
     Same FFT-based grad/div machinery as solve_displacement_based (frequency
     grid, Nyquist-safe xi, strain-from-fluctuation via the DC-bin trick),
@@ -306,6 +315,10 @@ def solve_displacement_based_nonlinear(
     iteration evaluating the actual nonlinear stress and its tangent at the
     CURRENT trial strain via ``local_update``, using CG only for the
     *linearized correction* -- true Newton, not a fixed-point/secant scheme.
+    Mixed BC folds in the same way solve_displacement_based's bordered
+    system does: the CG unknown at each Newton iteration is
+    ``pack(du, sv)`` (fluctuation correction, macroscopic-stress-controlled
+    strain correction), solved jointly against the current tangent.
 
     ``local_update(eps_field, state) -> (sigma_field, C_tan_field, new_state)``
     is any per-voxel nonlinear stress/tangent/state map, already
@@ -319,8 +332,8 @@ def solve_displacement_based_nonlinear(
     ----------
     n            : grid shape (nx, ny, nz)
     xi_flat      : (3, Nv)  angular-frequency grid (operators.green.build_freq_grid)
-    eps_bar      : (3, 3)   prescribed macroscopic strain (pure strain BC --
-                   every component is prescribed, none solved for)
+    eps_bar      : (3, 3)   prescribed macroscopic strain; entries where
+                   ``control == 1`` are ignored (solved for instead)
     local_update : eps_field (3,3,Nv), state -> (sigma_field (3,3,Nv),
                    C_tan_field (3,3,3,3,Nv), new_state)
     state_init   : initial per-voxel state (caller-defined; e.g. (eps_p, alpha)
@@ -342,7 +355,7 @@ def solve_displacement_based_nonlinear(
                    notebooks/in-elastic_J2.ipynb, section 4, for the pattern.
                    Projected to zero mean internally regardless of what's
                    passed in (see below) -- the macroscopic strain is always
-                   carried by eps0, never by delta.
+                   carried by eps0 + eps_bar_free, never by delta.
     C0           : (3,3,3,3) or None -- fixed reference stiffness for the CG
                    preconditioner; None re-derives it from the CURRENT tangent
                    field every Newton iteration (voxel-mean of C_tan), matching
@@ -350,6 +363,23 @@ def solve_displacement_based_nonlinear(
                    C0 avoids rebuilding/inverting the preconditioner each
                    iteration -- standard practice for FFT-based Newton-Krylov
                    plasticity, not yet benchmarked either way in this project.
+    control      : (3, 3) 0/1 mask, 1 = stress-controlled, 0 = strain-controlled.
+                   None (default) = pure strain BC (all zero), reproducing
+                   this function's original behavior exactly -- every
+                   pack/unpack/sv helper below degenerates to a no-op when
+                   there are no active (i, j) pairs, so this is a strict
+                   superset of the pure-strain code, not a separate path.
+    stress_goal  : (3, 3) macroscopic target stress; only entries where
+                   ``control == 1`` are used. None = zeros.
+    eps_bar_free_init : (3, 3) or None -- initial guess for the macroscopic
+                   strain correction on stress-controlled directions (i.e.
+                   the ``sv``/``deps_bar_free`` unknown, accumulated across
+                   Newton iterations the same way ``delta`` accumulates its
+                   own correction -- see below). None starts from zero.
+                   Warm-starting this across load steps is the mixed-BC
+                   analogue of ``delta_init`` (e.g. the previous, smaller
+                   load level's converged lateral contraction is a much
+                   better starting guess than 0 for the next level).
 
     Returns
     -------
@@ -358,9 +388,19 @@ def solve_displacement_based_nonlinear(
     state     : final per-voxel state
     converged : bool -- True if the Newton residual met toler_nr within maxiter_nr
     n_iter    : int  -- Newton iterations actually run
+
+    The resolved macroscopic strain (only meaningful when ``control`` has
+    active entries) is recoverable as ``jnp.mean(eps, axis=-1)`` -- not
+    returned separately, to keep this function's return signature identical
+    for every existing pure-strain caller.
     """
     Nv = prod(n)
     iq = 1j * nyquist_safe_xi(xi_flat, n)  # (3, Nv)
+
+    control = control if control is not None else _ZERO_CONTROL
+    pairs = _active_pairs(control)
+    control_arr = jnp.asarray(control, dtype=eps_bar.dtype)
+    stress_goal = jnp.zeros((3, 3), dtype=eps_bar.dtype) if stress_goal is None else stress_goal
 
     def fft_(x):
         s = x.shape
@@ -376,30 +416,69 @@ def solve_displacement_based_nonlinear(
         return ifft_(jnp.einsum("ijm,jm->im", sigma_hat, iq))
 
     def strain_from_correction(dU):
-        """Pure-fluctuation strain from a Newton correction's displacement-like
-        unknown -- zero mean (DC bin), unlike solve_displacement_based's
-        strain_from_u (which embeds a macroscopic correction there instead):
-        eps_bar is already fixed as the baseline here, nothing left to solve
-        for in the mean."""
+        """Pure-fluctuation strain from a displacement-like unknown -- zero
+        mean (DC bin) unconditionally. Used to extract delta's own update
+        from a Newton correction's du block: the macroscopic-strain update
+        (mixed BC) is carried entirely by eps_bar_free instead (see
+        strain_from_u below), so this stays exactly as before regardless of
+        whether control is active -- delta's zero-mean invariant is
+        untouched by turning mixed BC on."""
         dU_hat   = fft_(dU)
         grad_hat = jnp.einsum("im,jm->ijm", dU_hat, iq)
         eps_hat  = 0.5 * (grad_hat + jnp.transpose(grad_hat, (1, 0, 2)))
         eps_hat  = eps_hat.at[:, :, 0].set(0.0)
         return ifft_(eps_hat)
 
-    eps0  = jnp.ones((3, 3, Nv)) * eps_bar[:, :, None]
+    # ── mixed-BC bookkeeping, same convention as solve_displacement_based --
+    #    pairs=() (pure strain) makes every one of these a no-op.
+    def sv2sm(sv):
+        sm = jnp.zeros((3, 3), dtype=sv.dtype)
+        for k, (i, j) in enumerate(pairs):
+            sm = sm.at[i, j].set(sv[k])
+            sm = sm.at[j, i].set(sv[k])
+        return sm
+
+    def sm2sv(sm):
+        if not pairs:
+            return jnp.zeros((0,), dtype=sm.dtype)
+        return jnp.stack([sm[i, j] for i, j in pairs])
+
+    def unpack(x_flat):
+        du = x_flat[: 3 * Nv].reshape(3, Nv)
+        sv = x_flat[3 * Nv:]
+        return du, sv
+
+    def pack(du, sv):
+        return jnp.concatenate([du.reshape(-1), sv])
+
+    def strain_from_u(du, deps_bar_free):
+        """Like strain_from_correction, but embeds deps_bar_free into the DC
+        bin instead of zeroing it -- used only inside a Newton iteration's
+        own linearized CG sub-solve, where the fluctuation and macroscopic
+        corrections are coupled through the same tangent and must be solved
+        for jointly. Reduces to strain_from_correction exactly when
+        deps_bar_free is zero (in particular whenever pairs=())."""
+        du_hat   = fft_(du)
+        grad_hat = jnp.einsum("im,jm->ijm", du_hat, iq)
+        eps_hat  = 0.5 * (grad_hat + jnp.transpose(grad_hat, (1, 0, 2)))
+        eps_hat  = eps_hat.at[:, :, 0].set(Nv * deps_bar_free.astype(eps_hat.dtype))
+        return ifft_(eps_hat)
+
+    eps0  = jnp.ones((3, 3, Nv)) * (eps_bar * (1.0 - control_arr))[:, :, None]
     delta = jnp.zeros((3, 3, Nv)) if delta_init is None else delta_init
-    # The macroscopic strain is carried entirely by eps0 above; delta must be
-    # a zero-mean fluctuation on top of it, or the true average strain
-    # silently drifts away from eps_bar. Newton's own corrections are always
-    # zero-mean by construction (strain_from_correction zeros the DC bin
-    # below), but a caller-supplied delta_init has no such guarantee -- e.g.
-    # a naive load-stepping warm start using the previous step's full field
-    # minus THIS step's new baseline has a nonzero mean whenever eps_bar
-    # changed, and in the worst case that alone can satisfy div(sigma)=0
-    # trivially (e.g. at eps=0) well short of the actual target strain,
-    # reporting false convergence. Project unconditionally rather than
-    # trusting the caller to have gotten this right.
+    eps_bar_free = jnp.zeros((3, 3), dtype=eps_bar.dtype) if eps_bar_free_init is None else eps_bar_free_init
+    # The macroscopic strain is carried entirely by eps0 (strain-controlled
+    # directions) + eps_bar_free (stress-controlled directions, solved for);
+    # delta must be a zero-mean fluctuation on top of that, or the true
+    # average strain silently drifts away from eps_bar. Newton's own
+    # corrections are always zero-mean by construction (strain_from_correction
+    # zeros the DC bin below), but a caller-supplied delta_init has no such
+    # guarantee -- e.g. a naive load-stepping warm start using the previous
+    # step's full field minus THIS step's new baseline has a nonzero mean
+    # whenever eps_bar changed, and in the worst case that alone can satisfy
+    # div(sigma)=0 trivially (e.g. at eps=0) well short of the actual target
+    # strain, reporting false convergence. Project unconditionally rather
+    # than trusting the caller to have gotten this right.
     delta_hat = fft_(delta)
     delta_hat = delta_hat.at[:, :, 0].set(0.0)
     delta = ifft_(delta_hat)
@@ -408,11 +487,15 @@ def solve_displacement_based_nonlinear(
     n_iter = 0
 
     for n_iter in range(1, maxiter_nr + 1):
-        eps_k = eps0 + delta
+        eps_bar_free_bcast = jnp.ones((3, 3, Nv)) * eps_bar_free[:, :, None]
+        eps_k = eps0 + eps_bar_free_bcast + delta
         sigma_k, C_tan_k, new_state = local_update(eps_k, state)
 
-        residual   = div_of(sigma_k)                     # (3, Nv) -- want 0
-        resid_norm = float(jnp.linalg.norm(residual))
+        residual_div   = div_of(sigma_k)                  # (3, Nv) -- want 0
+        sigma_sum      = jnp.real(fft_(sigma_k)[:, :, 0])  # DC bin = sum over voxels
+        residual_extra = sm2sv(sigma_sum) - Nv * sm2sv(stress_goal)  # want 0
+
+        resid_norm = float(jnp.sqrt(jnp.sum(residual_div ** 2) + jnp.sum(residual_extra ** 2)))
         ref_norm   = float(jnp.linalg.norm(sigma_k)) + 1e-30
         if resid_norm / ref_norm < toler_nr:
             converged = True
@@ -420,9 +503,13 @@ def solve_displacement_based_nonlinear(
             break
 
         def A_op(x_flat):
-            eps_trial   = strain_from_correction(x_flat.reshape(3, Nv))
+            du, sv      = unpack(x_flat)
+            eps_trial   = strain_from_u(du, sv2sm(sv))
             sigma_trial = jnp.einsum("ijklm,klm->ijm", C_tan_k, eps_trial)
-            return div_of(sigma_trial).reshape(-1)
+            sigma_hat   = fft_(sigma_trial)
+            div_flat    = ifft_(jnp.einsum("ijm,jm->im", sigma_hat, iq))
+            extra_out   = sm2sv(jnp.real(sigma_hat[:, :, 0]))
+            return pack(div_flat, extra_out)
 
         C0_ref  = jnp.mean(C_tan_k, axis=-1) if C0 is None else C0
         K0_hat  = jnp.einsum("jm,ijkl,lm->ikm", iq.imag, C0_ref, iq.imag)
@@ -430,37 +517,56 @@ def solve_displacement_based_nonlinear(
         K0_hat  = jnp.where(null_pt[None, None, :], jnp.eye(3)[:, :, None], K0_hat)
         K0_inv  = jnp.moveaxis(jnp.linalg.inv(jnp.moveaxis(K0_hat, -1, 0)), 0, -1)
 
-        def M(r_flat):
-            r_hat = fft_(r_flat.reshape(3, Nv))
-            z_hat = jnp.einsum("ikm,km->im", K0_inv, r_hat)
-            return ifft_(z_hat).reshape(-1)
+        # "extra" block preconditioner: self-coupling of the macroscopic-
+        # strain unknowns at the reference medium, matching A_op's own
+        # (no-minus-sign) convention for extra_out above -- this is a Newton
+        # *correction* system, not solve_displacement_based's direct
+        # from-zero solve, so the sign is re-derived here, not copied.
+        if pairs:
+            basis   = jnp.eye(len(pairs), dtype=eps_bar.dtype)
+            P_extra = jnp.stack([
+                Nv * sm2sv(jnp.einsum("ijkl,kl->ij", C0_ref, sv2sm(basis[k])))
+                for k in range(len(pairs))
+            ], axis=1)
 
-        bb = (-residual).reshape(-1)
+        def M(x_flat):
+            du, sv = unpack(x_flat)
+            r_hat  = fft_(du)
+            z_hat  = jnp.einsum("ikm,km->im", K0_inv, r_hat)
+            z_du   = ifft_(z_hat)
+            z_sv   = jnp.linalg.solve(P_extra, sv) if pairs else sv
+            return pack(z_du, z_sv)
+
+        bb = pack((-residual_div).reshape(-1), -residual_extra)
         x0 = jnp.zeros_like(bb)
-        Delta_flat, _cg_converged = cg_solve(A_op, bb, x0, toler_lin, maxiter_lin, M=M)
+        x_flat, _cg_converged = cg_solve(A_op, bb, x0, toler_lin, maxiter_lin, M=M)
 
-        # Delta_flat is the CG unknown -- a displacement-like field (3, Nv),
-        # not a strain tensor -- the actual strain correction is its
-        # symmetric gradient, same as A_op's own eps_trial above.
-        delta = delta + strain_from_correction(Delta_flat.reshape(3, Nv))
+        # x_flat's du block is a displacement-like field (3, Nv), not a
+        # strain tensor -- the actual fluctuation correction is its symmetric
+        # gradient, same as A_op's own eps_trial above; the sv block is the
+        # macroscopic-strain correction, accumulated separately from delta.
+        du_sol, sv_sol = unpack(x_flat)
+        delta = delta + strain_from_correction(du_sol)
+        eps_bar_free = eps_bar_free + sv2sm(sv_sol)
         # ``state`` is deliberately NOT advanced here. It is the state at the
         # last CONVERGED load increment, and a return mapping is defined
         # relative to exactly that -- it must stay frozen for every Newton
-        # iteration of this increment, with only ``delta`` (the unknown) moving.
-        # Advancing it per iteration instead makes each iteration's return
-        # start from the previous iterate's already-updated plastic strain, so
-        # plastic flow ratchets up once per iteration and sigma drifts under
-        # Newton's feet. Hardening masks it -- the drift self-limits as sigma_y
-        # grows, so the residual still falls, just to a stalled ~1e-7 floor
-        # instead of ~1e-10, at a fixed ~10 iterations per step regardless of
-        # the load. Push the load far enough (a confined DP matrix past
-        # eps_11 ~ 0.03) and it stops being masked: Newton descends about five
-        # iterations, turns around and diverges geometrically to a garbage
-        # fixed point, with the inner CG reporting success throughout and the
-        # step size making no difference. Verified on a 152^3 tangled-fibre
-        # RVE -- freezing state here took that step from divergence to
-        # convergence in 8 iterations, and cut every earlier step from ~10 to
-        # ~6 (see test/test_problems_mechanics_nonlinear.py, check 4).
+        # iteration of this increment, with only ``delta``/``eps_bar_free``
+        # (the unknowns) moving. Advancing it per iteration instead makes
+        # each iteration's return start from the previous iterate's
+        # already-updated plastic strain, so plastic flow ratchets up once
+        # per iteration and sigma drifts under Newton's feet. Hardening
+        # masks it -- the drift self-limits as sigma_y grows, so the residual
+        # still falls, just to a stalled ~1e-7 floor instead of ~1e-10, at a
+        # fixed ~10 iterations per step regardless of the load. Push the load
+        # far enough (a confined DP matrix past eps_11 ~ 0.03) and it stops
+        # being masked: Newton descends about five iterations, turns around
+        # and diverges geometrically to a garbage fixed point, with the inner
+        # CG reporting success throughout and the step size making no
+        # difference. Verified on a 152^3 tangled-fibre RVE -- freezing state
+        # here took that step from divergence to convergence in 8 iterations,
+        # and cut every earlier step from ~10 to ~6 (see
+        # test/test_problems_mechanics_nonlinear.py, check 4).
     else:
         # loop exhausted maxiter_nr without an early break -- converged stays
         # False and ``state`` is still the last converged increment's, so a
@@ -468,6 +574,7 @@ def solve_displacement_based_nonlinear(
         # than from a half-converged iterate's.
         pass
 
-    eps_final = eps0 + delta
+    eps_bar_free_bcast = jnp.ones((3, 3, Nv)) * eps_bar_free[:, :, None]
+    eps_final = eps0 + eps_bar_free_bcast + delta
     sigma_final, _, _ = local_update(eps_final, state)
     return eps_final, sigma_final, state, converged, n_iter
