@@ -1,16 +1,35 @@
 .card {
   height: 100%;
   padding: 0.5rem;
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
-  color: inherit;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, filter 0.15s ease;
+  color: #1c1e21;
   text-decoration: none;
+  background: linear-gradient(135deg, #e0e0e6 0%, #f1f1f4 45%,  #ffffff 100%);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.card :global(.card__header),
+.card :global(.card__body) {
+  color: inherit;
 }
 
 .card:hover {
   transform: translateY(-2px);
   box-shadow: var(--ifm-global-shadow-md);
-  color: inherit;
+  filter: brightness(0.98);
+  color: #1c1e21;
   text-decoration: none;
+}
+
+[data-theme='dark'] .card {
+  color: #e3e3e3;
+  background: linear-gradient(135deg, #1a1a1e 0%, #2a2a2f 45%,  #3a3a40 100%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+[data-theme='dark'] .card:hover {
+  filter: brightness(1.15);
+  color: #e3e3e3;
 }
 
 .cardImageWrapper {
