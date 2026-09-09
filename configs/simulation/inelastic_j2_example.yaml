@@ -50,5 +50,9 @@ inelastic:
   toler_nr:    1.0e-7
   maxiter_nr:  50
 
+  # Also write the plastic strain TENSOR eps_p (Voigt 6) per increment, on
+  # top of the scalar `strain_p` (= alpha) always written. Off by default.
+  # write_plastic_strain_tensor: true
+
 output:  output/simulation
 jobname: "{inelastic.input.stem}_j2"
