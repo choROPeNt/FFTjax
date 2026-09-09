@@ -47,6 +47,7 @@ Worked examples demonstrating FFTjax in practice.
       title: 'Phase-Field Fracture (AT2)',
       description: 'A minimal walkthrough of the staggered phase-field damage solver on a homogeneous, isotropic cube with a pre-damaged seed, showing the brittle snap-through in the macroscopic stress-strain response.',
       to: '/documentation/examples/phase-field',
+      image: '/img/pff_damage.png',
     },  
   ]}
 />
@@ -66,15 +67,16 @@ Worked examples demonstrating FFTjax in practice.
 
 ## Structure-Property
 
-{/* <CardGrid
+<CardGrid
   cards={[
     {
-      title: 'Structure-Property',
-      description: '',
+      title: 'Transverse Modulus vs. Fibre Volume Fraction',
+      description: 'Sweeps fibre volume fraction on a random-fibre RVE, extracting the effective transverse modulus from a mixed-BC displacement solve at each point, then fits a GPJax Gaussian-process surrogate refit inside the loop -- watch its answer at an unsimulated query point sharpen as more real FFT solves arrive.',
       to: '/documentation/examples/structure-property',
+      image: '/img/structure-property_logo.png',
     },
   ]}
-/> */}
+/>
 
 ## Diffusion  Thermal 
 

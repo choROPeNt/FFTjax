@@ -55,6 +55,8 @@ try:
 except ImportError:
     raise SystemExit("gpjax / jax not found.  pip install gpjax optax")
 
+from learning.surrogates import GPSurrogate
+
 
 # ── Step 1: load patch index ──────────────────────────────────────────────────
 
@@ -168,48 +170,43 @@ def fit_and_predict(
     n_iters: int = 500,
     lr:      float = 0.01,
 ) -> tuple[np.ndarray, np.ndarray, dict]:
-    """Fit Matérn-5/2 GP and return (posterior mean, posterior variance, hyperparams)."""
-    key = jax.random.PRNGKey(0)
-    X   = jnp.array(X_obs)
-    y   = jnp.array(y_obs)
-    D   = gpx.Dataset(X=X, y=y)
+    """
+    Fit Matérn-5/2 GP and return (posterior mean, posterior variance,
+    hyperparams) -- thin wrapper around learning.surrogates.GPSurrogate
+    (shared with notebooks/structure-property_phi-sweep.ipynb's own GP
+    fitting), kept here only to build this script's specific Linear+Matern32
+    sum kernel and extract its particular hyperparameters afterwards.
 
-    dims   = list(range(X.shape[1]))
+    X_obs/X_cand are assumed ALREADY normalised by the caller (see this
+    module's _normalize, called against the fixed full-candidate-pool
+    bounds) -- passed through to GPSurrogate as identity (0, 1) bounds so
+    it doesn't renormalise them a second time against whatever range this
+    call's own X_obs happens to span. standardize_y=False for the same
+    reason: this script's original fit never standardized y, only X.
+    """
+    dims = list(range(X_obs.shape[1]))
     kernel = gpx.kernels.SumKernel(kernels=[
         gpx.kernels.Linear(active_dims=dims),
         gpx.kernels.Matern32(active_dims=dims),
     ])
-    meanf     = gpx.mean_functions.Constant()
-    try:
-        prior = gpx.gps.Prior(mean_function=meanf, kernel=kernel)
-    except AttributeError:
-        prior = gpx.Prior(mean_function=meanf, kernel=kernel)      # type: ignore[attr-defined]
-    likelihood = gpx.likelihoods.Gaussian(num_datapoints=D.n)
-    posterior  = prior * likelihood
-
-    opt_post, _ = gpx.fit(
-        model      = posterior,
-        objective  = lambda p, d: -gpx.objectives.conjugate_mll(p, d),
-        train_data = D,
-        optim      = optax.adam(lr),
-        num_iters  = n_iters,
-        key        = key,
-        safe       = True,
+    identity_bounds = (np.zeros(X_obs.shape[1]), np.ones(X_obs.shape[1]))
+    surrogate = GPSurrogate(kernel=kernel, num_iters=n_iters, lr=lr, standardize_y=False).fit(
+        X_obs, y_obs, x_bounds=identity_bounds,
     )
-    pred = opt_post.predict(jnp.array(X_cand), train_data=D)  # type: ignore[union-attr]
+    mean, var = surrogate.predict(X_cand)
 
     def _unwrap(p):
         return p.unwrap() if hasattr(p, "unwrap") else jnp.asarray(p)
 
-    k_linear, k_matern = opt_post.prior.kernel.kernels
+    k_linear, k_matern = surrogate.posterior.prior.kernel.kernels
     hyperparams = {
         "linear_variance":  float(_unwrap(k_linear.variance)),
         "matern_lengthscale": np.array(_unwrap(k_matern.lengthscale)),
         "matern_variance":  float(_unwrap(k_matern.variance)),
-        "noise_variance":   float(_unwrap(opt_post.likelihood.obs_stddev) ** 2),
-        "mean_constant":    float(_unwrap(opt_post.prior.mean_function.constant)),
+        "noise_variance":   float(_unwrap(surrogate.posterior.likelihood.obs_stddev) ** 2),
+        "mean_constant":    float(_unwrap(surrogate.posterior.prior.mean_function.constant)),
     }
-    return np.array(pred.mean), np.array(pred.variance), hyperparams  # type: ignore[union-attr]
+    return mean, var, hyperparams
 
 
 # ── Step 5: nearest patch ─────────────────────────────────────────────────────
