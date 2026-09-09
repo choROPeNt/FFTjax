@@ -10,6 +10,9 @@
 notes
 configs/user
 notebooks/user/
+sim/
+sim
+uv.lock
 
 
 **/archiv/
