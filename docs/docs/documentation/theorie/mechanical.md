@@ -1,4 +1,4 @@
-# ⚙️ Mechanical Solvers
+# Mechanical Solvers
 
 FFTjax provides Newton-CG solvers for the mechanical equilibrium problem (`solvers/mechanical/`),
 covering both linear elastic and nonlinear (J2 plastic) materials. The linear variants differ in

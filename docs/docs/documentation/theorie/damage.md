@@ -1,4 +1,4 @@
-# 💥 Damage & Fracture Solvers
+# Damage & Fracture Solvers
 
 FFTjax implements variational phase-field (AT2) fracture (`solvers/damage/`) as a staggered
 solve between the mechanical equilibrium problem (see [Mechanical Solvers](mechanical)) and a
