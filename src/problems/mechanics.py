@@ -443,10 +443,29 @@ def solve_displacement_based_nonlinear(
         # not a strain tensor -- the actual strain correction is its
         # symmetric gradient, same as A_op's own eps_trial above.
         delta = delta + strain_from_correction(Delta_flat.reshape(3, Nv))
-        state = new_state
+        # ``state`` is deliberately NOT advanced here. It is the state at the
+        # last CONVERGED load increment, and a return mapping is defined
+        # relative to exactly that -- it must stay frozen for every Newton
+        # iteration of this increment, with only ``delta`` (the unknown) moving.
+        # Advancing it per iteration instead makes each iteration's return
+        # start from the previous iterate's already-updated plastic strain, so
+        # plastic flow ratchets up once per iteration and sigma drifts under
+        # Newton's feet. Hardening masks it -- the drift self-limits as sigma_y
+        # grows, so the residual still falls, just to a stalled ~1e-7 floor
+        # instead of ~1e-10, at a fixed ~10 iterations per step regardless of
+        # the load. Push the load far enough (a confined DP matrix past
+        # eps_11 ~ 0.03) and it stops being masked: Newton descends about five
+        # iterations, turns around and diverges geometrically to a garbage
+        # fixed point, with the inner CG reporting success throughout and the
+        # step size making no difference. Verified on a 152^3 tangled-fibre
+        # RVE -- freezing state here took that step from divergence to
+        # convergence in 8 iterations, and cut every earlier step from ~10 to
+        # ~6 (see test/test_problems_mechanics_nonlinear.py, check 4).
     else:
-        # loop exhausted maxiter_nr without an early break -- last iterate's
-        # state/residual stand, converged stays False
+        # loop exhausted maxiter_nr without an early break -- converged stays
+        # False and ``state`` is still the last converged increment's, so a
+        # caller that ignores the flag resumes from a consistent state rather
+        # than from a half-converged iterate's.
         pass
 
     eps_final = eps0 + delta
