@@ -85,7 +85,9 @@ def assemble_local_update(materials: Sequence[ConstitutiveModel], phase: jnp.nda
     number of phases and any mix of stateless (plain ``ConstitutiveModel``,
     e.g. ``LinearElasticIsotropic``) and stateful (duck-typed via a
     ``stress_and_tangent_field(eps_field, eps_p_field, alpha_field)``
-    method, e.g. ``J2Plasticity``) materials.
+    method, e.g. ``J2Plasticity`` or ``DruckerPrager``) materials. The
+    duck-typing is deliberate: a new stateful model needs no edit here, it
+    just has to supply that one method with those shapes.
 
     State is one shared ``(eps_p_field, alpha_field)`` pair spanning the
     whole grid, same shapes ``J2Plasticity.stress_and_tangent_field`` uses

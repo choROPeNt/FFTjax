@@ -19,6 +19,18 @@ Three checks
 3. A load well past the matrix's yield stress must converge, produce no
    NaN, and leave a nonzero accumulated plastic strain in at least one
    matrix voxel (confirming the plastic branch actually engaged).
+4. The returned plastic state must be exactly ONE return mapping from the
+   state the solve started at, evaluated at the converged strain -- the
+   regression guarding the frozen-``state`` invariant in
+   solve_displacement_based_nonlinear (see its comment where ``delta`` is
+   updated). A return mapping is defined relative to the last CONVERGED
+   increment, so that state must stay frozen for every Newton iteration.
+   When it was advanced per iteration instead, each iteration's return
+   started from the previous iterate's already-updated plastic strain,
+   plastic flow ratcheted up once per iteration, and the converged answer
+   depended on how many iterations Newton happened to take. Because the
+   frozen version makes this the very computation the converging iteration
+   performed, the check is an exact equality, not a tolerance.
 
 Usage
 -----
@@ -132,5 +144,40 @@ assert converged_large
 assert not bool(jnp.any(jnp.isnan(sigma_large)))
 assert n_plastic > 0, "expected at least one matrix voxel to yield at this load level"
 print("[3] PASSED")
+
+# ── 4. the returned plastic state must be ONE return mapping from the state
+#      the solve started at, evaluated at the converged strain ────────────────
+
+# A return mapping is defined relative to the last CONVERGED increment, so
+# solve_displacement_based_nonlinear must keep `state` frozen at state0 for
+# every Newton iteration and only move `delta`. That makes this an exact
+# identity, not an approximation: re-running local_update at the converged
+# strain from the ORIGINAL state must reproduce the returned stress and state
+# bit-for-bit, because it is literally the same computation the converging
+# iteration did. When state was advanced per Newton iteration instead, the
+# returned state carried one extra ratcheted return mapping per iteration and
+# this check fails by orders of magnitude -- see the comment in
+# solve_displacement_based_nonlinear where `delta` is updated.
+sigma_chk, _, (eps_p_chk, alpha_chk) = plastic_local_update(eps_large, state0)
+d_sigma = float(jnp.max(jnp.abs(sigma_chk - sigma_large)))
+d_eps_p = float(jnp.max(jnp.abs(eps_p_chk - eps_p_large)))
+d_alpha = float(jnp.max(jnp.abs(alpha_chk - alpha_large)))
+print(f"[4] state is one return mapping from state0: max|dsigma|={d_sigma:.3e}  "
+      f"max|deps_p|={d_eps_p:.3e}  max|dalpha|={d_alpha:.3e}")
+assert float(jnp.max(alpha_large)) > 0.0, "check 4 is vacuous if nothing yielded"
+# eps_p/alpha are bit-exact: they ARE the converging iteration's own outputs.
+# sigma only matches to roundoff -- the driver recomputes it after the loop via
+# local_update(eps_final, state) with state already advanced, so it takes a
+# different (dgamma == 0, hence value-identical) arithmetic path to the same
+# stress. 1e-12 relative is ~4 orders above the observed 1e-16 and ~10 orders
+# below the per-iteration ratcheting the bug produced.
+assert d_sigma < 1e-12 * float(jnp.max(jnp.abs(sigma_large)))
+assert d_eps_p == 0.0 and d_alpha == 0.0, (
+    "the returned plastic state is not a single return mapping from the state the "
+    "solve started at -- plastic state is being advanced inside the Newton loop "
+    "instead of staying frozen at the last converged increment, so plastic flow "
+    "ratchets up once per Newton iteration"
+)
+print("[4] PASSED")
 
 print("\ntest_problems_mechanics_nonlinear: all checks passed")

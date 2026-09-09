@@ -1,11 +1,11 @@
 """
-J2 (von Mises) elastoplastic homogenization on a loaded microstructure — YAML-driven.
+Elastoplastic homogenization on a loaded microstructure — YAML-driven.
 
 Loads an existing microstructure (XDMF/HDF5, e.g. from
 scripts/generation/generate_weave.py or generate_rve.py) via
 utils.io.reader.SimulationReader, builds a per-phase local_update via
 materialmodels.assembly.assemble_local_update (any mix of plain elastic
-phases and J2Plasticity phases), then drives a macroscopic shear strain
+phases and plastic phases), then drives a macroscopic shear strain
 through a load / unload / reload cycle via
 problems.mechanics.solve_displacement_based_nonlinear -- the Newton-outer/
 CG-inner driver a stateful, strain-dependent-tangent material needs (unlike
@@ -14,6 +14,16 @@ state (eps_p, alpha) is threaded across load steps by this script, never
 stored on the material instances -- see materialmodels/inelastic/
 plasticity_j2.py and notebooks/in-elastic_J2.ipynb for the underlying model
 and its from-scratch demonstration.
+
+The plastic model is chosen per phase in the config, not by this script:
+``j2_plasticity`` (pressure-insensitive von Mises) and ``drucker_prager``
+(pressure-sensitive, optionally non-associated) share a state convention
+and a stress_and_tangent_field surface, so assemble_local_update treats
+them interchangeably and swapping one for the other is a config edit --
+see configs/simulation/inelastic_j2_example.yaml and
+configs/simulation/inelastic_drucker_prager_example.yaml, which differ only
+in the matrix phase's material block. Note the ``strain_p`` field written
+below is the accumulated equivalent plastic strain alpha for both.
 
 ``loading`` in the YAML controls the cycle:
   component  -- [i, j] macroscopic strain entry driven, symmetrized
@@ -31,6 +41,7 @@ the hard way while building the reference notebook).
 Usage
 -----
     python scripts/simulation/solve_inelastic.py configs/simulation/inelastic_j2_example.yaml
+    python scripts/simulation/solve_inelastic.py configs/simulation/inelastic_drucker_prager_example.yaml
 
 Output
 ------
@@ -66,7 +77,8 @@ from utils.io.xdmf_writer import IncrementalWriter
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Solve J2 elastoplastic homogenization through a load/unload/reload "
+        description="Solve elastoplastic homogenization (J2 or Drucker-Prager, per "
+                    "phase, chosen in the config) through a load/unload/reload "
                     "hysteresis cycle on a loaded microstructure (XDMF/HDF5)"
     )
     parser.add_argument("config", type=Path, help="YAML configuration file")
@@ -93,7 +105,7 @@ def main():
     print(f"Grid   : {n}   phi = {float(np.mean(phase_np > 0)):.3f}")
 
     # ── materials (list, indexed by 0-based phase id; any mix of plain
-    #    elastic and J2Plasticity models) ────────────────────────────────────
+    #    elastic, J2Plasticity and DruckerPrager models) ─────────────────────
     orientations = jnp.array(orientations_np)
     materials = [build_material(m, orientations=orientations) for m in icfg["materials"]]
     describe_materials(materials)
