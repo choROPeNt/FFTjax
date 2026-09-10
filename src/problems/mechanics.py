@@ -508,7 +508,23 @@ def solve_displacement_based_nonlinear(
             sigma_trial = jnp.einsum("ijklm,klm->ijm", C_tan_k, eps_trial)
             sigma_hat   = fft_(sigma_trial)
             div_flat    = ifft_(jnp.einsum("ijm,jm->im", sigma_hat, iq))
-            extra_out   = sm2sv(jnp.real(sigma_hat[:, :, 0]))
+            # Negated, exactly as solve_displacement_based's A_op does it --
+            # the minus is what makes the bordered operator SYMMETRIC, not a
+            # convention that can be re-derived per solver. div_of is -B^H
+            # (the symmetric-gradient's adjoint, up to sign), so the du row's
+            # coupling to sv is -B^H C S while the sv row's coupling to du is
+            # +/- S^H C B; only the negated form is that block's transpose.
+            # Unnegated, the operator is asymmetric (2e-1 relative on a 4^3
+            # test grid, against 2e-16 negated) and its symmetric part gains
+            # one positive eigenvalue per stress-controlled pair, i.e. turns
+            # indefinite -- both of the assumptions cg_solve rests on. The
+            # SOLUTION is unaffected either way (negating a row together with
+            # its RHS entry is an identity, see bb below), so this is purely
+            # about whether CG can find it: unnegated, check 6's load ramp
+            # diverges outright at toler_lin=1e-8 (sigma33 -> -4.8e3 after 50
+            # Newton iterations) and only finishes at 1e-6/300; negated, the
+            # same ramp converges at 1e-8 in 6 Newton iterations.
+            extra_out   = -sm2sv(jnp.real(sigma_hat[:, :, 0]))
             return pack(div_flat, extra_out)
 
         C0_ref  = jnp.mean(C_tan_k, axis=-1) if C0 is None else C0
@@ -518,14 +534,15 @@ def solve_displacement_based_nonlinear(
         K0_inv  = jnp.moveaxis(jnp.linalg.inv(jnp.moveaxis(K0_hat, -1, 0)), 0, -1)
 
         # "extra" block preconditioner: self-coupling of the macroscopic-
-        # strain unknowns at the reference medium, matching A_op's own
-        # (no-minus-sign) convention for extra_out above -- this is a Newton
-        # *correction* system, not solve_displacement_based's direct
-        # from-zero solve, so the sign is re-derived here, not copied.
+        # strain unknowns at the reference medium, sign-matched to A_op's
+        # extra_out above (same as solve_displacement_based's own P_extra) --
+        # keeping M positive definite against a negative definite A, which is
+        # the pairing that makes preconditioned CG on this system equivalent
+        # to CG on an SPD one.
         if pairs:
             basis   = jnp.eye(len(pairs), dtype=eps_bar.dtype)
             P_extra = jnp.stack([
-                Nv * sm2sv(jnp.einsum("ijkl,kl->ij", C0_ref, sv2sm(basis[k])))
+                -Nv * sm2sv(jnp.einsum("ijkl,kl->ij", C0_ref, sv2sm(basis[k])))
                 for k in range(len(pairs))
             ], axis=1)
 
@@ -537,7 +554,11 @@ def solve_displacement_based_nonlinear(
             z_sv   = jnp.linalg.solve(P_extra, sv) if pairs else sv
             return pack(z_du, z_sv)
 
-        bb = pack((-residual_div).reshape(-1), -residual_extra)
+        # The extra block enters as +residual_extra, not -: A_op's extra row
+        # is negated (see above), so its RHS is negated with it, which leaves
+        # the equation it encodes -- mean(sigma_k + C_tan : deps) = stress_goal
+        # -- exactly as it was.
+        bb = pack((-residual_div).reshape(-1), residual_extra)
         x0 = jnp.zeros_like(bb)
         x_flat, _cg_converged = cg_solve(A_op, bb, x0, toler_lin, maxiter_lin, M=M)
 
