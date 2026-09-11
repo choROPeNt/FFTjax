@@ -249,4 +249,152 @@ assert n_plastic["tension"] > n_plastic["compression"], (
 )
 print("[6] PASSED")
 
+# ── 7. tip rounding: a_tip -> 0 recovers the sharp cone ─────────────────────
+# The twin of check 1's a_f = a_g = 0 => J2 degeneracy: the rounded model must
+# collapse onto the sharp one as the rounding vanishes. The RATE matters as
+# much as the limit, and it is different in the two regions -- O(a_tip^2) away
+# from the vertex (a hyperbola asymptotes to its cone: sqrt(q^2+a^2) =
+# q + a^2/2q + ...) but only O(a_tip) at the vertex itself, where the two
+# surfaces genuinely differ by construction. A bug in the return mapping
+# shows up as the wrong rate long before it breaks the limit.
+
+dp_sharp = DruckerPrager(E=E, nu=NU, sigma_y0=SY, H=H, a_f=A_F, a_g=0.05)
+rng7 = np.random.default_rng(3)
+states7 = [(jnp.array(0.5 * (x + x.T)), jnp.array(0.5 * (y + y.T)), jnp.array(abs(z)))
+           for x, y, z in ((rng7.normal(scale=.035, size=(3, 3)),
+                            rng7.normal(scale=.008, size=(3, 3)),
+                            rng7.normal(scale=.02)) for _ in range(400))]
+
+
+def _q_after_cone(st):
+    """Sharp-cone residual q -- how far this state sits from the vertex."""
+    e, ep, al = st
+    ee = 0.5 * (e + e.T) - ep
+    sig_t = dp_sharp.lam * jnp.trace(ee) * jnp.eye(3) + 2.0 * dp_sharp.mu * ee
+    p_t = jnp.trace(sig_t) / 3.0
+    q_t = float(jnp.sqrt(1.5 * jnp.sum((sig_t - p_t * jnp.eye(3)) ** 2)))
+    dl = max(q_t + 3.0 * A_F * float(p_t) - (SY + H * float(al)), 0.0) / (
+        3.0 * dp_sharp.mu + 9.0 * dp_sharp.K * A_F * 0.05 + H)
+    return q_t - 3.0 * dp_sharp.mu * dl
+
+
+deep7 = [st for st in states7 if _q_after_cone(st) > 5.0]   # well inside the cone
+assert len(deep7) > 50, f"only {len(deep7)} deep-cone states sampled"
+
+errs7 = []
+for a_rel in (0.01, 0.003, 0.001):
+    dp_r = DruckerPrager(E=E, nu=NU, sigma_y0=SY, H=H, a_f=A_F, a_g=0.05, a_tip=a_rel * SY)
+    errs7.append(max(float(jnp.max(jnp.abs(dp_r.stress(*st)[0] - dp_sharp.stress(*st)[0])))
+                     for st in deep7))
+rate7 = np.log(errs7[0] / errs7[-1]) / np.log(10.0)
+print(f"[7] a_tip -> 0 on {len(deep7)} deep-cone states: "
+      f"max|d sigma| = {errs7[0]:.2e} -> {errs7[-1]:.2e}  (observed order {rate7:.2f})")
+assert errs7[-1] < errs7[0], "tip rounding does not vanish as a_tip -> 0"
+assert 1.7 < rate7 < 2.3, (
+    f"deep in the cone the rounding must be a SECOND-order perturbation, "
+    f"observed order {rate7:.2f} -- a first-order error there means the return "
+    "mapping is wrong, not merely rounded"
+)
+print("[7] PASSED")
+
+# ── 8. rounded consistency, elastic exactness, finiteness ───────────────────
+# The rounded surface has no apex branch, so unlike check 3/4 there is only one
+# formula to satisfy -- but it must hold at EVERY plastic state, including the
+# deep-hydrostatic-tension ones that used to land on the vertex.
+
+dp_h = DruckerPrager(E=E, nu=NU, sigma_y0=SY, H=H, a_f=A_F, a_g=0.05, a_tip=0.1 * SY)
+worst_f8 = worst_el8 = 0.0
+n_pl8 = n_el8 = 0
+for e8, ep8, al8 in states7:
+    sig8, (epn8, aln8) = dp_h.stress(e8, ep8, al8)
+    assert bool(jnp.all(jnp.isfinite(sig8))) and bool(jnp.all(jnp.isfinite(epn8))), \
+        "non-finite stress/state from the rounded return"
+    p8 = jnp.trace(sig8) / 3.0
+    q8 = jnp.sqrt(1.5 * jnp.sum((sig8 - p8 * jnp.eye(3)) ** 2))
+    f8 = float(jnp.sqrt(q8 ** 2 + dp_h.a_tip ** 2) + 3.0 * A_F * p8 - (SY + H * aln8))
+    if float(aln8 - al8) > 1e-14:
+        n_pl8 += 1
+        worst_f8 = max(worst_f8, abs(f8))
+    else:
+        n_el8 += 1
+        ee8 = 0.5 * (e8 + e8.T) - ep8
+        st8 = dp_h.lam * jnp.trace(ee8) * jnp.eye(3) + 2.0 * dp_h.mu * ee8
+        worst_el8 = max(worst_el8, float(jnp.max(jnp.abs(sig8 - st8))),
+                        float(jnp.max(jnp.abs(epn8 - ep8))))
+print(f"[8] rounded: {n_pl8} plastic max|f|={worst_f8:.2e} (sigma_y0={SY:g}), "
+      f"{n_el8} elastic max|sigma - sigma_trial|={worst_el8:.2e}")
+assert worst_f8 < 1e-8 * SY, f"rounded return left f = {worst_f8:.3e} != 0"
+# Elastic states must be EXACTLY elastic: the local solve has no root inside
+# its bracket below yield, so the exact trial state is selected rather than
+# bisected toward -- a regression here means that selection was dropped.
+assert worst_el8 == 0.0, (
+    f"elastic states are not exactly elastic under the rounded return "
+    f"(max deviation {worst_el8:.3e}) -- the sub-yield branch is bisecting "
+    "toward q_trial instead of selecting it"
+)
+print("[8] PASSED")
+
+# ── 9. rounded consistent tangent vs finite differences ─────────────────────
+
+h9 = 1e-6
+worst9 = 0.0
+for e9, ep9, al9 in states7[:60]:
+    _, C9, _ = dp_h.stress_and_tangent(e9, ep9, al9)
+    for i9 in range(3):
+        for j9 in range(3):
+            fd9 = (dp_h.stress(e9.at[i9, j9].add(h9), ep9, al9)[0]
+                   - dp_h.stress(e9.at[i9, j9].add(-h9), ep9, al9)[0]) / (2.0 * h9)
+            sym9 = 0.5 * (C9[:, :, i9, j9] + C9[:, :, j9, i9])
+            worst9 = max(worst9, float(jnp.max(jnp.abs(fd9 - sym9)))
+                         / max(float(jnp.max(jnp.abs(sym9))), 1.0))
+print(f"[9] rounded tangent: max FD-vs-jacfwd rel err = {worst9:.2e}")
+assert worst9 < 1e-5, (
+    f"rounded tangent disagrees with finite differences ({worst9:.3e}) -- with a "
+    "fixed-iteration local solve this is the check that catches an "
+    "under-converged return, which stays invisible in the stress alone"
+)
+print("[9] PASSED")
+
+# ── 10. the point of the whole exercise: a non-singular tangent ─────────────
+# At the sharp vertex the return sets s = 0, so the deviatoric block of the
+# tangent collapses and the operator CG is handed goes singular. This is the
+# regression guard on that: past the vertex the sharp tangent's symmetric part
+# must lose positive definiteness and the rounded one must not.
+
+_VOIGT = [(0, 0), (1, 1), (2, 2), (1, 2), (0, 2), (0, 1)]
+
+
+def _min_eig_sym(C):
+    M = np.array([[float(C[i, j, k, l])
+                   * (np.sqrt(2.0) if x >= 3 else 1.0)
+                   * (np.sqrt(2.0) if y >= 3 else 1.0)
+                   for y, (k, l) in enumerate(_VOIGT)]
+                  for x, (i, j) in enumerate(_VOIGT)])
+    return float(np.linalg.eigvalsh(0.5 * (M + M.T)).min())
+
+
+# confined uniaxial tension (eps_22 = eps_33 = 0) drives the stress path almost
+# straight at the vertex: q/p = 0.475 here against 3 for the unconfined path.
+dp_s10 = DruckerPrager(E=1400.0, nu=0.39, sigma_y0=17.0, H=250.0, a_f=0.13, a_g=0.05)
+dp_h10 = DruckerPrager(E=1400.0, nu=0.39, sigma_y0=17.0, H=250.0, a_f=0.13, a_g=0.05,
+                       a_tip=1.7)
+z10, a10 = jnp.zeros((3, 3)), jnp.array(0.0)
+sharp_min = rounded_min = None
+for e11 in (0.030, 0.045, 0.060):
+    eps10 = jnp.zeros((3, 3)).at[0, 0].set(e11)
+    ms = _min_eig_sym(dp_s10.stress_and_tangent(eps10, z10, a10)[1])
+    mh = _min_eig_sym(dp_h10.stress_and_tangent(eps10, z10, a10)[1])
+    sharp_min = ms if sharp_min is None else max(sharp_min, ms)
+    rounded_min = mh if rounded_min is None else min(rounded_min, mh)
+    print(f"[10] eps_11={e11:.3f}  min eig(sym C): sharp={ms:8.2f}  rounded={mh:8.2f}")
+assert sharp_min < 1e-6, (
+    f"the sharp tangent did NOT go singular past the vertex (min eig {sharp_min:.3e}) "
+    "-- check 10 no longer tests what it was written for"
+)
+assert rounded_min > 1.0, (
+    f"the rounded tangent went singular too (min eig {rounded_min:.3e}) -- tip "
+    "rounding is not buying the definiteness it exists to buy"
+)
+print("[10] PASSED")
+
 print("\ntest_materialmodels_drucker_prager: all checks passed")

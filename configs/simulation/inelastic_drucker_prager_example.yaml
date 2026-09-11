@@ -40,6 +40,27 @@ inelastic:
       # show. a_g = 0 is volume-preserving plastic flow with a still
       # pressure-sensitive yield surface.
       a_g:      0.05
+      # a_tip: rounds the cone's tensile VERTEX into a hyperbola,
+      #   f = sqrt(q^2 + a_tip^2) + 3*a_f*p - sigma_y, asymptotic to the cone
+      #   above and meeting the hydrostatic axis at the finite tensile pressure
+      #   p_tip = (sigma_y - a_tip)/(3*a_f). Omit (or 0) for the classical
+      #   sharp cone, which is the default and bit-for-bit what this config
+      #   ran before the option existed.
+      #   Reach for it when a CONFINED solve stalls: at the sharp vertex the
+      #   return sets s = 0, the deviatoric part of the consistent tangent
+      #   collapses, and the CG inside the nonlinear solver is handed a
+      #   singular operator -- Newton then burns maxiter_nr and the step fails.
+      #   Confinement is what drives you there: a pure-strain BC aims the
+      #   stress path nearly along the hydrostatic axis (q/p ~ 0.5, against ~3
+      #   for an unconfined uniaxial pull), straight at the vertex. So a_tip
+      #   and mixed BC (control/stress_bar) are complementary rather than
+      #   alternatives: relaxing the transverse directions stops aiming the
+      #   path at the vertex at all, while a_tip keeps the tangent solvable
+      #   wherever the path does end up.
+      #   A few percent of sigma_y0 is plenty: at 10% the tangent's smallest
+      #   eigenvalue holds at 55 where the sharp one is 0, for under 1% change
+      #   in the stress response. Must be < sigma_y0, and needs a_f > 0.
+      # a_tip:    5.61             # = 0.10 * sigma_y0
       name: epoxy matrix (Drucker-Prager)
     - model: isotropic_elastic
       E:    70.0e3                # MPa
