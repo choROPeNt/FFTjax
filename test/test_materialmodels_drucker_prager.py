@@ -16,7 +16,7 @@ Six checks
    a_f is actually calibrated from, so it's what a config author gets wrong
    first.
 3. Consistency: every plastically-returned state must sit ON the yield
-   surface, f = q + 3*a_f*p - (sigma_y0 + H*alpha) = 0, cone and apex
+   surface, f = q + 3*a_f*p - sigma_y(alpha) = 0, cone and apex
    branches alike, with no NaN in stress, tangent or state.
 4. Apex return: a strongly hydrostatic-tensile trial state must return to
    the cone's vertex exactly (q = 0, f = 0) with a finite tangent, for
@@ -133,7 +133,7 @@ sigma_m, C_m, (eps_p_m, alpha_m) = jax.jit(jax.vmap(dp.stress_and_tangent))(
     eps_big, jnp.zeros((M, 3, 3)), jnp.zeros(M)
 )
 q_m, p_m = _q_p(sigma_m)
-f_m = q_m + 3.0 * dp.a_f * p_m - (dp.sigma_y0 + dp.H * alpha_m)
+f_m = q_m + 3.0 * dp.a_f * p_m - dp.hardening.sigma_y(alpha_m)
 plastic = np.array(alpha_m) > 1e-14
 apex    = np.array(q_m) < 1e-6
 f_scale = float(dp.sigma_y0)

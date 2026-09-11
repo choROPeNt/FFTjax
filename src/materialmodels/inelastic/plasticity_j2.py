@@ -1,5 +1,5 @@
 """
-J2 (von Mises) elastoplastic material model, linear isotropic hardening.
+J2 (von Mises) elastoplastic material model, pluggable isotropic hardening.
 
 Unlike every other ConstitutiveModel in materialmodels/, this one is not
 stateless -- elastoplastic stress/tangent need (eps, eps_p, alpha), not just
@@ -22,33 +22,45 @@ import jax
 import jax.numpy as jnp
 
 from materialmodels.base import ConstitutiveModel
+from materialmodels.inelastic.hardening import IsotropicHardening, resolve_hardening
 
 _EPS_TINY = 1e-12
 
 
 class J2Plasticity(ConstitutiveModel):
     """
-    Rate-independent J2 (von Mises) plasticity, linear isotropic hardening
-    sigma_y(alpha) = sigma_y0 + H*alpha -- closed-form radial return. A
-    nonlinear hardening law (e.g. Voce) would need a local scalar Newton
-    solve for the plastic multiplier instead; not built here.
+    Rate-independent J2 (von Mises) plasticity, radial return, with the
+    isotropic hardening law sigma_y(alpha) supplied as a plug-in.
+
+    The radial return is exactly equation [*] of
+    materialmodels.inelastic.hardening with (A, B) = (q_trial, 3*mu), so this
+    model never sees the hardening law's shape: linear, tabulated, or a
+    future smooth law all enter through the same solve_return call below.
 
     Parameters
     ----------
     E, nu    : float  isotropic elastic constants
-    sigma_y0 : float  initial (virgin) yield stress
+    sigma_y0 : float  initial (virgin) yield stress -- with H, the linear law
     H        : float  constant isotropic hardening modulus (0 = perfectly plastic)
+    hardening : IsotropicHardening | dict | None  the hardening law, as an
+               instance or a ``{"law": ...}`` config dict. Mutually exclusive
+               with H; omit both and sigma_y0/H are required, which is the
+               original spelling and still the default.
     name     : str    optional label
     k_res, Gc : as in LinearElasticIsotropic -- phase-field bookkeeping only,
                 unrelated to the plastic return mapping itself.
     """
 
-    def __init__(self, E: float, nu: float, sigma_y0: float, H: float,
+    def __init__(self, E: float, nu: float, sigma_y0: float | None = None,
+                 H: float | None = None,
+                 hardening: "IsotropicHardening | dict | None" = None,
                  name: str = "", k_res: float = 1e-6, Gc: float | None = None):
         self.E = float(E)
         self.nu = float(nu)
-        self.sigma_y0 = float(sigma_y0)
-        self.H = float(H)
+        self.hardening = resolve_hardening(hardening, sigma_y0, H, f"J2Plasticity {name!r}")
+        # Kept as an attribute because it is a property of every law, not just
+        # the linear one -- the virgin yield stress.
+        self.sigma_y0 = self.hardening.sigma_y0
         self.name = name
         self.k_res = float(k_res)
         self.Gc = float(Gc) if Gc is not None else None
@@ -72,8 +84,8 @@ class J2Plasticity(ConstitutiveModel):
         One-voxel closed-form radial return.
 
         The elastic and plastic branches are NOT selected by an explicit
-        jnp.where on the whole update -- max(f_trial, 0) makes the plastic
-        multiplier dgamma exactly zero in the elastic case, which correctly
+        jnp.where on the whole update -- the hardening law returns dgamma
+        exactly zero in the elastic case (see solve_return), which correctly
         collapses every formula below to the elastic identity (s_new =
         s_trial, eps_p unchanged) with no separate branch needed. Only the
         q_trial division needs an explicit safe-guard (see q_safe) since its
@@ -110,8 +122,10 @@ class J2Plasticity(ConstitutiveModel):
         s_sq = jnp.sum(s_trial ** 2)
         q_trial = jnp.sqrt(1.5 * jnp.maximum(s_sq, _EPS_TINY))
 
-        f_trial = q_trial - (self.sigma_y0 + self.H * alpha_prev)
-        dgamma = jnp.maximum(f_trial, 0.0) / (3.0 * self.mu + self.H)
+        # Equation [*] of materialmodels.inelastic.hardening at
+        # (A, B) = (q_trial, 3*mu). LinearHardening inverts it with exactly
+        # the closed form this line used to inline.
+        dgamma = self.hardening.solve_return(q_trial, 3.0 * self.mu, alpha_prev)
 
         q_safe = jnp.where(q_trial > _EPS_TINY, q_trial, 1.0)
         s = s_trial * (1.0 - 3.0 * self.mu * dgamma / q_safe)
@@ -187,4 +201,4 @@ class J2Plasticity(ConstitutiveModel):
     def __repr__(self) -> str:
         tag = f" ({self.name})" if self.name else ""
         return (f"J2Plasticity{tag}: E={self.E:.3g}, nu={self.nu:.3g}, "
-                f"sigma_y0={self.sigma_y0:.3g}, H={self.H:.3g}")
+                f"hardening={self.hardening}")
