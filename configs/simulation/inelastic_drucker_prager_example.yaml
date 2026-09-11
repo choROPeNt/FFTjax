@@ -66,5 +66,13 @@ inelastic:
   toler_nr:    1.0e-7
   maxiter_nr:  50
 
+  # Also write the plastic strain TENSOR eps_p (Voigt 6) per increment, on top
+  # of the scalar `strain_p` (= alpha) always written. Off by default. Worth
+  # turning on here in particular: with a_g > 0 the flow is dilatant, and that
+  # plastic volume change lives in tr(eps_p) alone -- alpha accumulates the
+  # plastic multiplier and never sees it. scripts/postprocessing/homogenize.py
+  # picks the field up on its own and adds a plastic_vol_strain column.
+  # write_plastic_strain_tensor: true
+
 output:  output/simulation
 jobname: "{inelastic.input.stem}_drucker_prager"

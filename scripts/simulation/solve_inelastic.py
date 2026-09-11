@@ -22,8 +22,20 @@ and a stress_and_tangent_field surface, so assemble_local_update treats
 them interchangeably and swapping one for the other is a config edit --
 see configs/simulation/inelastic_j2_example.yaml and
 configs/simulation/inelastic_drucker_prager_example.yaml, which differ only
-in the matrix phase's material block. Note the ``strain_p`` field written
-below is the accumulated equivalent plastic strain alpha for both.
+in the matrix phase's material block.
+
+Plastic state is an ``(eps_p, alpha)`` pair per voxel -- see
+materialmodels/inelastic/plasticity_j2.py. The ``strain_p`` field written
+below is the SCALAR half of it for both models: the accumulated equivalent
+plastic strain alpha, which drives hardening. The plastic strain TENSOR
+eps_p is written as ``eps_p`` (Voigt 6, same convention as ``strain``), but
+only when ``write_plastic_strain_tensor: true`` is set in the config -- off
+by default, so existing output layouts are unchanged. Enable it when the
+directionality of plastic flow matters, in particular its trace, the plastic
+volume change, which alpha does not capture at all: Drucker-Prager's
+non-associated flow (a_g > 0) dilates plastically, and that shows up only in
+eps_p. scripts/postprocessing/homogenize.py picks the field up automatically
+when it is present.
 
 ``loading`` in the YAML controls the cycle:
   component  -- [i, j] macroscopic strain entry driven, symmetrized
@@ -47,6 +59,9 @@ Output
 ------
     <output>/<jobname>.h5
     <output>/<jobname>.xdmf
+        one increment per step, fields: phase, displacement, strain, stress,
+        von_mises, strain_p (= alpha), plus eps_p when
+        write_plastic_strain_tensor is enabled.
     <output>/<jobname>_stats.npy   -- one structured-array row per step:
         step, gamma, converged, n_iter, wall_time, tau_avg (homogenized
         sigma[i,j]) -- np.load(path) to read.
@@ -134,6 +149,12 @@ def main():
     stem    = f"{output}/{jobname}"
     Path(output).mkdir(parents=True, exist_ok=True)
 
+    # opt-in extra output field: the plastic strain TENSOR eps_p, alongside
+    # the scalar "strain_p" (= alpha) always written -- see module docstring.
+    write_eps_p = bool(icfg.get("write_plastic_strain_tensor", False))
+    if write_eps_p:
+        print("Output : writing the plastic strain tensor eps_p (Voigt 6) per increment")
+
     _STATS_DTYPE = np.dtype([
         ("step", "i4"), ("gamma", "f8"), ("converged", "?"), ("n_iter", "i4"),
         ("wall_time", "f8"), ("tau_avg", "f8"),
@@ -175,18 +196,25 @@ def main():
                   f"n_iter={n_iter:2d}  tau_avg={tau_avg: .4f} MPa  wall={wall_time:.2f}s")
             stats_rows.append((step, float(gamma), bool(converged), int(n_iter), wall_time, tau_avg))
 
-            _, alpha_step = state
+            eps_p_step, alpha_step = state
             eps_grid   = field_to_grid(eps_step, n)
             sigma_grid = field_to_grid(sigma_step, n)
             u_grid     = compute_displacement(eps_step, eps_bar_step, n, L)
-            writer.write_increment(step, {
+            fields = {
                 "phase":        phase_np.reshape(n).astype(np.float64),
                 "displacement": u_grid.astype(np.float64),
                 "strain":       to_voigt(eps_grid).astype(np.float64),
                 "stress":       to_voigt(sigma_grid).astype(np.float64),
                 "von_mises":    von_mises(sigma_grid).astype(np.float64),
                 "strain_p":     np.array(alpha_step).reshape(n).astype(np.float64),
-            }, time=float(step))  # step index, not gamma -- see module docstring
+            }
+            if write_eps_p:
+                # mandel=False, the same Voigt convention "strain" above uses,
+                # so eps_p and eps components are directly comparable (and the
+                # trace, the plastic volume change, is just the first three).
+                fields["eps_p"] = to_voigt(field_to_grid(eps_p_step, n)).astype(np.float64)
+            # time = step index, not gamma -- see module docstring
+            writer.write_increment(step, fields, time=float(step))
 
     _, alpha_final = state
     n_plastic = int(jnp.sum(alpha_final > 1e-12))
