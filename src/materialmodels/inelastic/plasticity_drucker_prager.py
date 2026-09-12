@@ -517,35 +517,93 @@ class DruckerPrager(ConstitutiveModel):
         # One set of affine coefficients PER SEGMENT of sigma_y, all shape
         # (n_seg,) -- a single segment for LinearHardening, so this reduces
         # to the scalar solve it replaces with identical arithmetic.
-        alpha_lo, sigma_lo, H_seg, alpha_hi = self.hardening.affine_segments()
+        alpha_lo, sigma_lo, H_seg, _ = self.hardening.affine_segments()
         xi_0 = sigma_lo + H_seg * (alpha_prev - alpha_lo) - 3.0 * self.a_f * p_trial
         c = jnp.maximum(H_seg + 9.0 * self.K * self.a_f * self.a_g, _EPS_TINY)
         k = 3.0 * self.mu / c
 
-        # _solve_q_hyperbolic is elementwise in (xi_0, c, k), so this solves
-        # every segment at once and then keeps the self-consistent one: the
-        # segment whose own dlam lands alpha back inside that same segment.
-        # Exactly one does, because the residual is strictly decreasing in
-        # dlam (see hardening.PiecewiseLinearHardening).
-        q_seg = self._solve_q_hyperbolic(q_trial, xi_trial, xi_0, c, k)
+        # Pick the segment holding the root BEFORE solving, so the (expensive)
+        # local Newton runs once instead of once per segment. Solving all of
+        # them and keeping the self-consistent one is correct but wasteful:
+        # measured on 200k voxels, stress_and_tangent_field costs
+        # 3.80 + 5.64*n_seg ms (R^2 = 0.99 over n_seg = 2..12), against a flat
+        # ~3.9 ms for the sharp cone at any n_seg -- and jacfwd carries
+        # tangents through every discarded segment's iterations too, a further
+        # ~7.6x on what is thrown away.
+        #
+        # The test compares, at each interior breakpoint, the plastic
+        # multiplier the two conditions each demand there:
+        #
+        #   CONSISTENCY reaches the breakpoint alpha_b after dlam_c =
+        #   alpha_b - alpha_prev, and fixes the surface it must land on,
+        #       xi_c = sigma_y(alpha_b) - 3*a_f*p_trial + 9*K*a_f*a_g*dlam_c
+        #   which needs no solve: sigma_y(alpha_b) is the tabulated value.
+        #
+        #   The RADIAL RETURN, to shrink q_trial onto that same surface
+        #   (q_c = sqrt(xi_c^2 - a_tip^2)), needs dlam_r = xi_c*(q_trial -
+        #   q_c)/(3*mu*q_c), straight from q*(1 + 3*mu*dlam/xi) = q_trial.
+        #
+        # dlam_r > dlam_c means the return still has further to go at that
+        # breakpoint, i.e. the root lies above it -- so the number of
+        # breakpoints where that holds IS the index of the segment containing
+        # the root.
+        #
+        # This ordering is provably monotone, which a residual in dlam is NOT:
+        # xi_c increases with alpha_b (sigma_y non-decreasing, dilatancy term
+        # increasing), and d/d(xi) of xi*(q_trial - q)/q is
+        # -q_trial*a_tip^2/(xi^2 - a_tip^2)^(3/2) - 1 < 0, so dlam_r strictly
+        # decreases while dlam_c strictly increases. Their difference changes
+        # sign exactly once. The first version of this tested the sign of the
+        # radial-return residual R(dlam) instead, which is cheaper still but
+        # non-monotone for steep hardening with a_g = 0 -- it picked the wrong
+        # segment and moved stresses by 130 MPa. The sweep below is what
+        # caught it.
+        #
+        # Evaluated at the INTERIOR breakpoints only (alpha_lo[1:], where
+        # sigma_y is exactly the tabulated sigma_lo[1:]): the last segment's
+        # upper bound is +inf, and with its plateau slope H = 0 the product
+        # 0*inf would be NaN. Excluding it costs nothing -- a root in no
+        # earlier segment is in the last one, which the count yields anyway.
+        brk_dlam = jnp.maximum(alpha_lo[1:] - alpha_prev, 0.0)
+        # xi < a_tip is unreachable (xi = sqrt(q^2 + a_tip^2) >= a_tip) and
+        # happens at breakpoints whose hardening cannot meet a strongly
+        # tensile p_trial. Clamped, q_c -> 0 makes dlam_r huge, correctly
+        # reading as "the root is further up".
+        brk_xi = jnp.maximum(
+            sigma_lo[1:] - 3.0 * self.a_f * p_trial
+            + 9.0 * self.K * self.a_f * self.a_g * brk_dlam, a)
+        brk_q = jnp.sqrt(jnp.maximum(brk_xi ** 2 - a * a, _EPS_TINY))
+        brk_dlam_r = brk_xi * (q_trial - brk_q) / (3.0 * self.mu * brk_q)
+        # Integer, so it carries no tangent: neither the sqrt nor the division
+        # above can poison the consistent tangent however small brk_q gets,
+        # and the selection contributes exactly the zero derivative a
+        # piecewise-linear law should. An empty slice (LinearHardening) sums
+        # to 0, leaving the single-segment path bit-for-bit unchanged.
+        j = jnp.sum(brk_dlam_r > brk_dlam)
+
+        xi_0_j, c_j, k_j = xi_0[j], c[j], k[j]
+        q_seg = self._solve_q_hyperbolic(q_trial, xi_trial, xi_0_j, c_j, k_j)
+        # dlam from the RADIAL RETURN, q*(1 + 3*mu*dlam/xi) = q_trial, rather
+        # than by inverting the affine consistency relation as
+        # (xi - xi_0)/c. The two agree at the solution, but c = H +
+        # 9*K*a_f*a_g vanishes for a non-dilatant (a_g = 0) material on a
+        # PERFECTLY PLASTIC segment, and every table ends in one by the
+        # plateau convention -- so the (xi - xi_0)/c form divides a rounding
+        # error by _EPS_TINY there and leaves the state off the yield surface
+        # by O(100 MPa). The radial form has no c in it and stays exact;
+        # its own degeneracy, q -> 0, is the tip itself, already guarded.
         xi_seg = jnp.sqrt(q_seg ** 2 + a * a)
-        dlam_seg = jnp.maximum((xi_seg - xi_0) / c, 0.0)
-        alpha_seg = alpha_prev + dlam_seg
-        # Closed bounds at both ends, as in _solve_q_hyperbolic and for the
-        # same reason: a root sitting exactly on a breakpoint belongs to both
-        # neighbours (which agree there by continuity), whereas an open test
-        # can reject every segment at that point.
-        valid = ((alpha_seg >= jnp.maximum(alpha_lo, alpha_prev))
-                 & (alpha_seg <= alpha_hi))
-        j = jnp.argmax(valid)
+        q_den = jnp.maximum(q_seg, _EPS_TINY)
+        dlam_seg = jnp.maximum(
+            xi_seg * (q_trial - q_seg) / (3.0 * self.mu * q_den), 0.0)
 
         # Elastic states have no root inside [0, q_trial] (Psi < 0 across the
         # whole bracket), so the solve's bisection would creep toward q_trial
         # without reaching it. Select the exact elastic answer instead -- the
         # discarded solve value is still finite, bounded in [0, q_trial], so
         # it cannot poison this branch's tangent.
-        q_new = jnp.where(f_trial > 0.0, q_seg[j], q_trial)
-        dlam = jnp.where(f_trial > 0.0, dlam_seg[j], 0.0)
+        q_new = jnp.where(f_trial > 0.0, q_seg, q_trial)
+        dlam = jnp.where(f_trial > 0.0, dlam_seg, 0.0)
 
         xi_new = jnp.sqrt(q_new ** 2 + a * a)
 
