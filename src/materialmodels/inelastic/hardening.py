@@ -67,6 +67,8 @@ class IsotropicHardening:
         sigma_y(alpha)   -- traced, current yield stress
         dsigma_y(alpha)  -- traced, d sigma_y / d alpha
         sigma_y0         -- static float, the virgin (alpha = 0) yield stress
+        sigma_y_max      -- static float, the CEILING of sigma_y over all
+                            alpha, or inf if the law hardens without bound
 
     and MAY override
         solve_return(A, B, alpha_prev)  -- if [*] inverts in closed form
@@ -74,6 +76,12 @@ class IsotropicHardening:
     """
 
     sigma_y0: float
+    # Ceiling of sigma_y. inf unless the law saturates. DruckerPrager needs it
+    # because a pressure-sensitive surface only reaches a trial pressure
+    # p_trial if it can grow to sigma_y >= a_tip + 3*a_f*p_trial -- so a
+    # FINITE ceiling, combined with no dilatancy to bring p_trial down, puts a
+    # hard limit on the hydrostatic tension the model can represent at all.
+    sigma_y_max: float = float("inf")
 
     def sigma_y(self, alpha):
         raise NotImplementedError
@@ -154,6 +162,9 @@ class LinearHardening(IsotropicHardening):
     def __init__(self, sigma_y0: float, H: float):
         self.sigma_y0 = float(sigma_y0)
         self.H = float(H)
+        # H > 0 hardens without bound; H = 0 is perfectly plastic, so the
+        # virgin yield stress is also the ceiling.
+        self.sigma_y_max = float("inf") if self.H > 0.0 else self.sigma_y0
         if self.sigma_y0 <= 0.0:
             raise ValueError(
                 f"LinearHardening: sigma_y0={self.sigma_y0} must be > 0 -- a "
@@ -280,6 +291,9 @@ class PiecewiseLinearHardening(IsotropicHardening):
 
         self.table = tab
         self.sigma_y0 = float(s[0])
+        # The plateau makes every table saturate: past the last row sigma_y is
+        # frozen at that row's value, which is therefore the ceiling.
+        self.sigma_y_max = float(s[-1])
         self._alpha_lo = jnp.asarray(a)
         self._sigma_lo = jnp.asarray(s)
         self._H = jnp.asarray(H)

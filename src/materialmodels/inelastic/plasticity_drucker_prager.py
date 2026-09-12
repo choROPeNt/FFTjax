@@ -28,6 +28,21 @@ zero value but not zero gradient. This model adds a THIRD, its own: the
 cone/apex return branch (see stress()), where the discarded branch must
 still evaluate to a finite number, not just an unused one.
 
+One limitation this model does NOT remove, and cannot without a second
+surface: with ``a_g = 0`` (no dilatancy) plastic flow leaves p exactly at
+p_trial, so the ONLY way to meet a tensile trial pressure is for the surface
+to grow out to it. If the hardening law also saturates -- ``H = 0``, or any
+tabulated law past its last row -- sigma_y has a ceiling, and trial states
+with 3*a_f*p_trial > sigma_y_max - a_tip have NO admissible return at all.
+That is a property of the yield surface, not of the solver: a cone closes at
+a finite hydrostatic tension. Such states are returned as NaN (see
+_unreachable) rather than silently mapped to a plausible wrong stress. The
+real fix, if a non-dilatant frictional material genuinely has to carry
+tension past that limit, is a TENSION CUT-OFF: a second (Rankine) surface at
+p = p_tip whose flow is purely volumetric, which supplies the missing lever
+independently of a_g -- standard practice for geomaterials, and a
+multi-surface return mapping rather than a patch to this one. Not built.
+
 ``a_tip`` (default 0.0 = the classical sharp cone, bit-for-bit the code
 above) rounds the cone's tensile vertex into a hyperbola, which is what to
 reach for when a confined, pressure-sensitive solve stalls: at the sharp
@@ -41,8 +56,12 @@ holds at 55 there and 13 at eps_11 = 0.060, while the stress response moves
 by under 1%. See stress_hyperbolic below for the return mapping.
 """
 
+import sys
+import warnings
+
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 from materialmodels.base import ConstitutiveModel
 from materialmodels.inelastic.hardening import IsotropicHardening, resolve_hardening
@@ -210,6 +229,87 @@ class DruckerPrager(ConstitutiveModel):
                 "strength. Typical values are a few percent of sigma_y0."
             )
 
+        # ── static conditioning of the tip-rounded local solve ──────────
+        # c = H + 9*K*a_f*a_g is the rate at which the yield surface radius
+        # moves per unit dlam, and k = 3*mu/c sets how stiff the local
+        # residual is. Both are built from static floats (the table's slopes,
+        # K, a_f, a_g), so the branch and the iteration count below resolve at
+        # TRACE time and cost a well-conditioned material nothing.
+        segs = self.hardening.affine_segments()
+        self._c_zero = None
+        self._newton_iters = _NEWTON_ITERS
+        if self.a_tip > 0.0 and segs is not None:
+            c_static = (np.asarray(segs[2], dtype=float)
+                        + 9.0 * self.K * self.a_f * self.a_g)
+            # c == 0 exactly: consistency pins xi at xi_0, so q is closed-form
+            # and needs no Newton at all (see _stress_hyperbolic).
+            self._c_zero = c_static <= 0.0
+            nz = c_static[c_static > 0.0]
+            if nz.size:
+                k_max = 3.0 * self.mu / float(nz.min())
+                # The safeguarded Newton falls back on bisection when k is
+                # large, and bisection needs roughly one iteration per halving
+                # of the bracket. Measured at k ~ 1.5e15, 8 iterations leave
+                # |f| ~ 3e-3 where 16 reach 8e-12 and more change nothing.
+                if k_max > 1.0e3:
+                    self._newton_iters = min(
+                        _NEWTON_ITERS + 4 * int(np.ceil(np.log10(k_max / 1.0e3))), 40)
+
+        # ── the combination with no volumetric lever ────────────────────────
+        # Warn rather than raise: below the limit this is a perfectly
+        # legitimate non-dilatant frictional material, and a config may never
+        # go near it. Raising would forbid every tabulated law at a_g = 0,
+        # since the plateau always puts a ceiling on sigma_y.
+        if self.a_f > 0.0 and self.a_g == 0.0 and np.isfinite(self.hardening.sigma_y_max):
+            p_lim = (self.hardening.sigma_y_max - self.a_tip) / (3.0 * self.a_f)
+            why = (f"sigma_y is capped at {self.hardening.sigma_y_max:.4g} "
+                   f"(perfectly plastic)" if self.hardening.sigma_y_max == self.sigma_y0
+                   else f"sigma_y saturates at {self.hardening.sigma_y_max:.4g} "
+                        f"(its table plateaus)")
+            print(
+                f"WARNING: DruckerPrager {self.name!r}: a_g = 0 (no dilatancy) with a "
+                f"hardening law whose {why}.\n"
+                f"         Plastic flow cannot change p and the surface cannot grow past "
+                f"that ceiling, so trial\n"
+                f"         states above p = {p_lim:.4g} MPa have no admissible return and "
+                f"are returned as NaN.\n"
+                f"         Fine below that pressure; give a_g > 0, an unbounded (linear, "
+                f"H > 0) law, or a\n"
+                f"         tension cut-off if the run needs to go past it.",
+                file=sys.stderr)
+
+    def _unreachable(self, p_trial):
+        """
+        Per-voxel mask for trial states the yield surface can never reach, or
+        None when the parameters make that impossible -- a STATIC decision, so
+        a material with any dilatancy or unbounded hardening pays nothing.
+
+        Meeting a trial pressure needs sqrt(q^2 + a_tip^2) = sigma_y -
+        3*a_f*p_trial, which is >= a_tip only while sigma_y >= a_tip +
+        3*a_f*p_trial. With a_g > 0 plastic flow pulls p_trial down and every
+        state is reachable; with a_g = 0 it cannot, so the surface must grow
+        out to meet it -- and that is capped at sigma_y_max.
+
+        No plasticity gate is needed: an ELASTIC state already satisfies
+        a_tip + 3*a_f*p_trial <= sqrt(q^2 + a_tip^2) + 3*a_f*p_trial <=
+        sigma_y(alpha_prev) <= sigma_y_max, so it can never trip this test.
+        """
+        if not (self.a_f > 0.0 and self.a_g == 0.0
+                and np.isfinite(self.hardening.sigma_y_max)):
+            return None
+        return self.hardening.sigma_y_max < self.a_tip + 3.0 * self.a_f * p_trial
+
+    @staticmethod
+    def _nan_out(bad, sigma, eps_p, alpha):
+        """NaN out an unreachable state, so it surfaces as a failed Newton
+        step rather than as a plausible-looking wrong stress."""
+        if bad is None:
+            return sigma, eps_p, alpha
+        nan = jnp.asarray(jnp.nan, dtype=sigma.dtype)
+        return (jnp.where(bad, nan, sigma),
+                jnp.where(bad, nan, eps_p),
+                jnp.where(bad, nan, alpha))
+
     def stiffness_tensor(self) -> jnp.ndarray:
         """(3, 3, 3, 3) elastic stiffness -- NOT the elastoplastic tangent."""
         d = jnp.eye(3)
@@ -363,6 +463,11 @@ class DruckerPrager(ConstitutiveModel):
         eps_p = jnp.where(use_apex, eps_p_apex, eps_p_cone)
         alpha = jnp.where(use_apex, alpha_apex, alpha_cone)
 
+        # Same limit as the rounded branch, at a_tip = 0: without dilatancy
+        # the vertex can only be reached by hardening out to it, so a capped
+        # sigma_y leaves deeply tensile trial states with no return.
+        sigma, eps_p, alpha = self._nan_out(
+            self._unreachable(p_trial), sigma, eps_p, alpha)
         return sigma, (eps_p, alpha)
 
     def _solve_q_hyperbolic(self, q_trial, xi_trial, xi_0, c, k):
@@ -417,7 +522,7 @@ class DruckerPrager(ConstitutiveModel):
         lo = jnp.zeros_like(q_trial)
         hi = q_trial
 
-        for _ in range(_NEWTON_ITERS):
+        for _ in range(self._newton_iters):
             psi, dpsi = psi_and_slope(q)
             lo = jnp.where(psi < 0.0, q, lo)
             hi = jnp.where(psi >= 0.0, q, hi)
@@ -583,6 +688,16 @@ class DruckerPrager(ConstitutiveModel):
 
         xi_0_j, c_j, k_j = xi_0[j], c[j], k[j]
         q_seg = self._solve_q_hyperbolic(q_trial, xi_trial, xi_0_j, c_j, k_j)
+        # c == 0 (a perfectly plastic segment of a non-dilatant material) pins
+        # xi at xi_0 -- the surface cannot move at all -- so q follows in
+        # closed form and the iterative solve above, whose k = 3*mu/c is then
+        # only as finite as the _EPS_TINY floor makes it, is bypassed. Which
+        # segments those are is STATIC, so this collapses away entirely for
+        # any material with dilatancy or hardening.
+        if self._c_zero is not None and bool(self._c_zero.any()):
+            q_pin = jnp.clip(jnp.sqrt(jnp.maximum(xi_0_j ** 2 - a * a, _EPS_TINY)),
+                             0.0, q_trial)
+            q_seg = jnp.where(jnp.asarray(self._c_zero)[j], q_pin, q_seg)
         # dlam from the RADIAL RETURN, q*(1 + 3*mu*dlam/xi) = q_trial, rather
         # than by inverting the affine consistency relation as
         # (xi - xi_0)/c. The two agree at the solution, but c = H +
@@ -615,6 +730,8 @@ class DruckerPrager(ConstitutiveModel):
         eps_p = eps_p_prev + dlam * (1.5 * s_new / xi_new + self.a_g * I3)
         alpha = alpha_prev + dlam
 
+        sigma, eps_p, alpha = self._nan_out(
+            self._unreachable(p_trial), sigma, eps_p, alpha)
         return sigma, (eps_p, alpha)
 
     def stress_and_tangent(
