@@ -1,0 +1,72 @@
+# Six base load cases on the uni-directional SVE — linear elastic, loaded once
+# to 5% engineering strain, every unloaded surface traction-free.
+#
+# One of three sibling configs (sve_base6_{uni,bi,tri}.yaml) that differ ONLY
+# in the two `rve*` variables below; everything else is interpolated from them,
+# so the materials and the load definition are written once per file and stay
+# identical across the three RVEs. Run the set with:
+#
+#   for c in uni bi tri; do
+#     python scripts/simulation/solve_mechanics.py configs/simulation/sve_base6_$c.yaml
+#   done
+#
+# 18 solves total (3 RVEs x 6 cases). The RVEs are 152^3 voxels; each solve is
+# a few seconds on a GPU, so the sweep is dominated by the .vti read unless
+# field output is switched on (see write_fields).
+
+rve:     uni
+rve_dir: 01_uni
+
+mechanics:
+  input: sim/sim/{rve_dir}/ReVE_num_fibers=20_{rve}.vti
+  # the .vti stores the phase array as cell data named "labels" (0 = matrix,
+  # 1 = fibre), not the default "phase".
+  phase_key: labels
+
+  # indexed by 0-based phase id, matching the `labels` values.
+  materials:
+    - model: isotropic_elastic
+      E:    1300.0               # MPa
+      nu:   0.42
+      name: matrix
+    - model: isotropic_elastic
+      E:    72500.0              # MPa
+      nu:   0.18
+      name: fibre
+
+  loading:
+    # uniaxial_x/y/z + shear_xy/xz/yz, in post.fields.to_voigt's Voigt order
+    # (11, 22, 33, 12, 13, 23), so case k is row/column k of the effective 6x6.
+    cases: base6
+
+    # Each case drives its own component and leaves every unloaded surface
+    # traction-free (uniaxial: the other two normals; shear: all three
+    # normals) -- the mask is derived per case, which one fixed `control`
+    # cannot do across six cases. This is also the BC the LS-DYNA/Digimat
+    # runs of this SVE package use, so the results are comparable to them.
+    free_surfaces: true
+
+    # 5% ENGINEERING strain: eps_bar[i,i] = 0.05 for a normal case,
+    # eps_bar[i,j] = 0.025 (engineering shear 0.05) for a shear one, so all
+    # six cases are the same size of load. Reached in ONE solve -- `stepping`
+    # below owns the path, and a case's cycle keys are ignored by this script.
+    gamma_max: 0.05
+
+  formulation: displacement   # required for mixed strain/stress BC
+  toler_lin:   1.0e-6
+  maxiter:     1000
+
+  # One solve at the full 5%, no load stepping -- the response is linear, so
+  # intermediate increments carry no information a scale factor doesn't.
+  stepping:
+    mode: single
+
+  # No per-voxel field output: at 152^3 each increment is ~0.4 GB and takes
+  # longer to write than the solve takes to run, and the deliverable here is
+  # the homogenized response (per-case _stats.npy plus the summary CSV, which
+  # are written either way). Set to `true` -- or rerun one case with
+  # `--cases shear_xy` -- to get XDMF/HDF5 fields for ParaView.
+  write_fields: false
+
+output:  sim/sim/{rve_dir}/base6
+jobname: "ReVE_num_fibers=20_{rve}"

@@ -38,6 +38,9 @@ inelastic:
   # plus the virgin gamma=0 state -- traces a hysteresis loop in the
   # homogenized sigma[component] response. component picks which eps_bar
   # entry is driven (symmetrized: eps_bar[i,j] = eps_bar[j,i] = gamma/2).
+  # For SEVERAL load cases on this same microstructure in one run (the six
+  # base cases, or arbitrary ones), replace `component` with `cases` -- see
+  # configs/simulation/inelastic_base6_example.yaml and problems.loadcases.
   loading:
     component:  [0, 1]           # shear in the 1-2 plane
     gamma_max:  0.03

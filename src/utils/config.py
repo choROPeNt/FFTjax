@@ -72,6 +72,31 @@ def _walk(node: Any, ctx: dict) -> Any:
     return node
 
 
+def field_write_mode(raw: Any) -> str:
+    """
+    Normalize a ``write_fields`` config value to "all" | "increments" | "none".
+
+    Per-voxel field output is the dominant cost of a large run -- at 152^3 one
+    increment is ~0.4 GB and writes slower than the solve itself runs -- so
+    both simulation drivers let a config switch it off when the deliverable is
+    the homogenized response. "increments" additionally drops the step-0
+    reference increment, which is the same zero field in every case of a sweep.
+
+    Accepts booleans as well as the strings, so `write_fields: false` in YAML
+    means what it looks like.
+    """
+    if isinstance(raw, bool):
+        return "all" if raw else "none"
+    val = str(raw).strip().lower()
+    if val in ("true", "all"):
+        return "all"
+    if val in ("false", "none", "off"):
+        return "none"
+    if val == "increments":
+        return "increments"
+    raise ValueError(f"write_fields: expected true/false/increments, got {raw!r}")
+
+
 def load_config(path: str | Path) -> dict:
     """
     Load a YAML file and resolve all ``{variable}`` references.
