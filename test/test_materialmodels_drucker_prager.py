@@ -3,8 +3,8 @@ Standalone test for materialmodels.inelastic.plasticity_drucker_prager
 .DruckerPrager -- the pressure-sensitive drop-in replacement for
 J2Plasticity.
 
-Six checks
-----------
+Thirteen checks
+---------------
 1. J2 degeneracy: with a_f = a_g = 0 the Drucker-Prager cone IS the von
    Mises cylinder, so stress, tangent AND updated state must reproduce
    J2Plasticity's to machine precision over random strains and random
@@ -16,7 +16,7 @@ Six checks
    a_f is actually calibrated from, so it's what a config author gets wrong
    first.
 3. Consistency: every plastically-returned state must sit ON the yield
-   surface, f = q + 3*a_f*p - (sigma_y0 + H*alpha) = 0, cone and apex
+   surface, f = q + 3*a_f*p - sigma_y(alpha) = 0, cone and apex
    branches alike, with no NaN in stress, tangent or state.
 4. Apex return: a strongly hydrostatic-tensile trial state must return to
    the cone's vertex exactly (q = 0, f = 0) with a finite tangent, for
@@ -34,10 +34,38 @@ Six checks
    macroscopic tension must yield strictly more voxels than compression of
    the same magnitude -- the pressure sensitivity surviving homogenization,
    which is the whole point of the model over J2.
+7. a_tip -> 0 limit: the rounded model must collapse onto the sharp one as
+   the rounding vanishes, and at the right RATE -- O(a_tip^2) deep in the
+   cone. A wrong rate catches a broken return mapping long before a wrong
+   limit would.
+8. Rounded consistency: every plastic state sits on the rounded surface,
+   and every ELASTIC state is exactly elastic (the sub-yield branch selects
+   the trial state rather than bisecting toward it).
+9. Rounded consistent tangent vs central finite differences.
+10. The point of tip rounding: past the vertex the sharp tangent's
+   symmetric part must lose positive definiteness and the rounded one must
+   not -- the regression guard on the singular-CG-operator failure a_tip
+   exists to prevent.
+11. Tabulated hardening (materialmodels.inelastic.hardening) through the
+   full return mapping: checks 3/4 again with a piecewise-linear
+   sigma_y(alpha), so the surface MOVES with alpha in a way no single H
+   reproduces. The load-bearing states are the ones whose alpha crosses a
+   table breakpoint within one return -- the case the closed form does a
+   segment search to get right.
+12. Tabulated hardening AND tip rounding together: the one branch both
+   features touch, where a table turns the single scalar q-solve into one
+   per affine segment plus a selection. Tangent checked only WITHIN a
+   segment, since a piecewise-linear law is genuinely kinked at its
+   breakpoints.
+13. The response follows the TABLE: checks 11/12 verify f = 0 against the
+   law the model was handed, this verifies the law is the one the config
+   asked for -- a monotone uniaxial sweep must trace the tabulated curve
+   through both slopes and onto the plateau, and must be distinguishable
+   from the linear law it replaces.
 
 Usage
 -----
-    python -m pytest test/test_materialmodels_drucker_prager.py
+    python test/test_materialmodels_drucker_prager.py
 """
 
 import os
@@ -133,7 +161,7 @@ sigma_m, C_m, (eps_p_m, alpha_m) = jax.jit(jax.vmap(dp.stress_and_tangent))(
     eps_big, jnp.zeros((M, 3, 3)), jnp.zeros(M)
 )
 q_m, p_m = _q_p(sigma_m)
-f_m = q_m + 3.0 * dp.a_f * p_m - (dp.sigma_y0 + dp.H * alpha_m)
+f_m = q_m + 3.0 * dp.a_f * p_m - dp.hardening.sigma_y(alpha_m)
 plastic = np.array(alpha_m) > 1e-14
 apex    = np.array(q_m) < 1e-6
 f_scale = float(dp.sigma_y0)
@@ -396,5 +424,136 @@ assert rounded_min > 1.0, (
     "rounding is not buying the definiteness it exists to buy"
 )
 print("[10] PASSED")
+
+# ── 11. tabulated hardening through the full return mapping ─────────────────
+# Checks 3/4 with sigma_y(alpha) piecewise linear instead of linear: every
+# returned state must still sit ON the yield surface, cone and apex alike,
+# and now the surface MOVES with alpha in a way no single H reproduces. The
+# states that matter most are the ones whose alpha crosses a breakpoint
+# within one return -- the whole reason the closed form does a segment
+# search rather than assuming alpha stays put.
+
+TABLE = [[0.00, SY], [0.02, 64.0], [0.08, 70.0]]     # slopes 700, 100, then plateau
+dp_pw = DruckerPrager(E=E, nu=NU, hardening={"law": "piecewise_linear", "table": TABLE},
+                      a_f=A_F, a_g=0.05)
+pw_law = dp_pw.hardening
+
+rng11 = np.random.default_rng(11)
+M11 = 1500
+eps11_b = jnp.array(rng11.normal(scale=.05, size=(M11, 3, 3)))
+eps11_b = 0.5 * (eps11_b + eps11_b.transpose(0, 2, 1))
+epp11_b = jnp.array(rng11.normal(scale=.01, size=(M11, 3, 3)))
+epp11_b = 0.5 * (epp11_b + epp11_b.transpose(0, 2, 1))
+al11_b = jnp.abs(jnp.array(rng11.normal(scale=.04, size=(M11,))))
+
+sig11, (epn11, aln11) = jax.jit(jax.vmap(dp_pw.stress))(eps11_b, epp11_b, al11_b)
+assert bool(jnp.all(jnp.isfinite(sig11))) and bool(jnp.all(jnp.isfinite(epn11))), \
+    "non-finite stress/state from the tabulated return"
+q11, p11 = _q_p(sig11)
+f11 = q11 + 3.0 * A_F * p11 - pw_law.sigma_y(aln11)
+plastic11 = (aln11 - al11_b) > 1e-14
+crossed11 = pw_law._segment_index(aln11) != pw_law._segment_index(al11_b)
+worst_f11 = float(jnp.max(jnp.abs(jnp.where(plastic11, f11, 0.0))))
+n_apex11 = int(jnp.sum(plastic11 & (q11 < 1e-9)))
+n_cone11 = int(jnp.sum(plastic11 & (q11 >= 1e-9)))
+n_cross11 = int(jnp.sum(plastic11 & crossed11))
+print(f"[11] tabulated: {n_cone11} cone, {n_apex11} apex, "
+      f"{int(jnp.sum(~plastic11))} elastic ({n_cross11} crossing a breakpoint): "
+      f"max|f| after return = {worst_f11:.2e} (sigma_y0 = {SY:g})")
+assert worst_f11 < 1e-8 * SY, f"tabulated return left f = {worst_f11:.3e} != 0"
+assert n_cone11 > 100 and n_apex11 > 10, (n_cone11, n_apex11)
+assert n_cross11 > 10, (
+    f"only {n_cross11} states crossed a breakpoint -- check 11 is not exercising "
+    "the segment search it exists to test"
+)
+print("[11] PASSED")
+
+# ── 12. tabulated hardening + tip rounding together ─────────────────────────
+# The one branch both features touch: the rounded return solves for q one
+# AFFINE SEGMENT at a time, so a table turns its single scalar solve into one
+# per segment plus a selection.
+
+dp_pw_h = DruckerPrager(E=E, nu=NU, hardening={"law": "piecewise_linear", "table": TABLE},
+                        a_f=A_F, a_g=0.05, a_tip=0.1 * SY)
+stress12 = jax.jit(jax.vmap(dp_pw_h.stress))
+sig12, (epn12, aln12) = stress12(eps11_b, epp11_b, al11_b)
+assert bool(jnp.all(jnp.isfinite(sig12))) and bool(jnp.all(jnp.isfinite(epn12)))
+q12, p12 = _q_p(sig12)
+f12 = jnp.sqrt(q12 ** 2 + dp_pw_h.a_tip ** 2) + 3.0 * A_F * p12 - pw_law.sigma_y(aln12)
+plastic12 = (aln12 - al11_b) > 1e-14
+worst_f12 = float(jnp.max(jnp.abs(jnp.where(plastic12, f12, 0.0))))
+ee12 = eps11_b - epp11_b
+st12 = (dp_pw_h.lam * jnp.trace(ee12, axis1=-2, axis2=-1)[:, None, None] * jnp.eye(3)
+        + 2.0 * dp_pw_h.mu * ee12)
+worst_el12 = float(jnp.max(jnp.where(plastic12[:, None, None], 0.0, jnp.abs(sig12 - st12))))
+
+# Tangent vs central differences. States straddling a breakpoint are excluded
+# on purpose: sigma_y is only piecewise differentiable, so the tangent is
+# genuinely kinked there and a finite difference across the kink compares two
+# different slopes. That is the model, not an error -- inside a segment the
+# tangent must still be exact.
+seg12 = pw_law._segment_index(aln12)
+inside12 = (plastic12
+            & (aln12 > pw_law._alpha_lo[seg12] + 5e-4)
+            & (aln12 < pw_law._alpha_hi[seg12] - 5e-4))
+sel12 = np.flatnonzero(np.asarray(inside12))[:120]
+n_t12 = len(sel12)
+e_s, p_s, a_s = eps11_b[sel12], epp11_b[sel12], al11_b[sel12]
+C12 = jax.jit(jax.vmap(dp_pw_h.stress_and_tangent))(e_s, p_s, a_s)[1]
+assert bool(jnp.all(jnp.isfinite(C12)))
+h12 = 1e-6
+worst_t12 = 0.0
+for i in range(3):
+    for j in range(3):
+        dE = jnp.zeros((3, 3)).at[i, j].add(h12)
+        fd = (stress12(e_s + dE, p_s, a_s)[0] - stress12(e_s - dE, p_s, a_s)[0]) / (2.0 * h12)
+        scale = jnp.maximum(jnp.max(jnp.abs(fd), axis=(1, 2)), 1.0)
+        worst_t12 = max(worst_t12, float(jnp.max(
+            jnp.max(jnp.abs(fd - C12[:, :, :, i, j]), axis=(1, 2)) / scale)))
+print(f"[12] tabulated + a_tip: {int(jnp.sum(plastic12))} plastic max|f|={worst_f12:.2e}, "
+      f"elastic max|sigma - sigma_trial|={worst_el12:.2e}, "
+      f"tangent FD rel err over {n_t12} in-segment states = {worst_t12:.2e}")
+assert worst_f12 < 1e-8 * SY, f"rounded tabulated return left f = {worst_f12:.3e} != 0"
+assert worst_el12 == 0.0, "elastic states are not exactly elastic under the rounded tabulated return"
+assert n_t12 > 20 and worst_t12 < 1e-6, (n_t12, worst_t12)
+print("[12] PASSED")
+
+# ── 13. the response actually follows the table ─────────────────────────────
+# Checks 11/12 verify f = 0 against the law the model was given; this checks
+# the law is the one the config asked for. Drive one voxel up a monotone
+# uniaxial path and read the mobilized yield stress back off the returned
+# state: it must trace the tabulated curve -- through both slopes and onto
+# the plateau -- and must NOT trace the linear law the model used to have.
+
+dp_lin13 = DruckerPrager(E=E, nu=NU, sigma_y0=SY, H=700.0, a_f=A_F, a_g=0.05)
+step_pw, step_ln = jax.jit(dp_pw.stress), jax.jit(dp_lin13.stress)
+st_pw = (jnp.zeros((3, 3)), jnp.array(0.0))
+st_ln = (jnp.zeros((3, 3)), jnp.array(0.0))
+worst_13 = gap_13 = 0.0
+seen_plateau = False
+for k in range(1, 61):
+    eps13 = jnp.zeros((3, 3)).at[0, 0].set(0.004 * k)
+    sig_pw, st_pw = step_pw(eps13, *st_pw)
+    sig_ln, st_ln = step_ln(eps13, *st_ln)
+    al_pw = st_pw[1]
+    if float(al_pw) <= 1e-14:
+        continue
+    q13, p13 = _q_p(sig_pw)
+    mobilized = float(q13 + 3.0 * A_F * p13)          # = sigma_y(alpha) when f = 0
+    worst_13 = max(worst_13, abs(mobilized - float(pw_law.sigma_y(al_pw))))
+    if float(al_pw) > 0.08:
+        seen_plateau = True
+        assert abs(mobilized - 70.0) < 1e-6 * SY, (float(al_pw), mobilized)
+    q_ln, p_ln = _q_p(sig_ln)
+    gap_13 = max(gap_13, abs(mobilized - float(q_ln + 3.0 * A_F * p_ln)))
+print(f"[13] uniaxial sweep: max|mobilized - table sigma_y| = {worst_13:.2e}, "
+      f"plateau reached = {seen_plateau}, max gap vs the linear law = {gap_13:.2f} MPa")
+assert worst_13 < 1e-8 * SY, worst_13
+assert seen_plateau, "the sweep never passed the last table point -- the plateau is untested"
+assert gap_13 > 1.0, (
+    f"the tabulated and linear laws differ by only {gap_13:.3e} MPa over the sweep "
+    "-- check 13 cannot tell them apart, so it is not testing the table"
+)
+print("[13] PASSED")
 
 print("\ntest_materialmodels_drucker_prager: all checks passed")
