@@ -33,6 +33,7 @@ XDMF/VTU geometry file with no prior damage state.
 String values in the YAML support {variable} interpolation:
   output:  "output/simulation"
   jobname: "{fracture.input.stem}"
+  stats:   "{jobname}_stats.csv"   # optional, see Output below
 
 Usage
 -----
@@ -42,10 +43,14 @@ Output
 ------
     <output>/<jobname>.h5
     <output>/<jobname>.xdmf
-    <output>/<jobname>_stats.npy   -- one structured-array row per accepted
-        increment: step, t, dt, converged, converged_mech, converged_helm,
-        iter_staggered, err_abs, err_rel, wall_time, write_time,
-        eps_bar_voigt (6,), sigma_bar_voigt (6,), d_max -- np.load(path) to read.
+    <output>/<stats>   -- one row per accepted increment: step, t, dt,
+        converged, converged_mech, converged_helm, iter_staggered, err_abs,
+        err_rel, wall_time, write_time, eps_bar_voigt (6,),
+        sigma_bar_voigt (6,), mises_stress, pressure, damage_mean,
+        damage_max (homogenized via post.fields.macroscopic_response).
+        ``stats`` is an optional config key, default "<jobname>_stats.npy"
+        -- its extension (.npy or .csv) picks the format, see
+        utils.io.stats.write_stats.
 """
 
 import argparse
@@ -63,11 +68,12 @@ import jax.numpy as jnp
 
 from materialmodels.base import PhaseFieldMaterial
 from materialmodels.factory import build_material
-from post.fields import homogenize, to_voigt
+from post.fields import homogenize, macroscopic_response
 from problems.fracture import solve_fracture_incremental
 from solvers.solution import FractureSolution
 from utils.config import load_config
 from utils.io.reader import SimulationReader
+from utils.io.stats import write_stats
 from utils.io.xdmf_writer import IncrementalWriter
 
 
@@ -130,6 +136,9 @@ def main():
     jobname = cfg["jobname"]
     stem    = f"{output}/{jobname}"
     Path(output).mkdir(parents=True, exist_ok=True)
+    # stats format is whatever this path's extension says (.npy or .csv) --
+    # see utils.io.stats.write_stats. Default unchanged if `stats` is omitted.
+    stats_path = Path(output) / cfg.get("stats", f"{jobname}_stats.npy")
 
     # ── solve (single/fixed/automatic all go through the same API; the writer
     #    is handed in so solve_fracture_incremental writes each accepted
@@ -141,28 +150,31 @@ def main():
         ("iter_staggered", "i4"), ("err_abs", "f8"), ("err_rel", "f8"),
         ("wall_time", "f8"), ("write_time", "f8"),
         ("eps_bar_voigt", "f8", (6,)), ("sigma_bar_voigt", "f8", (6,)),
-        ("d_max", "f8"),
+        ("mises_stress", "f8"), ("pressure", "f8"),
+        ("damage_mean", "f8"), ("damage_max", "f8"),
     ])
     stats_rows = []
 
     def _report(r, write_time):
         sol = cast(FractureSolution, r.solution)
         eps_bar, sigma_bar = homogenize(sol.eps, sol.sigma)
-        d_max = float(jnp.max(sol.d))
+        resp = macroscopic_response(eps_bar, sigma_bar, scalars={"damage": sol.d})
         print(f"  step {r.step:3d}  t={r.t:.4f}  dt={r.dt:.4f}  converged={bool(sol.converged)}  "
-              f"staggered_iters={sol.iter_staggered:3d}  d_max={d_max:.4f}  "
+              f"staggered_iters={sol.iter_staggered:3d}  d_max={resp['damage_max']:.4f}  "
               f"solve={r.wall_time:.2f}s  write={write_time:.2f}s  "
               f"total={r.wall_time + write_time:.2f}s")
         # Voigt order: [11, 22, 33, 12, 13, 23]
-        eps_v   = to_voigt(np.asarray(eps_bar))
-        sigma_v = to_voigt(np.asarray(sigma_bar))
+        eps_v, sigma_v = resp["eps_bar"], resp["sigma_bar"]
         print(f"           eps_bar   voigt = [{' '.join(f'{v: .4e}' for v in eps_v)}]")
         print(f"           sigma_bar voigt = [{' '.join(f'{v: .4e}' for v in sigma_v)}]")
+        print(f"           mises_stress = {resp['mises_stress']:.4e}   pressure = {resp['pressure']:.4e}")
         stats_rows.append((
             r.step, r.t, r.dt, bool(sol.converged),
             bool(sol.converged_mech), bool(sol.converged_helm),
             sol.iter_staggered, sol.err_abs, sol.err_rel,
-            r.wall_time, write_time, eps_v, sigma_v, d_max,
+            r.wall_time, write_time, eps_v, sigma_v,
+            resp["mises_stress"], resp["pressure"],
+            resp["damage_mean"], resp["damage_max"],
         ))
 
     mode = scfg.get("mode", "single")
@@ -240,11 +252,10 @@ def main():
         f.attrs["t_final"]     = float(final.t)
         f.attrs["d_max_final"] = float(jnp.max(final_sol.d))
 
-    stats_path = f"{stem}_stats.npy"
-    np.save(stats_path, np.array(stats_rows, dtype=_STATS_DTYPE))
+    write_stats(stats_path, _STATS_DTYPE, stats_rows)
 
     print(f"Written → {stem}.h5 / .xdmf")
-    print(f"Written → {stats_path}  (structured array: {_STATS_DTYPE.names})")
+    print(f"Written → {stats_path}  ({stats_path.suffix[1:]}: {_STATS_DTYPE.names})")
     print("Open the .xdmf in ParaView with the 'Xdmf3ReaderT' reader.")
 
 
