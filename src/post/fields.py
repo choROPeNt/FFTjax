@@ -139,6 +139,59 @@ def homogenize(eps: jnp.ndarray, sigma: jnp.ndarray) -> tuple[jnp.ndarray, jnp.n
     return jnp.mean(eps, axis=-1), jnp.mean(sigma, axis=-1)
 
 
+def macroscopic_response(
+    eps_bar: jnp.ndarray,
+    sigma_bar: jnp.ndarray,
+    *,
+    scalars: dict[str, np.ndarray] | None = None,
+    tensors: dict[str, jnp.ndarray] | None = None,
+) -> dict[str, np.ndarray]:
+    """
+    Package one increment's macroscopic response into the flat, named dict
+    used for every solve_*.py script's per-increment stats row and
+    scripts/postprocessing/homogenize.py's post-hoc CSV -- the single place
+    the von Mises formula, the pressure sign convention and the Voigt order
+    are defined, so "live" (during the solve) and "after the fact" (reading
+    a written .h5) homogenization can't drift apart.
+
+    Parameters
+    ----------
+    eps_bar, sigma_bar : (3, 3)   volume-averaged strain/stress, e.g. from
+        ``homogenize(eps, sigma)`` (solver layout (3, 3, Nv)) or
+        ``field.reshape(-1, 3, 3).mean(axis=0)`` (grid layout, reading an
+        already-written .h5 back with ``from_voigt``).
+    scalars : optional ``{name: per-voxel array}`` -- any layout, reported
+        as ``{name}_mean``/``{name}_max`` (e.g. accumulated plastic strain
+        alpha, phase-field damage d).
+    tensors : optional ``{name: (3, 3) already volume-averaged tensor}`` --
+        reported as ``{name}_bar`` (Voigt 6) and ``{name}_vol`` (its trace,
+        e.g. tr(eps_p_bar), the macroscopic plastic volume change).
+
+    Returns
+    -------
+    dict with "eps_bar", "sigma_bar" (Voigt 6 each, order [11,22,33,12,13,23]),
+    "mises_stress", "pressure" (p = tr(sigma_bar)/3, p > 0 = hydrostatic
+    tension), plus the scalar/tensor extras above.
+    """
+    eps_v   = to_voigt(np.asarray(eps_bar))
+    sigma_v = to_voigt(np.asarray(sigma_bar))
+    out: dict[str, np.ndarray] = {
+        "eps_bar":      eps_v,
+        "sigma_bar":    sigma_v,
+        "mises_stress": float(von_mises(np.asarray(sigma_bar))),
+        "pressure":     float((sigma_v[0] + sigma_v[1] + sigma_v[2]) / 3.0),
+    }
+    for name, field in (scalars or {}).items():
+        arr = np.asarray(field)
+        out[f"{name}_mean"] = float(arr.mean())
+        out[f"{name}_max"]  = float(arr.max())
+    for name, bar in (tensors or {}).items():
+        v = to_voigt(np.asarray(bar))
+        out[f"{name}_bar"] = v
+        out[f"{name}_vol"] = float(v[0] + v[1] + v[2])
+    return out
+
+
 def homogenize_response(
     results: Sequence,
     component: tuple[int, int] = (0, 0),
