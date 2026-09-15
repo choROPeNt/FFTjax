@@ -8,9 +8,16 @@ driver can run many load cases on one microstructure from one config and one
 process: the geometry read, the material assembly and the frequency grid are
 per-RVE, not per-case, and re-paying them once per case (as a shell loop over
 six near-identical YAML files does) is pure overhead -- as is maintaining six
-copies of everything the cases have in common. Pure config/bookkeeping logic
-(no solve happens here), which is why it lives in utils/ rather than
-problems/ -- see notes/TARGET_LAYOUT.md's problems/ note.
+copies of everything the cases have in common.
+
+Pure config/bookkeeping logic (no solve happens here), so it isn't a
+problems/*.py solve driver itself -- see notes/TARGET_LAYOUT.md's problems/
+note -- but it's mechanics-domain vocabulary (Voigt components, eps_bar),
+not a generic cross-project utility either, hence problems/utils/ rather
+than plain utils/. A thermal problem's load cases (driven flux/gradient
+instead of strain) would get their own sibling module here, sharing this
+one's shape (resolve a ``loading:`` block into one or many cases) rather
+than its strain-tensor-specific internals.
 
 The six base cases
 ------------------

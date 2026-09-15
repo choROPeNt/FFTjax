@@ -1,5 +1,5 @@
 """
-Standalone test for utils/loadcases.py -- the config -> load-case
+Standalone test for problems/utils/loadcases.py -- the config -> load-case
 resolution that lets one config (and one process) run many load cases on a
 single microstructure.
 
@@ -33,7 +33,7 @@ Seven checks
 
 Usage
 -----
-    python -m pytest test/test_utils_loadcases.py
+    python -m pytest test/test_problems_utils_loadcases.py
 """
 
 import sys
@@ -42,7 +42,7 @@ sys.path.insert(0, "src")
 import numpy as np
 
 from post.fields import _VOIGT_IJ
-from utils.loadcases import (
+from problems.utils.loadcases import (
     BASE_COMPONENTS, BASE_SIX, cycle_gammas, free_surface_control,
     resolve_cases, select_cases, voigt_label,
 )
@@ -185,4 +185,4 @@ except ValueError as exc:
 else:
     raise AssertionError("expected a ValueError for a duplicate case name (same output path)")
 
-print("\ntest_utils_loadcases: all checks passed")
+print("\ntest_problems_utils_loadcases: all checks passed")

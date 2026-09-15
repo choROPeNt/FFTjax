@@ -77,7 +77,7 @@ inelastic:
   # component: [0, 0]) to see the tension/compression asymmetry directly.
   # For SEVERAL load cases on this same microstructure in one run (the six
   # base cases, or arbitrary ones), replace `component` with `cases` -- see
-  # configs/simulation/inelastic_base6_example.yaml and utils.loadcases.
+  # configs/simulation/inelastic_base6_example.yaml and problems.utils.loadcases.
   loading:
     component:  [0, 1]           # shear in the 1-2 plane
     gamma_max:  0.03

@@ -33,7 +33,7 @@ cases on the one microstructure, each its own solve and its own output files
 post.fields.to_voigt's Voigt order); ``free_surfaces: true`` derives each
 case's ``control`` mask per case -- loaded component strain-driven, every
 unloaded surface traction-free -- which one fixed mask cannot express across
-six cases. See utils.loadcases (shared with solve_inelastic.py) and
+six cases. See problems.utils.loadcases (shared with solve_inelastic.py) and
 configs/simulation/sve_base6_uni.yaml.
 
 A case here contributes its driven component, its PEAK gamma (engineering
@@ -92,11 +92,11 @@ import jax.numpy as jnp
 from materialmodels.factory import build_material
 from post.fields import homogenize, to_voigt
 from problems.mechanics import solve_mechanics
+from problems.utils.loadcases import LoadCase, resolve_cases, select_cases
 from solvers.solution import ElasticitySolution
 from utils.config import field_write_mode, load_config
 from utils.io.reader import SimulationReader
 from utils.io.xdmf_writer import IncrementalWriter
-from utils.loadcases import LoadCase, resolve_cases, select_cases
 
 # per-increment solver + homogenization stats, saved to <stem>_stats.npy --
 # one structured-array row per accepted increment.
@@ -134,7 +134,7 @@ def main():
     # one microstructure, each its own solve and its own output files. Without
     # it, the single `eps_bar`/`control` pair below is the whole load, exactly
     # as before. Resolved before the geometry read so a config error costs
-    # nothing to discover. See utils.loadcases.
+    # nothing to discover. See problems.utils.loadcases.
     #
     # A case here contributes its driven component, its PEAK gamma and its BC;
     # the load PATH is `stepping`'s job (t*eps_bar), so a case's cycle keys
