@@ -19,7 +19,7 @@ production `cg_solve`'s reverse-mode gradient is silently wrong on this
 project's structurally singular operators; its forward-mode gradient is
 correct).
 
-Sweeps voxel size (``DX_SWEEP``) at fixed phi/r_fiber/size_in_r -- a
+Sweeps voxels per side (``N_SWEEP``) at fixed phi/r_fiber/size_in_r -- a
 mesh-refinement sweep of the *same* physical RVE, so Nv is the only thing
 that changes between runs, matching benchmark_vmap_batch_scaling.py's
 "isolate one variable" convention.
@@ -52,7 +52,7 @@ PHI       = 0.35
 R_FIBER   = 0.0035
 SIZE_IN_R = 10
 SEED      = 67
-DX_SWEEP  = [0.0009, 0.0006, 0.0004, 0.0003, 0.00022, 0.00017]  # coarse -> fine
+N_SWEEP   = [16, 32, 64, 96, 128, 192, 256, 512]  # voxels per side, coarse -> fine
 
 E_MATRIX, NU_MATRIX = 3.76e3, 0.39
 E_FIBER,  NU_FIBER  = 70.0e3, 0.20
@@ -60,7 +60,7 @@ GAMMA     = 5.0e-3      # fixed macroscopic shear strain probed at every grid si
 FD_H      = 1.0         # MPa, finite-difference step on E_matrix
 TOLER_LIN = 1e-6
 MAXITER   = 500
-REPEATS   = 5
+REPEATS   = 20
 OUT_DIR   = "output/benchmark/autodiff_vs_fd_scaling"
 
 
@@ -140,7 +140,11 @@ def time_ms(fn, repeats):
     return float(np.mean(samples)), float(np.std(samples)), out
 
 
-def bench_one_grid(dx):
+def bench_one_grid(n_vox):
+    """n_vox: target voxels per side; converted to a target dx via the fixed
+    physical domain size (size_in_r * r_fiber) before calling
+    make_random_composite_rve, which only takes dx directly."""
+    dx = SIZE_IN_R * R_FIBER / n_vox
     phase_np, n, L, phi_act, centres = make_random_composite_rve(
         phi=PHI, r_fiber=R_FIBER, dx=dx, size_in_r=SIZE_IN_R, nz=1, K=15, seed=SEED,
     )
@@ -178,15 +182,17 @@ def bench_one_grid(dx):
 if __name__ == "__main__":
     print(f"JAX backend: {jax.default_backend()}   Devices: {jax.devices()}")
     print(f"phi={PHI}  r_fiber={R_FIBER}  size_in_r={SIZE_IN_R}  gamma={GAMMA}  E_matrix={E_MATRIX}")
-    print(f"{'Nv':>8}  {'grid':>14}  {'autodiff_ms':>12}  {'fd_ms':>10}  "
+    print(f"{'Nv':>8}  {'grid':>14}  {'autodiff_ms':>16}  {'fd_ms':>16}  "
           f"{'ratio':>7}  {'rel_grad_diff':>13}")
 
     results = []
-    for dx in DX_SWEEP:
-        r = bench_one_grid(dx)
+    for n_vox in N_SWEEP:
+        r = bench_one_grid(n_vox)
         results.append(r)
-        print(f"{r['Nv']:>8}  {str(tuple(r['grid_n'])):>14}  {r['autodiff_ms']:>12.2f}  "
-              f"{r['fd_ms']:>10.2f}  {r['wall_time_ratio']:>6.2f}x  {r['rel_grad_diff']:>13.2e}")
+        autodiff_cell = f"{r['autodiff_ms']:.2f}+/-{r['autodiff_ms_std']:.2f}"
+        fd_cell = f"{r['fd_ms']:.2f}+/-{r['fd_ms_std']:.2f}"
+        print(f"{r['Nv']:>8}  {str(tuple(r['grid_n'])):>14}  {autodiff_cell:>16}  "
+              f"{fd_cell:>16}  {r['wall_time_ratio']:>6.2f}x  {r['rel_grad_diff']:>13.2e}")
 
     today = datetime.date.today().isoformat()
     payload = {
