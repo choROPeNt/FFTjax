@@ -47,37 +47,20 @@ and inflates the tension/compression yield asymmetry, see
 configs/simulation/inelastic_drucker_prager_example.yaml.
 
 ``loading`` in the YAML controls the cycle:
-  component  -- [i, j] macroscopic strain entry driven; default [0, 1]
+  component  -- [i, j] macroscopic strain entry driven, or a named alias
+                (``uniaxial_x``, ``shear_xy``/``xy``, ...); default [0, 1]
                 (shear). gamma is the ENGINEERING strain: a normal component
                 gets eps_bar[i,i] = gamma, a shear one the symmetrized
-                eps_bar[i,j] = eps_bar[j,i] = gamma/2 -- so one gamma_max is
-                one load magnitude across a sweep of both (see
-                problems.loadcases.LoadCase.eps_bar, which notes the one
-                config shape this convention changed).
+                eps_bar[i,j] = eps_bar[j,i] = gamma/2 (see
+                utils.loadcases.LoadCase.eps_bar).
   gamma_max, n_load, n_unload, n_reload -- ramp 0 -> gamma_max -> -gamma_max
                 -> gamma_max in that many equal steps each, plus the virgin
-                gamma=0 state as step 0.
-
-Several load cases per run
---------------------------
-``loading.cases`` runs many load cases sequentially on ONE microstructure in
-one process -- the geometry read, the material assembly and the frequency
-grid are per-RVE, not per-case, so this is strictly cheaper than a shell
-loop over near-identical configs, and there is one config to keep correct
-instead of six. ``cases: base6`` is the canonical set (uniaxial x/y/z, shear
-xy/xz/yz, in post.fields.to_voigt's Voigt order); a list may name individual
-base cases or spell out arbitrary ones (own component, own control/
-stress_bar, own cycle or an explicit ``gammas`` path). With
-``free_surfaces: true`` each case's control mask is derived per case --
-loaded component strain-driven, every unloaded surface traction-free --
-which a single fixed ``control`` mask cannot express across six cases. See
-problems.loadcases and configs/simulation/inelastic_base6_example.yaml.
-
-Every case starts from virgin plastic state and writes its own output files
-(suffixed ``_<case>``); plasticity is path-dependent, so cases are
-independent runs that happen to share a microstructure, never a continued
-load history. Without ``loading.cases`` the config is a single-case run and
-the output paths are unsuffixed, exactly as before.
+                gamma=0 state as step 0 (or an explicit ``gammas`` path).
+  free_surfaces -- derive the mixed-BC ``control`` mask instead of writing
+                one out by hand: the driven component stays strain-driven,
+                every unloaded surface goes traction-free. See
+                utils.loadcases.free_surface_control and
+                configs/simulation/inelastic_drucker_prager_example.yaml.
 
 Writes one XDMF/HDF5 increment per step (including the virgin state), time =
 step index -- NOT the applied strain, which reverses direction twice across
@@ -89,20 +72,16 @@ Usage
 -----
     python scripts/simulation/solve_inelastic.py configs/simulation/inelastic_j2_example.yaml
     python scripts/simulation/solve_inelastic.py configs/simulation/inelastic_drucker_prager_example.yaml
-    python scripts/simulation/solve_inelastic.py configs/simulation/inelastic_base6_example.yaml
-    # one case out of a multi-case config (e.g. one SLURM array task per case):
-    python scripts/simulation/solve_inelastic.py <config> --cases shear_xy
-    # what would run, without running it:
-    python scripts/simulation/solve_inelastic.py <config> --list-cases
+    python scripts/simulation/solve_inelastic.py configs/simulation/inelastic_drucker_prager_example.yaml
 
 Output
 ------
-    <output>/<jobname>[_<case>].h5
-    <output>/<jobname>[_<case>].xdmf
+    <output>/<jobname>.h5
+    <output>/<jobname>.xdmf
         one increment per step, fields: phase, displacement, strain, stress,
         von_mises, strain_p (= alpha), plus eps_p when
         write_plastic_strain_tensor is enabled.
-    <output>/<jobname>[_<case>]_stats.npy   -- one structured-array row per step:
+    <output>/<jobname>_stats.npy   -- one structured-array row per step:
         step, gamma, converged, n_iter, wall_time, tau_avg (homogenized
         sigma[i,j]), plus the full homogenized stress and strain tensors as
         sig_00..sig_22 and eps_00..eps_22 -- the latter is what carries the
@@ -129,11 +108,11 @@ from materialmodels.assembly import assemble_local_update, describe_materials
 from materialmodels.factory import build_material
 from operators.green import build_freq_grid
 from post.fields import compute_displacement, field_to_grid, to_voigt, von_mises
-from problems.loadcases import LoadCase, resolve_cases, select_cases, voigt_label
 from problems.mechanics import solve_displacement_based_nonlinear
 from utils.config import field_write_mode, load_config
 from utils.io.reader import SimulationReader
 from utils.io.xdmf_writer import IncrementalWriter
+from utils.loadcases import LoadCase, resolve_case, voigt_label
 
 _STATS_DTYPE = np.dtype([
     ("step", "i4"), ("gamma", "f8"), ("converged", "?"), ("n_iter", "i4"),
@@ -150,18 +129,16 @@ def run_case(case: LoadCase, *, stem, n, L, Nv, xi_flat, phase_np, materials,
              local_update, state0, solver, src, write_fields="all",
              write_eps_p=False) -> dict:
     """
-    Run one load case's whole strain path and write its XDMF/HDF5, stats and
-    metadata. Returns a summary row for the end-of-run table.
+    Run the resolved load case's whole strain path and write its XDMF/HDF5,
+    stats and metadata. Returns a summary row.
 
     Everything expensive that does NOT depend on the load case (geometry,
     materials, local_update, frequency grid) is built by the caller once and
-    passed in; the only per-case state is the plastic state, which starts
-    from ``state0`` every time -- see the module docstring.
+    passed in.
 
-    A non-converged step ends this case early and is reported in the returned
-    summary (``ok``) rather than raised, so a sweep can keep the partial
-    output and the caller decides whether to stop; the files written up to
-    that point stay valid and complete for the steps they contain.
+    A non-converged step ends the run early and is reported in the returned
+    summary (``ok``) rather than raised -- the files written up to that
+    point stay valid and complete for the steps they contain.
     """
     i_comp, j_comp = case.i, case.j
     control     = case.control
@@ -323,15 +300,6 @@ def main():
                     "hysteresis cycle on a loaded microstructure (XDMF/HDF5)"
     )
     parser.add_argument("config", type=Path, help="YAML configuration file")
-    parser.add_argument("--cases", type=str, default=None,
-                        help="comma-separated subset of loading.cases to run, in the given "
-                             "order (default: all of them) -- e.g. one case per SLURM array task")
-    parser.add_argument("--list-cases", action="store_true",
-                        help="print the load cases this config resolves to and exit "
-                             "(no geometry read, no solve)")
-    parser.add_argument("--keep-going", action="store_true",
-                        help="on a non-converged case, carry on with the remaining cases "
-                             "instead of stopping (exit status is still nonzero)")
     args = parser.parse_args()
 
     cfg  = load_config(args.config)
@@ -339,26 +307,16 @@ def main():
     lcfg = icfg.get("loading", {})
     print(f"Config : {args.config}")
 
-    # ── load cases ──────────────────────────────────────────────────────────
-    # Resolved up front, before anything expensive: a config error here (an
-    # unknown case name, a component that its own control marks
-    # stress-controlled) should cost nothing to discover.
+    # ── load case ────────────────────────────────────────────────────────────
+    # Resolved up front, before anything expensive: a config error here (a
+    # component that its own control marks stress-controlled) should cost
+    # nothing to discover.
     try:
-        cases = select_cases(
-            resolve_cases(lcfg, control=icfg.get("control"), stress_bar=icfg.get("stress_bar")),
-            [s.strip() for s in args.cases.split(",")] if args.cases else None,
-        )
+        case = resolve_case(lcfg, control=icfg.get("control"), stress_bar=icfg.get("stress_bar"))
     except ValueError as exc:
-        # A config/CLI mistake, not a crash -- report it as one.
+        # A config mistake, not a crash -- report it as one.
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    # Suffix output per case only when the config actually asked for cases --
-    # a pre-existing single-case config keeps writing to <jobname>.h5.
-    suffixed = "cases" in lcfg
-    if args.list_cases:
-        for case in cases:
-            print(f"  {case.describe()}")
-        return 0
 
     # ── load microstructure ──────────────────────────────────────────────────
     src = icfg["input"]
@@ -394,7 +352,7 @@ def main():
     output  = cfg["output"]
     jobname = cfg["jobname"]
     Path(output).mkdir(parents=True, exist_ok=True)
-    # Per-voxel output is the dominant cost of a large sweep -- see
+    # Per-voxel output is the dominant cost of a large run -- see
     # utils.config.field_write_mode.
     write_fields = field_write_mode(icfg.get("write_fields", True))
 
@@ -404,33 +362,15 @@ def main():
     if write_eps_p:
         print("Output : writing the plastic strain tensor eps_p (Voigt 6) per increment")
 
-    summaries = []
-    for k, case in enumerate(cases, start=1):
-        stem = f"{output}/{jobname}_{case.name}" if suffixed else f"{output}/{jobname}"
-        print(f"\n── load case {k}/{len(cases)} ─────────────────────────────────────────")
-        summaries.append(run_case(
-            case, stem=stem, n=n, L=L, Nv=Nv, xi_flat=xi_flat, phase_np=phase_np,
-            materials=materials, local_update=local_update, state0=state0,
-            solver=solver, src=src, write_fields=write_fields,
-            write_eps_p=write_eps_p,
-        ))
-        if not summaries[-1]["ok"] and not args.keep_going:
-            print("\nStopping after a non-converged case (--keep-going runs the rest anyway).")
-            break
-
-    if len(cases) > 1:
-        print(f"\n{'case':<14s}{'comp':>5s}{'steps':>7s}{'plastic':>9s}"
-              f"{'|tau|_max':>11s}{'wall [s]':>10s}  status")
-        for s in summaries:
-            status = "ok" if s["ok"] else f"FAILED at step {s['failed_at']}"
-            print(f"{s['name']:<14s}{s['label']:>5s}{s['n_steps']:>7d}{s['n_plastic']:>9d}"
-                  f"{s['tau_peak']:>11.4f}{s['wall']:>10.1f}  {status}")
-        not_run = len(cases) - len(summaries)
-        if not_run:
-            print(f"({not_run} case(s) not run)")
+    summary = run_case(
+        case, stem=f"{output}/{jobname}", n=n, L=L, Nv=Nv, xi_flat=xi_flat, phase_np=phase_np,
+        materials=materials, local_update=local_update, state0=state0,
+        solver=solver, src=src, write_fields=write_fields,
+        write_eps_p=write_eps_p,
+    )
 
     print("\nOpen the .xdmf files in ParaView with the 'Xdmf3ReaderT' reader.")
-    return 0 if all(s["ok"] for s in summaries) and len(summaries) == len(cases) else 1
+    return 0 if summary["ok"] else 1
 
 
 if __name__ == "__main__":
