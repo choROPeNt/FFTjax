@@ -1,0 +1,64 @@
+# Six base load cases in one run — same microstructure and materials as
+# configs/simulation/mechanics_example.yaml, with eps_bar/control/stress_bar
+# replaced by loading.cases: base6. Geometry and materials are per-RVE, not
+# per-case, so scripts/simulation/solve_mechanics.py reads and assembles
+# them ONCE and then loops the six cases.
+# {mechanics.input.stem} → "rve_random_phi-0.35_seed-67"  (used in output path)
+#
+# `input` below must already exist -- generate it first with
+# scripts/generation/generate_rve.py (see configs/generation/rve_random.yaml).
+
+mechanics:
+  input: output/generation/rve_random_phi-0.35_seed-67.xdmf
+
+  # indexed by 0-based phase id (0=matrix, 1=fibre) -- same materials as
+  # mechanics_example.yaml.
+  materials:
+    - model: isotropic_elastic
+      E:    3.760e3              # MPa
+      nu:   0.39
+      name: epoxy matrix
+    - model: transverse_isotropic
+      E_L: 234.0e3
+      E_T: 15.0e3
+      G_LT: 15.0e3
+      nu_LT: 0.2
+      nu_TT: 0.0714    # = E_T/(2*G23) - 1, G23 = 7000 (isotropic transverse plane)
+      name: carbon fibre
+      fiber_dir: [0.0, 0.0, 1.0]
+
+  loading:
+    # uniaxial_x/y/z + shear_xy/xz/yz, in post.fields.to_voigt's Voigt order
+    # (11, 22, 33, 12, 13, 23), so case k is row/column k of the effective 6x6.
+    # A list (e.g. cases: [uniaxial_x, shear_xy]) runs a subset instead --
+    # see configs/simulation/inelastic_base6_example.yaml for the full
+    # arbitrary-case syntax (own component/control/stress_bar/gammas).
+    cases: base6
+
+    # Each case drives its own component and leaves every unloaded surface
+    # traction-free (uniaxial: the other two normals; shear: all three
+    # normals) -- the mask is derived per case, which the one fixed
+    # `control` mechanics_example.yaml spells out by hand cannot do across
+    # six cases.
+    free_surfaces: true
+
+    # ENGINEERING strain, same magnitude as mechanics_example.yaml's
+    # eps_bar[0,0]: eps_bar[i,i] = gamma_max for a normal case,
+    # eps_bar[i,j] = gamma_max/2 for a shear one, so all six cases are the
+    # same size of load. Reached in ONE solve -- `stepping` below owns the
+    # path, and a case's cycle keys (n_load/n_unload/n_reload) are ignored
+    # by this script (unlike solve_inelastic.py, where the path is the point).
+    gamma_max: 1.0e-3
+
+  formulation: displacement   # required for the free_surfaces mixed BC
+  toler_lin:   1.0e-6
+  maxiter:     1000
+
+  # One solve at the full gamma_max per case, no load stepping -- the
+  # response is linear, so intermediate increments carry no information a
+  # scale factor doesn't.
+  stepping:
+    mode: single
+
+output:  output/simulation
+jobname: "{mechanics.input.stem}_base6"
