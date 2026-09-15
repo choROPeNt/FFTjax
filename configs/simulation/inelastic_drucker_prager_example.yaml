@@ -70,14 +70,14 @@ inelastic:
   # macroscopic shear-strain cycle: 0 -> gamma_max -> -gamma_max -> gamma_max,
   # plus the virgin gamma=0 state -- traces a hysteresis loop in the
   # homogenized sigma[component] response. component picks which eps_bar
-  # entry is driven (symmetrized: eps_bar[i,j] = eps_bar[j,i] = gamma/2) --
-  # an [i, j] pair, or a named alias like uniaxial_x/shear_xy/xy, see
-  # utils.loadcases. Note a pure shear eps_bar drives no MACROSCOPIC
-  # pressure, so the pressure sensitivity shows up only through the local p
-  # field the heterogeneity itself generates -- drive a normal component
-  # (e.g. component: uniaxial_x, or [0, 0]) to see the tension/compression
-  # asymmetry directly, optionally with free_surfaces: true so the RVE can
-  # contract laterally instead of being confined.
+  # entry is driven (symmetrized: eps_bar[i,j] = eps_bar[j,i] = gamma/2).
+  # Note a pure shear eps_bar drives no MACROSCOPIC pressure, so the
+  # pressure sensitivity shows up only through the local p field the
+  # heterogeneity itself generates -- drive a normal component (e.g.
+  # component: [0, 0]) to see the tension/compression asymmetry directly.
+  # For SEVERAL load cases on this same microstructure in one run (the six
+  # base cases, or arbitrary ones), replace `component` with `cases` -- see
+  # configs/simulation/inelastic_base6_example.yaml and utils.loadcases.
   loading:
     component:  [0, 1]           # shear in the 1-2 plane
     gamma_max:  0.03

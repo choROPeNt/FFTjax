@@ -1,0 +1,88 @@
+# Six base load cases on the tri-directional SVE — Drucker-Prager (PP) matrix,
+# monotonic loading only, to 5% engineering strain.
+#
+# The elastic counterpart of this file is sve_base6_tri.yaml; the differences
+# are the matrix material block, the load PATH (this script walks it step by
+# step, because plasticity is path-dependent) and the driver:
+# solve_inelastic.py, not solve_mechanics.py. Run the set with:
+#
+#   for c in uni bi tri; do
+#     python scripts/simulation/solve_inelastic.py \
+#       configs/simulation/sve_base6_dp_$c.yaml --keep-going
+#   done
+#
+# 18 cases x 10 load increments = 180 Newton-CG solves on a 152^3 grid.
+# Runtime is governed by how plastic the matrix gets -- see H below.
+
+rve:     tri
+rve_dir: 03_tri
+
+inelastic:
+  input: sim/sim/{rve_dir}/ReVE_num_fibers=20_{rve}.vti
+  phase_key: labels
+
+  materials:
+    # PP, literature-typical room-temperature quasi-static values -- NOT
+    # calibrated against a measured curve. sigma_y0 is the shear-meridian
+    # intercept, not a tensile strength: with a_f = 0.13 this yields at
+    # sigma_t = sigma_y0/(1 + a_f) = 31.9 MPa in tension and
+    # sigma_c = sigma_y0/(1 - a_f) = 41.4 MPa in compression (m = 1.3).
+    # Note the model reaches yield at eps = sigma_t/E = 2.5%, whereas real PP
+    # peaks nearer 8-10% -- linear elasticity cannot match both the initial
+    # slope and the yield point, and this config keeps the slope.
+    - model: drucker_prager
+      E:        1300.0           # MPa
+      nu:       0.42
+      sigma_y0: 36.0             # MPa
+      H:        125.0            # MPa, linear isotropic hardening.
+      # Raised from an initial 30 MPa, which is closer to PP's nominal-stress
+      # plateau but left the matrix nearly perfectly plastic: once ~91% of
+      # voxels had yielded the elastoplastic tangent went near-singular over
+      # most of the domain, collapsing CG conditioning (600-800 s per load
+      # step, ~20 h for the sweep) and leaving nothing to arrest plastic
+      # localization at the re-entrant corners of the voxelized fibre surface
+      # (max accumulated plastic strain 1.96 at 5% applied). 125 MPa is a
+      # defensible true-stress hardening slope for PP and fixes both. The
+      # cancelled H=30 run is kept under sim/sim/01_uni/base6_dp_H30/.
+      a_f:      0.13             # friction; a_f = (m-1)/(m+1), m = sigma_c/sigma_t
+      a_g:      0.03             # dilatancy, well below a_f (non-associated)
+      name: PP matrix (Drucker-Prager)
+    - model: isotropic_elastic
+      E:    72500.0              # MPa
+      nu:   0.18
+      name: fibre
+
+  loading:
+    cases: base6
+    # Same per-case traction-free BC as the elastic sweep. It matters more
+    # here: clamping the transverse directions confines a pressure-sensitive
+    # matrix and inflates its tension/compression asymmetry.
+    free_surfaces: true
+
+    # Loading only -- 0 -> 5% engineering strain in 10 equal increments, no
+    # unload and no reload branch (n_unload = n_reload = 0), plus the virgin
+    # gamma = 0 state as step 0. Each step warm-starts from the previous
+    # step's converged fluctuation and macroscopic strain.
+    gamma_max:  0.05
+    n_load:     10
+    n_unload:   0
+    n_reload:   0
+
+  toler_lin:   1.0e-6
+  maxiter_lin: 2000
+  toler_nr:    1.0e-6
+  maxiter_nr:  50
+
+  # Full per-voxel output: strain, stress, von Mises, displacement and the
+  # accumulated plastic strain alpha, one increment per load step. Budget
+  # ~0.4 GB and ~15 s per increment, so 11 increments x 18 cases is roughly
+  # 80 GB and adds ~50 min of pure write time to the sweep -- the writing,
+  # not the solving, is what this run is now paced by.
+  #   increments -- same, minus the step-0 virgin frame (all zeros, identical
+  #                 in every case): ~7 GB and ~5 min cheaper.
+  #   false      -- no fields at all; the per-case _stats.npy still carries
+  #                 the whole homogenized sigma/eps history (the response curve).
+  write_fields: true
+
+output:  sim/sim/{rve_dir}/base6_dp
+jobname: "ReVE_num_fibers=20_{rve}_dp"

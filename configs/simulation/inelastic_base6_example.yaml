@@ -1,0 +1,99 @@
+# Six base load cases in one run — same script and same microstructure as
+# configs/simulation/inelastic_drucker_prager_example.yaml, with the single
+# `loading.component` replaced by `loading.cases` and both phases linear
+# elastic. Geometry, materials and solver settings are per-RVE, not per-case,
+# so scripts/simulation/solve_inelastic.py reads and assembles them ONCE and
+# then loops the cases.
+#
+# Both phases being elastic, this sweep is a pure stiffness characterization:
+# no yielding, no path dependence, and the Newton driver converges in a couple
+# of iterations per step since the tangent is exact. Swap either phase for a
+# `j2_plasticity`/`drucker_prager` block (see the two configs above) and
+# nothing else here has to change.
+# {inelastic.input.stem} -> "rve_random_small_phi-0.35_seed-67" (used in output path)
+#
+# `input` below must already exist -- generate it first with
+# scripts/generation/generate_rve.py and configs/generation/rve_random_small.yaml
+
+inelastic:
+  input: output/generation/rve_random_small_phi-0.35_seed-67.xdmf
+
+  materials:
+    - model: isotropic_elastic
+      E:    1300.0               # MPa
+      nu:   0.42
+      name: matrix
+    - model: isotropic_elastic
+      E:    72500.0              # MPa
+      nu:   0.18
+      name: fibre
+
+  loading:
+    # `cases: base6` = uniaxial_x, uniaxial_y, uniaxial_z, shear_xy, shear_xz,
+    # shear_yz -- in post.fields.to_voigt's Voigt order (11, 22, 33, 12, 13,
+    # 23), so case k lines up with row/column k of any effective 6x6 assembled
+    # from the six responses. Equivalently, list them by name (or by their
+    # "xy"-style labels) to run a subset:
+    #   cases: [uniaxial_x, shear_xy]
+    cases: base6
+
+    # free_surfaces: derive each case's mixed-BC `control` mask from the
+    # component it drives -- loaded component strain-driven, every UNLOADED
+    # surface traction-free (uniaxial: the other two normals; shear: all three
+    # normals). This is what a single fixed `control` mask cannot express: the
+    # mask for uniaxial_x is not the mask for uniaxial_y.
+    #
+    #   true  -- specimen-like. Uniaxial tension contracts laterally, so
+    #            sigma_xx/eps_xx of case k is an engineering modulus (and the
+    #            resolved transverse strains give the Poisson ratios) -- i.e.
+    #            the six cases read out the effective COMPLIANCE.
+    #   false -- (default) pure macroscopic strain BC, i.e. the classic unit-
+    #            strain cases: eps_bar prescribed in full, every other entry
+    #            clamped to zero, sigma_bar of case k = column k of the
+    #            effective STIFFNESS.
+    # For an inelastic matrix the same switch matters for a further reason:
+    # clamping the transverse directions confines it, which for a
+    # pressure-sensitive model inflates the tension/compression yield asymmetry.
+    free_surfaces: true
+
+    # Cycle shared by every case (any case may override any of these -- see
+    # the arbitrary-case example below). gamma is the engineering measure for
+    # both normal and shear cases, so one gamma_max means one load magnitude
+    # across the whole sweep.
+    #
+    # With both phases elastic the unload/reload branches retrace the load
+    # branch exactly -- there is no hysteresis to trace, and the response is
+    # linear in gamma, so a single step per case already characterizes it.
+    # Set n_unload/n_reload to 0 (and n_load as low as 1) to cut the sweep to
+    # a quarter of the steps; they are kept here so this config stays a
+    # drop-in comparison against the inelastic ones.
+    gamma_max:  0.03
+    n_load:     10
+    n_unload:   15
+    n_reload:   15
+
+    # Arbitrary cases: `cases` entries may also be mappings, which is the
+    # extension point past the six. Anything omitted falls back to the values
+    # above; `component` defines a case the registry doesn't know; `gammas`
+    # replaces the load/unload/reload cycle with an explicit path (0.0 is
+    # prepended if absent, so step 0 is always the unloaded state); `control`/
+    # `stress_bar` override the derived BC for that one case.
+    #
+    # cases:
+    #   - uniaxial_x                       # registry name
+    #   - xy                               # its Voigt-label alias
+    #   - name: monotonic_x                # arbitrary: no cycle, no unload
+    #     component: [0, 0]
+    #     gammas: [0.005, 0.01, 0.02, 0.04]
+    #   - name: tension_x_confined_z       # arbitrary: own mixed BC
+    #     component: [0, 0]
+    #     control:    [[0, 0, 0], [0, 1, 0], [0, 0, 0]]   # only y free
+    #     stress_bar: [[0, 0, 0], [0, 0, 0], [0, 0, 0]]
+
+  toler_lin:   1.0e-7
+  maxiter_lin: 2000
+  toler_nr:    1.0e-7
+  maxiter_nr:  50
+
+output:  output/simulation
+jobname: "{inelastic.input.stem}_base6"
