@@ -1,8 +1,11 @@
 """
 Scalar elliptic FFT-CG solve. First user: the AT2 phase-field damage
-sub-problem (Helmholtz-type screened Poisson equation).
+sub-problem (Helmholtz-type screened Poisson equation). Second: steady-state
+thermal conduction homogenization (``solve_thermal_conduction``, a genuinely
+different PDE -- no reaction/mass term, and the unknown carries a
+macroscopic mixed gradient/flux BC rather than an irreversibility floor).
 
-Two variants: ``solve_damage_helmholtz_cg`` (homogeneous Gc, a single
+Two damage variants: ``solve_damage_helmholtz_cg`` (homogeneous Gc, a single
 scalar for the whole domain) and ``solve_damage_helmholtz_cg_het``
 (heterogeneous Gc, an (Nv,) per-voxel field). They solve genuinely
 different equations, not the same one at different generality -- see
@@ -241,3 +244,192 @@ def solve_damage_helmholtz_cg_het(
 
     d = jnp.maximum(d_prev, d_cg)
     return jnp.clip(d, 0.0, 1.0), converged
+
+
+_ZERO_CONTROL_1D = (0, 0, 0)
+
+
+@partial(jax.jit, static_argnames=("n", "control", "maxiter"))
+def solve_thermal_conduction(
+    n:          tuple[int, ...],
+    K_field:    jnp.ndarray,
+    xi_flat:    jnp.ndarray,
+    grad_T_bar: jnp.ndarray,
+    control:    tuple[int, int, int] = _ZERO_CONTROL_1D,
+    flux_goal:  jnp.ndarray | None = None,
+    toler_lin:  float = 1e-6,
+    maxiter:    int = 1000,
+    K0:         jnp.ndarray | None = None,
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """
+    Steady-state heat conduction on a periodic voxel grid, true heterogeneous
+    conductivity (no reference-medium fixed point), supporting mixed
+    macroscopic gradient/flux boundary conditions -- the scalar analogue of
+    ``solvers.elliptic.vector.displacement_based.solve_displacement_based``,
+    mirrored line-for-line rather than re-derived (unknown rank drops from a
+    displacement vector to a scalar temperature, so a symmetrized strain
+    becomes a plain gradient, and the (3,3) strain-BC ``control``/rank-4
+    stiffness become a (3,) gradient-BC ``control``/rank-2 conductivity; the
+    DC-bin macroscopic-correction trick, Nyquist handling and reference-medium
+    preconditioner all carry over unchanged in spirit).
+
+    No reaction/mass term (unlike this file's damage solvers) and no
+    reference-medium Lippmann-Schwinger analogue exists for this equation in
+    either this project or the FFTMAD reference implementation's own
+    diffusion module -- both treat a heterogeneous div(k grad) problem as a
+    direct CG solve, which is what this is.
+
+    Governing equation
+    -------------------
+    T(x) = grad_T_bar . x + T'(x), T' periodic (mean 0, a gauge choice --
+    only grad(T') is physically meaningful). Fourier's law q = -K(x).grad(T),
+    equilibrium div(q) = 0 (no heat source):
+
+        div(K(x) . grad(T')) = -div(K(x) . grad_T_bar)
+
+    solved for the periodic fluctuation T' by CG. Mixed BC folds in the same
+    way ``solve_displacement_based``'s bordered system does: the CG unknown
+    is ``pack(T', sv)`` (temperature fluctuation, macroscopic-gradient
+    correction on flux-controlled directions), the correction embedded
+    directly in the zero-frequency (DC) Fourier bin of the gradient field
+    rather than tracked as a separate real-space quantity.
+
+    Parameters
+    ----------
+    n          : grid shape (nx, ny, nz) -- must be static for JIT
+    K_field    : (3, 3, Nv)  per-voxel conductivity (materialmodels.assembly.
+                 assemble_K_field)
+    xi_flat    : (3, Nv)     angular-frequency grid (operators.green.build_freq_grid)
+    grad_T_bar : (3,)  prescribed macroscopic temperature gradient; entries
+                 where ``control == 1`` are ignored (solved for instead)
+    control    : (3,) static 0/1 mask, 1 = flux-controlled, 0 = gradient-controlled
+    flux_goal  : (3,)  target macroscopic flux; only entries where
+                 ``control == 1`` are used. None (default) = zero (adiabatic/
+                 traction-free-equivalent) on those directions.
+    toler_lin  : relative CG residual tolerance
+    maxiter    : maximum CG iterations -- must be static for JIT
+    K0         : (3, 3) or None  reference conductivity for the frequency-
+                 domain preconditioner (ξ.K0.ξ)⁻¹, a plain scalar reciprocal
+                 per frequency (not a per-frequency matrix inverse -- the
+                 unknown here is scalar, unlike the displacement case's
+                 3-component acoustic tensor). Default is the voxel-average
+                 of K_field.
+
+    Returns
+    -------
+    grad_T        : (3, Nv)  local temperature gradient
+    flux          : (3, Nv)  local heat flux  q = -K : grad_T
+    T_prime       : (Nv,)    periodic temperature fluctuation (see
+                    solvers.solution.ThermalSolution's own note on why this
+                    is not the absolute temperature field)
+    delta         : (3, Nv)  gradient correction (fluctuation + macroscopic part)
+    grad_T_bar_out: (3,)     macroscopic gradient, with flux-controlled
+                    entries filled in by the solve
+    converged     : bool array   True if residual tolerance met
+    """
+    Nv = prod(n)
+    active = tuple(i for i in range(3) if control[i])
+    control_arr = jnp.asarray(control, dtype=grad_T_bar.dtype)
+
+    iq = 1j * nyquist_safe_xi(xi_flat, n)  # (3, Nv) -- gradient/divergence are odd powers of ξ
+
+    def fft_(v):
+        return jnp.fft.fftn(v.reshape(n)).reshape(Nv)
+
+    def ifft_(v_hat):
+        return jnp.fft.ifftn(v_hat.reshape(n)).real.reshape(Nv)
+
+    def fft_vec(v):
+        return jnp.fft.fftn(v.reshape(3, *n), axes=(-3, -2, -1)).reshape(3, Nv)
+
+    def ifft_vec(v_hat):
+        return jnp.fft.ifftn(v_hat.reshape(3, *n), axes=(-3, -2, -1)).real.reshape(3, Nv)
+
+    # ── pack/unpack the macroscopic-gradient correction (flux-controlled only) ──
+    def sv2full(sv):
+        full = jnp.zeros((3,), dtype=sv.dtype)
+        for idx, i in enumerate(active):
+            full = full.at[i].set(sv[idx])
+        return full
+
+    def full2sv(full):
+        if not active:
+            return jnp.zeros((0,), dtype=full.dtype)
+        return jnp.stack([full[i] for i in active])
+
+    def unpack(x_flat):
+        Tp = x_flat[:Nv]
+        sv = x_flat[Nv:]
+        return Tp, sv
+
+    def pack(Tp, sv):
+        return jnp.concatenate([Tp, sv])
+
+    # ── gradient from a periodic T' field, with the macroscopic part
+    #    embedded in the zero-frequency (DC) mode: mean(grad') = dgrad_bar_free
+    def grad_from_T(Tp, dgrad_bar_free):
+        Tp_hat   = fft_(Tp)                # (Nv,) complex
+        grad_hat = iq * Tp_hat[None, :]    # (3, Nv)
+        grad_hat = grad_hat.at[:, 0].set(Nv * dgrad_bar_free.astype(grad_hat.dtype))
+        return ifft_vec(grad_hat)
+
+    # ── Linear operator  A(T', sv) = (div residual, mean-flux residual) ─────
+    def A_op(x_flat):
+        Tp, sv     = unpack(x_flat)
+        grad_trial = grad_from_T(Tp, sv2full(sv))
+        q_trial    = -jnp.einsum('ijm,jm->im', K_field, grad_trial)   # Fourier's law
+        q_hat      = fft_vec(q_trial)
+        div_flat   = ifft_(jnp.sum(iq * q_hat, axis=0))
+        extra_out  = -full2sv(jnp.real(q_hat[:, 0]))
+        return pack(div_flat, extra_out)
+
+    # ── RHS from the prescribed (gradient-controlled) baseline gradient ─────
+    grad0    = jnp.ones((3, Nv)) * (grad_T_bar * (1.0 - control_arr))[:, None]
+    q0       = -jnp.einsum('ijm,jm->im', K_field, grad0)
+    q0_hat   = fft_vec(q0)
+    bb_div   = -ifft_(jnp.sum(iq * q0_hat, axis=0))
+    fg       = jnp.zeros((3,), dtype=grad_T_bar.dtype) if flux_goal is None else flux_goal
+    bb_extra = full2sv(jnp.real(q0_hat[:, 0])) - Nv * full2sv(fg)
+    bb       = pack(bb_div, bb_extra)
+
+    # ── Preconditioner  M ≈ A⁻¹, from a reference (homogeneous) medium ───────
+    # Per-frequency scalar  k0(ξ) = ξ.K0.ξ  (Nv,), inverted pointwise -- a
+    # plain reciprocal, not a matrix inverse, since the unknown (T') has one
+    # component, unlike displacement_based's 3-component acoustic tensor.
+    K0_ref  = jnp.mean(K_field, axis=-1) if K0 is None else K0   # (3, 3)
+    k0_hat  = jnp.einsum('jm,jk,km->m', iq.imag, K0_ref, iq.imag)
+    null_pt = jnp.all(iq.imag == 0.0, axis=0)   # true DC bin + any Nyquist-zeroed point
+    k0_hat  = jnp.where(null_pt, 1.0, k0_hat)   # regularized -- any regular value works there
+    k0_inv  = 1.0 / k0_hat
+
+    def M_T(r):
+        return ifft_(k0_inv * fft_(r))
+
+    # "extra" block: self-coupling of the macroscopic-gradient unknowns,
+    # approximated with the same reference conductivity, matching the sign
+    # of A_op's extra_out.
+    if active:
+        basis = jnp.eye(len(active), dtype=grad_T_bar.dtype)
+        P_extra = jnp.stack([
+            Nv * full2sv(jnp.einsum('ij,j->i', K0_ref, sv2full(basis[idx])))
+            for idx in range(len(active))
+        ], axis=1)
+
+    def M(x_flat):
+        Tp, sv = unpack(x_flat)
+        z_sv = jnp.linalg.solve(P_extra, sv) if active else sv
+        return pack(M_T(Tp), z_sv)
+
+    # ── CG solve ──────────────────────────────────────────────────────────────
+    x0 = jnp.zeros_like(bb)
+    x_flat, converged = cg_solve(A_op, bb, x0, toler_lin, maxiter, M=M)
+
+    T_prime, sv_sol = unpack(x_flat)
+    dgrad_bar_free  = sv2full(sv_sol)
+
+    delta  = grad_from_T(T_prime, dgrad_bar_free)
+    grad_T = grad0 + delta
+    flux   = -jnp.einsum('ijm,jm->im', K_field, grad_T)
+    grad_T_bar_out = grad_T_bar * (1.0 - control_arr) + dgrad_bar_free
+
+    return grad_T, flux, T_prime, delta, grad_T_bar_out, converged

@@ -23,6 +23,25 @@ class ConstitutiveModel(ABC):
         ...
 
 
+class ConductivityModel(ABC):
+    """
+    A material's flux-gradient law, reduced to what the FFT solver needs: a
+    2nd-order conductivity tensor K_ij relating flux and gradient via
+    Fourier's law, q = -K : grad(T). Deliberately thin, mirroring
+    ConstitutiveModel -- symmetry class, parametrization, and any derived
+    quantities are up to each concrete model. Not a ConstitutiveModel
+    subclass: a conductivity tensor is rank 2, not rank 4, so there is
+    nothing to share beyond the pattern (see materialmodels.assembly.
+    assemble_K_field, materialmodels.thermal.isotropic.
+    ThermalConductivityIsotropic).
+    """
+
+    @abstractmethod
+    def conductivity_tensor(self) -> jnp.ndarray:
+        """(3, 3) conductivity tensor K_ij."""
+        ...
+
+
 @runtime_checkable
 class PhaseFieldMaterial(Protocol):
     """

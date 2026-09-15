@@ -9,7 +9,7 @@ from collections.abc import Sequence
 
 import jax.numpy as jnp
 
-from materialmodels.base import ConstitutiveModel
+from materialmodels.base import ConductivityModel, ConstitutiveModel
 from materialmodels.phasefield.degradation import degradation_at2
 
 
@@ -70,8 +70,57 @@ def assemble_C_field(
     return C_field
 
 
-def describe_materials(materials: Sequence[ConstitutiveModel]) -> None:
-    """Print each material next to the phase index assemble_C_field/solve_mechanics assign it."""
+def assemble_K_field(
+    materials: Sequence[ConductivityModel],
+    phase: jnp.ndarray,
+) -> jnp.ndarray:
+    """
+    Per-voxel conductivity field from a hard (sharp-interface) phase
+    assignment -- the ConductivityModel analogue of assemble_C_field (see
+    its own docstring for the fast-path/mixed-path reasoning, identical here
+    modulo tensor rank: (3,3) per material instead of (3,3,3,3)). No
+    per-voxel-varying-material fast path is exercised by any thermal model
+    yet (unlike TransverseIsotropic's per-voxel fiber_dir on the elastic
+    side), but the mixed path is kept for parity -- an anisotropic
+    conductivity model with its own per-voxel orientation would need no
+    change here.
+
+    Parameters
+    ----------
+    materials : list of ConductivityModel, indexed by phase (0-based)
+    phase     : (Nv,) int   phase index per voxel
+
+    Returns
+    -------
+    K_field : (3, 3, Nv)
+    """
+    K_per_material = [m.conductivity_tensor() for m in materials]
+
+    if all(K.ndim == 2 for K in K_per_material):
+        # fast path: every material is one constant tensor.
+        K_stack = jnp.stack(K_per_material, axis=-1)  # (3,3,n_mats)
+        return K_stack[..., phase]  # (3,3,Nv) -- gather by phase index
+
+    # mixed path: at least one material returns an already-per-voxel field.
+    Nv = phase.shape[0]
+    K_field = jnp.zeros((3, 3, Nv), dtype=K_per_material[0].dtype)
+    for i, K_i in enumerate(K_per_material):
+        if K_i.ndim == 2:
+            K_i_field = jnp.broadcast_to(K_i[..., None], (3, 3, Nv))
+        else:
+            if K_i.shape[-1] != Nv:
+                raise ValueError(
+                    f"materials[{i}] ({materials[i]}) returned a per-voxel "
+                    f"conductivity field spanning {K_i.shape[-1]} voxels, but the "
+                    f"grid has Nv={Nv}"
+                )
+            K_i_field = K_i
+        K_field = jnp.where(phase == i, K_i_field, K_field)
+    return K_field
+
+
+def describe_materials(materials: Sequence[ConstitutiveModel | ConductivityModel]) -> None:
+    """Print each material next to the phase index assemble_C_field/assemble_K_field assign it."""
     for i, m in enumerate(materials):
         print(f"phase {i}: {m}")
 

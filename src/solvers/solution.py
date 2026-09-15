@@ -30,6 +30,31 @@ class ElasticitySolution(NamedTuple):
                                            # populated by DisplacementBasedSolver
 
 
+class ThermalSolution(NamedTuple):
+    """Result of one steady-state thermal conduction solve."""
+
+    grad_T:       jnp.ndarray  # (3, Nv)  local temperature gradient
+    flux:         jnp.ndarray  # (3, Nv)  local heat flux  q = -K : grad_T
+    T_prime:      jnp.ndarray  # (Nv,)    periodic temperature fluctuation (the CG
+                                #          unknown itself) -- NOT the absolute
+                                #          temperature field, which also needs the
+                                #          macroscopic linear part grad_T_bar . x;
+                                #          gauge-free (an additive constant is
+                                #          arbitrary), same reasoning
+                                #          post.fields.compute_displacement exists
+                                #          to handle on the elasticity side
+    delta:        jnp.ndarray  # (3, Nv)  gradient correction from the CG solve
+    converged:    jnp.ndarray  # bool array
+    grad_T_bar:   jnp.ndarray | None = None  # (3,) macroscopic gradient with any
+                                              # flux-controlled entries filled in
+                                              # by the solve; None only for a
+                                              # hypothetical future formulation
+                                              # with no mixed-BC concept, mirroring
+                                              # ElasticitySolution.eps_bar -- the
+                                              # one solver this project has always
+                                              # populates it
+
+
 class FractureSolution(NamedTuple):
     """
     Result of one staggered mechanics<->phase-field solve (one time
