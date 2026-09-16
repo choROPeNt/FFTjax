@@ -2,7 +2,6 @@ import React from 'react';
 import clsx from 'clsx';
 import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 import Layout from '@theme/Layout';
-import ThemedImage from '@theme/ThemedImage';
 import useBaseUrl from '@docusaurus/useBaseUrl';
 import Heading from '@theme/Heading';
 import CardGrid from '@site/src/components/CardGrid';
@@ -49,20 +48,7 @@ function HomepageHeader() {
   );
 }
 
-// function WorkflowDiagram() {
-//   return (
-//     <div className={styles.workflowImage}>
-//       <ThemedImage
-//         alt="FFTjax workflow"
-//         sources={{
-//           light: useBaseUrl('/img/fftjax_workflow_light.svg'),
-//           dark: useBaseUrl('/img/fftjax_workflow_dark.svg'),
-//         }}
-//         width="500"
-//       />
-//     </div>
-//   );
-// }
+
 
 export default function Home() {
   const {siteConfig} = useDocusaurusContext();
@@ -72,7 +58,6 @@ export default function Home() {
       description={siteConfig.tagline}>
       <HomepageHeader />
       <main>
-        {/* <WorkflowDiagram /> */}
         <CardGrid cards={CARDS} />
       </main>
     </Layout>

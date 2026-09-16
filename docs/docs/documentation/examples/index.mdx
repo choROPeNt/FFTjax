@@ -16,25 +16,25 @@ Worked examples demonstrating FFTjax in practice.
       title: 'Linear-Elastic Solve (shear strain)',
       description: 'A two-phase glass-fibre/epoxy composite RVE under a prescribed macroscopic shear strain, where the ~23x stiffness contrast makes the Newton-CG solve actually iterate, redistributing stress between the stiff fibre and compliant matrix.',
       to: '/documentation/examples/lin-elastic-strain',
-      image: '/img/lin_elastic_shear_strain.png',
+      image: '/img/examples_logo/lin_elastic_shear_strain.png',
     },
     {
       title: 'Batched RVE Solves (jax.vmap)',
       description: 'The same two-phase composite RVE and elastic solver, but solving three macroscopic load cases (shear, uniaxial x, uniaxial y) in one call via jax.vmap instead of a Python loop -- one XLA compilation for the whole batch.',
       to: '/documentation/examples/lin-elastic-strain-vmap',
-      image: '/img/lin_elastic_strain_vmap.png',
+      image: '/img/examples_logo/lin_elastic_strain_vmap.png',
     },
     {
       title: 'Linear-Elastic Solve (mixed boundary conditions)',
       description: 'A two-phase composite RVE under displacement-controlled tension with free lateral surfaces, measuring the effective Poisson\'s ratios -- the mixed strain/stress boundary condition a real tensile specimen is under.',
       to: '/documentation/examples/lin-elastic-mixed-bc',
-      image: '/img/lin_elastic_tension_mixed_bc.png',
+      image: '/img/examples_logo/lin_elastic_tension_mixed_bc.png',
     },
     {
       title: 'In-Elastic Solve (J2 elastoplasticity via Auto-Diff)',
       description: 'A two-phase composite RVE with a J2 (von Mises) plastic epoxy matrix -- its tangent stiffness derived by automatic differentiation, not a hand-derived formula -- cycled through a load/unload/reload shear path via a Newton-outer/CG-inner solver, tracing out a homogenized hysteresis loop.',
       to: '/documentation/examples/inelastic-j2',
-      image: '/img/in-elastic_J2.png',
+      image: '/img/examples_logo/in-elastic_J2.png',
     },
   ]}
 />
@@ -47,7 +47,7 @@ Worked examples demonstrating FFTjax in practice.
       title: 'Phase-Field Fracture (AT2)',
       description: 'A minimal walkthrough of the staggered phase-field damage solver on a homogeneous, isotropic cube with a pre-damaged seed, showing the brittle snap-through in the macroscopic stress-strain response.',
       to: '/documentation/examples/phase-field',
-      image: '/img/pff_damage_2.png',
+      image: '/img/examples_logo/pff_damage_2.png',
     },  
   ]}
 />
@@ -60,7 +60,7 @@ Worked examples demonstrating FFTjax in practice.
       title: 'Recovering the Matrix Modulus',
       description: 'Calibrates an unknown matrix Young\'s modulus against a synthetic shear stress-strain curve by differentiating the FFT solve itself (jax.jacfwd) and stepping downhill with optax -- recovers the true value to well under 1% error.',
       to: '/documentation/examples/inverse-calibration',
-      image: '/img/lin_elastic_inverse_calibration_fit.png',
+      image: '/img/examples_logo/lin_elastic_inverse_calibration_fit.png',
     },
   ]}
 />
@@ -73,7 +73,7 @@ Worked examples demonstrating FFTjax in practice.
       title: 'Transverse Modulus vs. Fibre Volume Fraction',
       description: 'Sweeps fibre volume fraction on a random-fibre RVE, extracting the effective transverse modulus from a mixed-BC displacement solve at each point, then fits a GPJax Gaussian-process surrogate refit inside the loop -- watch its answer at an unsimulated query point sharpen as more real FFT solves arrive.',
       to: '/documentation/examples/structure-property',
-      image: '/img/structure-property_logo.png',
+      image: '/img/examples_logo/structure-property_logo.png',
     },
   ]}
 />

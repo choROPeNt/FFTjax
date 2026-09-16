@@ -160,7 +160,7 @@ held-out gamma = 0.012:
 
 ![Inverse calibration RVE](/img/lin_elastic_inverse_calibration_rve.png)
 
-![Inverse calibration convergence and fit](/img/lin_elastic_inverse_calibration_fit.png)
+![Inverse calibration convergence and fit](/img/examples/lin_elastic_inverse_calibration_fit.png)
 
 Recovered `E_matrix` to within 0.84% of the true value from an initial guess ~43% off, with a
 smooth, monotonic loss curve — and the calibrated model still matches within 0.63% at a strain

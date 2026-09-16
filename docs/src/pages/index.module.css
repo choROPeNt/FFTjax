@@ -10,7 +10,8 @@
   text-align: center;
   position: relative;
   overflow: hidden;
-  background: linear-gradient(135deg, #4527a0 0%, #7c3aed 30%, #b39ddb 65%, #d1c4e9 100%);
+  /* matplotlib's plasma colormap, sampled at t = 0.0, 0.125, 0.25, 0.375, 0.5 */
+  background: linear-gradient(135deg, #0d0887 0%, #4c02a1 25%, #7e03a8 50%, #aa2395 75%, #cc4778 100%);
   color: #fff;
 }
 
@@ -21,9 +22,9 @@
   pointer-events: none;
   z-index: 0;
   /* Soft dark scrim centered on the text so it stays legible regardless of
-     where it lands on the purple-to-white diagonal -- the corners still
+     where it lands on the dark-to-light-purple diagonal -- the corners still
      show the full gradient, uncovered. */
-  background: linear-gradient(135deg, #4527a0 0%, #7c3aed 30%, #b39ddb 65%, #ffffff 100%);
+  background: linear-gradient(135deg, #4527a0 0%, #4c1d95 30%, #9575cd 65%, #b39ddb 100%);
 }
 
 /* Absolutely-positioned pseudo-elements paint after static in-flow content
@@ -45,9 +46,13 @@
     border-radius: 16px;
   }
 }
-/* 
 .workflowImage {
   display: flex;
   justify-content: center;
   padding: 2rem 1rem 0;
-} */
+}
+
+.workflowImage img {
+  max-width: 100%;
+  height: auto;
+}

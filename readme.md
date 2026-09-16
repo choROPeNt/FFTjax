@@ -1,7 +1,7 @@
 # FFTjax
 
 <p align="center">
-  <img src="docs/static/img/fftjax_logo.svg" width="150">
+  <img src="docs/static/img/fftjax_logo_banner.png" width="320" alt="FFTjax logo">
 </p>
 
 
@@ -24,7 +24,6 @@
     🔍 Inverse material identification
   </b>
 </p>
-
 
 ## What is FFTjax?
 

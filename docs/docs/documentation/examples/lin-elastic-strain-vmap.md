@@ -95,7 +95,7 @@ uniaxial y         5.459      10.128       0.000
 vmap matches sequential solve_mechanics calls: True
 ```
 
-![Batched RVE Solves via jax.vmap](/img/lin_elastic_strain_vmap.png)
+![Batched RVE Solves via jax.vmap](/img/examples/lin_elastic_strain_vmap.png)
 
 Each load case's von Mises field looks exactly like what a standalone single-case solve would
 produce (uniaxial x and uniaxial y are mirror images of each other, as expected for this
