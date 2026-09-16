@@ -131,7 +131,7 @@ def assemble_local_update(materials: Sequence[ConstitutiveModel], phase: jnp.nda
     callable for ``problems.mechanics.solve_displacement_based_nonlinear``
     from a per-phase materials list -- the stateful analogue of
     ``assemble_C_field``, generalizing the elastic-fiber/plastic-matrix
-    ``local_update`` combinator from ``notebooks/in-elastic_J2.ipynb`` to any
+    ``local_update`` combinator from ``notebooks/mechanics/in-elastic_J2.ipynb`` to any
     number of phases and any mix of stateless (plain ``ConstitutiveModel``,
     e.g. ``LinearElasticIsotropic``) and stateful (duck-typed via a
     ``stress_and_tangent_field(eps_field, eps_p_field, alpha_field)``

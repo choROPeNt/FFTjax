@@ -1,6 +1,6 @@
 """
 Standalone test for calibration.calibrate.calibrate -- the Adam calibration
-loop factored out of notebooks/lin-elastic_inverse-calibration.ipynb's own
+loop factored out of notebooks/inverse_calibration/lin-elastic_inverse-calibration.ipynb's own
 calibration cell and its calibrate() comparison helper.
 
 Four checks
@@ -13,7 +13,7 @@ Four checks
 3. A hand-supplied finite-difference gradient (no jax.jacfwd at all)
    converges to the same minimum as check 1 -- calibrate() doesn't care how
    value_and_grad_fn computes its gradient, only that it returns one, the
-   same substitution notebooks/lin-elastic_inverse-calibration.ipynb makes
+   same substitution notebooks/inverse_calibration/lin-elastic_inverse-calibration.ipynb makes
    for its jax.jacfwd-vs-finite-difference comparison.
 4. verbose=True doesn't change the optimization trajectory, only whether it
    prints -- checked by comparing final params/histories to check 1's run.

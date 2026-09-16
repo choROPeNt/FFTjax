@@ -7,7 +7,7 @@ Scope of this first pass, matching what's actually built on the operators/
 and solvers/ stacks so far:
 - Reference-medium averaging (lippmann_schwinger only) is a plain arithmetic
   mean of the materials' Lame parameters (matches what
-  notebooks/lin-elastic_strain.ipynb already does by hand). This is a
+  notebooks/mechanics/lin-elastic_strain.ipynb already does by hand). This is a
   placeholder for materialmodels/averaging.py's VoxelAveraging ABC, which
   doesn't exist yet either -- swap it in here once built, this function's
   signature shouldn't need to change.
@@ -22,7 +22,7 @@ and solvers/ stacks so far:
   picks a single full-eps_bar solve or a load-stepped one (Abaqus-*STATIC
   style, via problems.incremental) -- it always returns list[IncrementResult]
   regardless of ``stepping``, so callers (including a jax.vmap/jax.jit'd
-  one, see notebooks/lin-elastic_strain_vmap.ipynb) have one consistent
+  one, see notebooks/mechanics/lin-elastic_strain_vmap.ipynb) have one consistent
   return shape and don't need to special-case "single" against the two
   load-stepped modes.
 
@@ -325,7 +325,7 @@ def solve_displacement_based_nonlinear(
     vmapped/materials-resolved by the caller (e.g. a per-phase combination of
     materialmodels.inelastic.plasticity_j2.J2Plasticity.stress_and_tangent_field
     for a plastic phase and a plain einsum against a constant elastic C for
-    others -- see notebooks/in-elastic_J2.ipynb, section 4). ``state`` is
+    others -- see notebooks/mechanics/in-elastic_J2.ipynb, section 4). ``state`` is
     caller-defined; this driver only carries it from iteration to iteration.
 
     Parameters
@@ -352,7 +352,7 @@ def solve_displacement_based_nonlinear(
                    Load-stepping callers should warm-start each step with the
                    PREVIOUS step's converged full strain field minus this
                    step's new eps_bar broadcast -- see
-                   notebooks/in-elastic_J2.ipynb, section 4, for the pattern.
+                   notebooks/mechanics/in-elastic_J2.ipynb, section 4, for the pattern.
                    Projected to zero mean internally regardless of what's
                    passed in (see below) -- the macroscopic strain is always
                    carried by eps0 + eps_bar_free, never by delta.

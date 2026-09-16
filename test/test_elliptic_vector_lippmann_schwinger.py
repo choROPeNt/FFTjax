@@ -17,7 +17,7 @@ Three checks
        tracking -- this would catch a bug where the returned value doesn't
        correspond to what was actually fed into the CG solve.
 2. Real composite RVE (glass fiber / epoxy, same setup as
-   notebooks/lin-elastic_strain.ipynb) -- converges, and reproduces the
+   notebooks/mechanics/lin-elastic_strain.ipynb) -- converges, and reproduces the
    known tau_xy (avg) = 7.625369 MPa result.
 3. LippmannSchwingerSolver (the ElasticitySolver wrapper) reproduces
    solve_lippmann_schwinger's own output exactly -- it's a thin wrapper,
@@ -93,7 +93,7 @@ for green_op in (GreenOperatorBasic(n, L, lam0, mu0), GreenOperatorWillot(n, L, 
     assert resid < toler_lin * 10, f"{tag}: A(delta) != b, relative residual {resid:.3e}"
 
 
-# ── 2. real composite RVE (matches notebooks/lin-elastic_strain.ipynb) ──────
+# ── 2. real composite RVE (matches notebooks/mechanics/lin-elastic_strain.ipynb) ──────
 
 from generation.rve import make_square_composite_rve
 from materialmodels.elastic.isotropic import LinearElasticIsotropic

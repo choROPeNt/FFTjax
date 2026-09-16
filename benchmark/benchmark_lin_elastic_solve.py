@@ -7,7 +7,7 @@ on the identical fully strain-controlled BC:
 - displacement        -- true heterogeneous tangent, no reference medium
 
 Glass fibre in an epoxy matrix (~23x stiffness contrast, same materials as
-notebooks/lin-elastic_strain.ipynb) under a prescribed macroscopic shear
+notebooks/mechanics/lin-elastic_strain.ipynb) under a prescribed macroscopic shear
 strain, so both solvers' CG correction does real work rather than converging
 trivially in one step.
 

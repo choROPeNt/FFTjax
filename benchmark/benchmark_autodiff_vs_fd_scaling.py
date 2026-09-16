@@ -74,7 +74,7 @@ def build_solve_fn(n, L, phase, xi_flat):
     Schwinger CG solve on this fixed RVE/grid, as a plain differentiable
     function of the matrix modulus. Same construction as
     notebooks/archiv/lin-elastic_gradient-check.ipynb's solve_elastic_diff
-    and notebooks/lin-elastic_inverse-calibration.ipynb's solve_elastic_diff
+    and notebooks/inverse_calibration/lin-elastic_inverse-calibration.ipynb's solve_elastic_diff
     -- reused here rather than imported, since both of those close over
     notebook-local state (phase, n, L, ...) that this function takes as
     explicit arguments instead, one instance per grid size in the sweep.

@@ -12,7 +12,7 @@ CG-inner driver a stateful, strain-dependent-tangent material needs (unlike
 scripts/simulation/solve_mechanics.py's fixed-C_field linear solve). Plastic
 state (eps_p, alpha) is threaded across load steps by this script, never
 stored on the material instances -- see materialmodels/inelastic/
-plasticity_j2.py and notebooks/in-elastic_J2.ipynb for the underlying model
+plasticity_j2.py and notebooks/mechanics/in-elastic_J2.ipynb for the underlying model
 and its from-scratch demonstration.
 
 The plastic model is chosen per phase in the config, not by this script:

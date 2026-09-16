@@ -3,7 +3,7 @@ Gradient-descent parameter calibration against a differentiable forward
 model: an Adam (optax) loop over a scalar (or array) parameter, driven by
 any value_and_grad_fn -- typically loss(param), jax.jacfwd(loss)(param) for
 the common case, but a caller can substitute a finite-difference gradient
-just as easily (see notebooks/lin-elastic_inverse-calibration.ipynb's own
+just as easily (see notebooks/inverse_calibration/lin-elastic_inverse-calibration.ipynb's own
 jax.jacfwd-vs-finite-difference comparison, which calls this with both).
 
 A sibling of learning/, not a member of it: learning.surrogates.GPSurrogate

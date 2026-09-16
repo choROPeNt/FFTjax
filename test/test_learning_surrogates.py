@@ -1,7 +1,7 @@
 """
 Standalone test for learning.surrogates.GPSurrogate -- the shared GPJax
 fitting/prediction wrapper factored out of scripts/active_learning.py's
-fit_and_predict and notebooks/structure-property_phi-sweep.ipynb's fit_gp.
+fit_and_predict and notebooks/structure_property/structure-property_phi-sweep.ipynb's fit_gp.
 
 Four checks
 -----------
@@ -15,7 +15,7 @@ Four checks
    observed subset, instead of it shifting every time a new point arrives.
 3. Deterministic refit: two independent GPSurrogate instances fit on
    identical data with the default (fixed) key must produce identical
-   predictions -- required for notebooks/structure-property_phi-sweep.ipynb's
+   predictions -- required for notebooks/structure_property/structure-property_phi-sweep.ipynb's
    sequential-refit loop, where the same data must always fit to the same
    hyperparameters.
 4. 4-D SumKernel(Linear+Matern32) cross-check against a standalone,

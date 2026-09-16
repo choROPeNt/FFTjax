@@ -3,7 +3,7 @@ PFF benchmark: multiple macroscopic load paths on N random-seed realizations
 of a randomly-packed, periodic two-phase composite RVE
 (generation.rve.make_random_composite_rve, Catalanotti 2016), phase-field
 fracture (AT2 model) -- same random-fibre geometry generator and
-transversely-isotropic carbon-fibre model as notebooks/pff-damage.ipynb, but
+transversely-isotropic carbon-fibre model as notebooks/damage_fracture/pff-damage.ipynb, but
 multiple independent load paths (tension and compression along x, shear
 along xy) each compared against a reference curve from assets/. Runs every
 load path at every ``PHI_SWEEP`` fibre volume fraction by default (a fresh
@@ -30,10 +30,10 @@ Domain    : random-fibre RVE, size_in_r=15 (Catalanotti 2016 convention),
             nz=1 (plane-strain-like slab)
 Materials : carbon fibre (transversely isotropic, E_L=234 GPa/E_T=15 GPa) in
             an epoxy matrix (isotropic, E=3.76 GPa, nu=0.39) -- same constants as
-            notebooks/pff-damage.ipynb's carbon fibre.
+            notebooks/damage_fracture/pff-damage.ipynb's carbon fibre.
 PFF params: l0 = 3 voxels, Gc/k_res set per-material (matrix Gc=0.8e-3,
             k_res=1e-6, ordinary AT2; fiber Gc=1.6e-3, k_res=1.0,
-            damage-immune -- same values as notebooks/pff-damage.ipynb) and
+            damage-immune -- same values as notebooks/damage_fracture/pff-damage.ipynb) and
             gathered automatically (Gc=None). The damage-immune fiber keeps
             a rigid load-bearing skeleton through failure, instead of
             softening alongside the matrix.
@@ -119,7 +119,7 @@ FIBER  = TransverseIsotropic(
                                     # nu_TT is derived (~0.0714) instead of manually rounded
     Gc=1000,
     k_res=1.0,                      # damage-immune -- g(d) == 1 regardless of d, matching
-                                    # notebooks/pff-damage.ipynb's carbon fibre; keeps the fibre
+                                    # notebooks/damage_fracture/pff-damage.ipynb's carbon fibre; keeps the fibre
                                     # as a rigid load-bearing skeleton instead of softening
                                     # alongside the matrix, which is what flattens the snap-back
     name="carbon fiber",
@@ -131,7 +131,7 @@ MATERIALS = [MATRIX, FIBER]
 toler_lin, maxiter_cg     = 1e-2, 2000   # maxiter_cg bumped vs. the reference-medium
                                           # formulation -- the displacement-based system's
                                           # extra stress-controlled unknowns need more CG
-                                          # iterations (see notebooks/lin-elastic_mixed-BC.ipynb)
+                                          # iterations (see notebooks/mechanics/lin-elastic_mixed-BC.ipynb)
 toler_helm, maxiter_helm  = 1e-2, 300
 dt_step                   = 0.2   # 100 equal steps -- fine enough to resolve the
                                     # snap-through even at the larger compression strain

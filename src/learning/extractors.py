@@ -1,7 +1,7 @@
 """
 Property extractors: (phase, materials, n, L) -> a scalar structure-property
 value, via one in-process FFT solve. Structure-property sweeps and
-surrogate-fitting workflows (e.g. notebooks/structure-property_phi-sweep.ipynb)
+surrogate-fitting workflows (e.g. notebooks/structure_property/structure-property_phi-sweep.ipynb)
 call one of these instead of each hand-rolling its own boundary-condition
 and homogenization arithmetic -- see learning.surrogates.GPSurrogate for the
 matching surrogate-fitting half.
@@ -28,7 +28,7 @@ def effective_modulus(
     strain-controlled to `eps0`, every other diagonal direction stress-
     controlled to zero (free lateral surfaces) -- a real uniaxial tensile
     test, not the stiffer constrained coefficient a pure-strain BC would
-    give. Same convention as notebooks/lin-elastic_mixed-BC.ipynb.
+    give. Same convention as notebooks/mechanics/lin-elastic_mixed-BC.ipynb.
 
     Parameters
     ----------

@@ -41,7 +41,7 @@ class GPSurrogate:
     key           : jax PRNGKey for gpx.fit. Default: jax.random.PRNGKey(0)
                     -- deterministic refits (no randomness beyond the fixed
                     key), which matters for a sequential-refit loop (e.g.
-                    notebooks/structure-property_phi-sweep.ipynb), where the
+                    notebooks/structure_property/structure-property_phi-sweep.ipynb), where the
                     same data must always fit to the same hyperparameters.
     standardize_y : bool, default True -- zero-mean/unit-variance y before
                     fitting (undone in predict()). Pass False to fit on raw

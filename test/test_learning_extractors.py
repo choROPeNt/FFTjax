@@ -1,7 +1,7 @@
 """
 Standalone test for learning.extractors.effective_modulus -- the mixed-BC
 (free-lateral-surface) modulus/Poisson's-ratio extractor factored out of
-notebooks/structure-property_phi-sweep.ipynb's hand-rolled control/
+notebooks/structure_property/structure-property_phi-sweep.ipynb's hand-rolled control/
 stress_goal/eps_bar block.
 
 Four checks
@@ -16,7 +16,7 @@ Four checks
 3. component=(0, 1) (off-diagonal) must raise ValueError -- there's no
    free-surface Poisson's-ratio pair for a shear probe.
 4. Two-phase composite: cross-checked bit-for-bit against a standalone,
-   hand-inlined copy of notebooks/lin-elastic_mixed-BC.ipynb's own manual
+   hand-inlined copy of notebooks/mechanics/lin-elastic_mixed-BC.ipynb's own manual
    control/stress_goal/solve_mechanics/eps_bar_out block, confirming the
    extraction was faithfully factored out, not just written to resemble it.
 
@@ -82,7 +82,7 @@ materials = [
 
 E_new, nu_new, conv_new = effective_modulus(phase, materials, n, L, component=(0, 0), eps0=1.0e-3)
 
-# hand-inlined reference: notebooks/lin-elastic_mixed-BC.ipynb's own logic
+# hand-inlined reference: notebooks/mechanics/lin-elastic_mixed-BC.ipynb's own logic
 eps_bar_ref = jnp.array([[1.0e-3, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
 control_ref = ((0, 0, 0), (0, 1, 0), (0, 0, 1))
 stress_goal_ref = jnp.zeros((3, 3))

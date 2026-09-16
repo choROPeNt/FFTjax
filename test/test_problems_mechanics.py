@@ -4,7 +4,7 @@ Standalone test for solve_mechanics (problems/mechanics.py).
 Four checks
 -----------
 1. End-to-end parity -- solve_mechanics on the same glass-fiber/epoxy
-   composite RVE as notebooks/lin-elastic_strain.ipynb and
+   composite RVE as notebooks/mechanics/lin-elastic_strain.ipynb and
    test_elliptic_vector_lippmann_schwinger.py must reproduce the known
    tau_xy (avg) = 7.625369 MPa result, going through the full wiring layer
    (assemble_C_field, reference-medium averaging, GreenOperatorWillot,

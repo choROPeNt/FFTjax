@@ -1,6 +1,6 @@
 # Structure-Property: Transverse Modulus vs. Fibre Volume Fraction
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/choROPeNt/FFTjax/blob/main/notebooks/structure-property_phi-sweep.ipynb)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/choROPeNt/FFTjax/blob/main/notebooks/structure_property/structure-property_phi-sweep.ipynb)
 
 A minimal structure-property study: sweep the fibre volume fraction φ of a random-fibre RVE
 (`generation.rve.make_random_composite_rve`,
@@ -121,7 +121,7 @@ build-time execution here, since Docusaurus can't run Python.
 
 For the full interactive version — with the tunable `N_UPDATES`/`PHI_QUERY` parameters and the
 effective Poisson's ratio also tracked per point — see
-[`notebooks/structure-property_phi-sweep.ipynb`](https://github.com/choROPeNt/FFTjax/blob/main/notebooks/structure-property_phi-sweep.ipynb),
+[`notebooks/structure_property/structure-property_phi-sweep.ipynb`](https://github.com/choROPeNt/FFTjax/blob/main/notebooks/structure_property/structure-property_phi-sweep.ipynb),
 linked via the Colab badge above.
 :::
 
