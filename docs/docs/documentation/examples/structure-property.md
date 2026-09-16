@@ -99,7 +99,7 @@ Devices: [CpuDevice(id=0)]
 PASSED -- every sweep point's mixed-BC solve converged.
 ```
 
-![Structure-Property: Transverse Modulus vs. Fibre Volume Fraction](/img/structure-property_gp_convergence.png)
+![Structure-Property: Transverse Modulus vs. Fibre Volume Fraction](/img/examples/structure-property_gp_convergence.png)
 
 Left: every GP snapshot's mean curve over the sweep range (darker = more observations), the
 final snapshot's ±2σ band, and the actual FFT solves it was fit on. Right: the GP's answer at

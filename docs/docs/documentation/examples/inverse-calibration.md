@@ -158,7 +158,7 @@ held-out gamma = 0.012:
   relative error            : +0.6322%
 ```
 
-![Inverse calibration RVE](/img/lin_elastic_inverse_calibration_rve.png)
+![Inverse calibration RVE](/img/examples/lin_elastic_inverse_calibration_rve.png)
 
 ![Inverse calibration convergence and fit](/img/examples/lin_elastic_inverse_calibration_fit.png)
 
