@@ -56,9 +56,6 @@ pip install -e .
 GPU (CUDA), TPU, and AMD (ROCm) install variants, plus a smoke test to verify the install, are in
 the [Getting Started guide](https://choROPeNt.github.io/FFTjax/documentation/installation).
 
-For the `notebooks/` examples' interactive 3-D PyVista renders, add the `notebooks` extra:
-`pip install -e ".[notebooks]"`.
-
 A minimal example — solving mechanical equilibrium on a two-phase composite RVE under a prescribed
 macroscopic strain:
 
