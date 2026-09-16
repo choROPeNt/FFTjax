@@ -24,7 +24,7 @@
   /* Soft dark scrim centered on the text so it stays legible regardless of
      where it lands on the dark-to-light-purple diagonal -- the corners still
      show the full gradient, uncovered. */
-  background: linear-gradient(135deg, #4527a0 0%, #4c1d95 30%, #9575cd 65%, #b39ddb 100%);
+  background: linear-gradient(135deg, #0d0887 0%, #4c02a1 25%, #7e03a8 50%, #aa2395 75%, #cc4778 100%);
 }
 
 /* Absolutely-positioned pseudo-elements paint after static in-flow content
@@ -36,7 +36,7 @@
 }
 
 [data-theme='dark'] .heroBanner {
-  background: linear-gradient(135deg, #14092e 0%, #4527a0 30%, #7e57c2 65%, #d1c4e9 100%);
+  background: linear-gradient(135deg, #0d0887 0%, #4c02a1 25%, #7e03a8 50%, #aa2395 75%, #cc4778 100%);
 }
 
 @media screen and (max-width: 996px) {

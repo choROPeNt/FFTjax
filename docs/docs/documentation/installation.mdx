@@ -120,7 +120,22 @@ Editable installation (`pip install -e`) links the package to the local `src/` t
 instead of copying it, so changes to the source are reflected immediately without reinstallation —
 relevant given the package's active development and correspondingly frequent interface changes.
 
+## 📓 Notebooks (optional)
 
+The example notebooks under `notebooks/` use [PyVista](https://pyvista.org) for interactive 3-D
+voxel renders of the RVE geometry and solved fields, on top of the matplotlib plots everyone else
+gets. It pulls in VTK and the trame web-rendering stack, so it's kept as its own extra rather than
+a core dependency:
+
+```bash
+pip install -e ".[notebooks]"
+```
+
+:::info[No live server needed]
+The notebooks use PyVista's `html` Jupyter backend — each 3-D view is a fully self-contained,
+inlined interactive widget (drag to rotate, scroll to zoom), not a connection to a live local
+server. That means it works the same in Google Colab as it does locally.
+:::
 
 ## ✅ Verify
 

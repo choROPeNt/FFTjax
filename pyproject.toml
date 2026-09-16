@@ -24,6 +24,7 @@ dependencies = [
 [project.optional-dependencies]
 cuda = ["jax[cuda13]"]
 tpu = ["jax[tpu]"]
+notebooks = ["pyvista", "trame", "trame-vtk>=2.11.15", "trame-vuetify", "trame-pyvista", "nest_asyncio2", "ipywidgets"]
 
 [project.urls]
 Homepage = "https://github.com/choROPeNt/FFTjax"
