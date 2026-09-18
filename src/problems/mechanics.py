@@ -58,10 +58,12 @@ import jax.numpy as jnp
 import numpy as np
 
 from materialmodels.assembly import assemble_C_field
+from operators.galerkin import build_galerkin_projector
 from operators.green import build_freq_grid, build_reference_green_operator, nyquist_safe_xi
 from post.fields import compute_displacement, field_to_grid, to_voigt, von_mises
 from problems.incremental import IncrementResult, solve_automatic, solve_fixed
 from solvers.elliptic.vector.displacement_based import DisplacementBasedSolver, _active_pairs
+from solvers.elliptic.vector.fourier_galerkin import FourierGalerkinSolver
 from solvers.elliptic.vector.lippmann_schwinger import LippmannSchwingerSolver
 from solvers.krylov.cg import cg_solve
 from solvers.solution import ElasticitySolution
@@ -112,9 +114,24 @@ def _solve_mechanics_step(
         xi_flat = build_freq_grid(n, L)
         solver = DisplacementBasedSolver(n, xi_flat, control, toler_lin, maxiter)
         return solver.solve(C_field, eps_bar, stress_goal)
+    elif formulation == "fourier_galerkin":
+        if control_nonzero:
+            raise ValueError(
+                "formulation='fourier_galerkin' cannot do stress-controlled "
+                "macroscopic BC (control has nonzero entries) -- same "
+                "restriction as formulation='lippmann_schwinger', for the "
+                "same reason (see that branch above); "
+                "use formulation='displacement' instead"
+            )
+
+        galerkin_op = build_galerkin_projector(n, L, scheme=scheme)
+
+        solver = FourierGalerkinSolver(n, galerkin_op, toler_lin, maxiter)
+        return solver.solve(C_field, eps_bar, stress_goal)
     else:
         raise ValueError(
-            f"unknown formulation {formulation!r}, expected 'lippmann_schwinger' or 'displacement'"
+            f"unknown formulation {formulation!r}, expected 'lippmann_schwinger', "
+            f"'displacement', or 'fourier_galerkin'"
         )
 
 
@@ -167,10 +184,14 @@ def solve_mechanics(
                                  solve_automatic; dt_init/_min/_max,
                                  factor_inc/_dec, max_cutbacks, max_steps all
                                  forwarded to it).
-    formulation : "lippmann_schwinger" (reference-medium, strain BC only) or
-                  "displacement" (true heterogeneous tangent, supports mixed BC)
-    scheme      : "standard" (GreenOperatorBasic) or "rotated" (GreenOperatorWillot)
-                  -- only used by formulation="lippmann_schwinger"
+    formulation : "lippmann_schwinger" (reference-medium, strain BC only),
+                  "displacement" (true heterogeneous tangent, supports mixed BC), or
+                  "fourier_galerkin" (Vondrejc et al 2014 -- no reference medium
+                  either, but strain BC only like lippmann_schwinger; see
+                  operators.galerkin.GalerkinProjector)
+    scheme      : "standard" (GreenOperatorBasic / GalerkinProjector, standard) or
+                  "rotated" (GreenOperatorWillot / GalerkinProjector, rotated)
+                  -- used by formulation="lippmann_schwinger" and "fourier_galerkin"
     control     : (3, 3) 0/1 mask, 1 = stress-controlled, 0 = strain-controlled.
                   None (default) = pure strain BC (all zero). Only
                   formulation="displacement" can have any nonzero entries.

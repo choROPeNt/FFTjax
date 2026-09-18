@@ -19,6 +19,10 @@ Four checks
    module docstring for why exact agreement isn't expected here).
 4. Unknown formulation/scheme raise clear errors rather than silently
    doing the wrong thing.
+5. formulation="fourier_galerkin" also runs, converges, and agrees with
+   both lippmann_schwinger and displacement to within the same
+   cross-formulation tolerance as check 3 -- see
+   test_operators_green_galerkin.py for the projector's own unit checks.
 
 Usage
 -----
@@ -110,5 +114,24 @@ with pytest.raises(ValueError):
 
 with pytest.raises(ValueError):
     solve_mechanics(n, L, phase, materials, eps_bar, scheme="bogus")
+
+
+# ── 5. fourier_galerkin formulation runs, converges, and roughly agrees ──────
+
+sol_fg = cast(ElasticitySolution, solve_mechanics(
+    n, L, phase, materials, eps_bar,
+    formulation="fourier_galerkin", scheme="rotated",
+    toler_lin=1e-6, maxiter=2000,
+)[0].solution)
+tau_xy_fg = float(jnp.mean(sol_fg.sigma[1, 0]))
+rel_diff_ls = abs(tau_xy_fg - tau_xy) / abs(tau_xy)
+rel_diff_disp = abs(tau_xy_fg - tau_xy_disp) / abs(tau_xy_disp)
+assert bool(sol_fg.converged), "fourier_galerkin solve must converge"
+assert sol_fg.eps_bar is None  # no mixed-BC concept, same as lippmann_schwinger
+assert rel_diff_ls < 0.10, f"fourier_galerkin vs. lippmann_schwinger tau_xy differ by {rel_diff_ls:.1%}, expected <10%"
+assert rel_diff_disp < 0.10, f"fourier_galerkin vs. displacement tau_xy differ by {rel_diff_disp:.1%}, expected <10%"
+print(f"[5] fourier_galerkin formulation: tau_xy = {tau_xy_fg:.6f} MPa, "
+      f"converged={bool(sol_fg.converged)}, rel. diff from LS = {rel_diff_ls:.2%}, "
+      f"from displacement = {rel_diff_disp:.2%}")
 
 print("test_problems_mechanics: all checks passed")
