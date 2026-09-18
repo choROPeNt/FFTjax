@@ -14,7 +14,7 @@ Worked examples demonstrating FFTjax in practice.
   cards={[
     {
       title: 'Linear-Elastic Solve (shear strain)',
-      description: 'A two-phase glass-fibre/epoxy composite RVE under a prescribed macroscopic shear strain, where the ~23x stiffness contrast makes the Newton-CG solve actually iterate, redistributing stress between the stiff fibre and compliant matrix.',
+      description: 'A two-phase glass-fiber/epoxy composite RVE under a prescribed macroscopic shear strain, where the ~23x stiffness contrast makes the Newton-CG solve actually iterate, redistributing stress between the stiff fiber and compliant matrix.',
       to: '/documentation/examples/lin-elastic-strain',
       image: '/img/examples_logo/lin_elastic_shear_strain.png',
     },
@@ -32,7 +32,7 @@ Worked examples demonstrating FFTjax in practice.
     },
     {
       title: 'In-Elastic Solve (J2 elastoplasticity via Auto-Diff)',
-      description: 'A two-phase composite RVE with a J2 (von Mises) plastic epoxy matrix -- its tangent stiffness derived by automatic differentiation, not a hand-derived formula -- cycled through a load/unload/reload shear path via a Newton-outer/CG-inner solver, tracing out a homogenized hysteresis loop.',
+      description: 'A two-phase composite RVE with a J2 (von Mises) plastic epoxy matrix -- its tangent stiffness derived by automatic differentiation -- cycled through a load/unload/reload shear path via a Newton-outer/CG-inner solver, tracing out a homogenized hysteresis loop.',
       to: '/documentation/examples/inelastic-j2',
       image: '/img/examples_logo/in-elastic_J2.png',
     },
@@ -45,7 +45,7 @@ Worked examples demonstrating FFTjax in practice.
   cards={[
     {
       title: 'Phase-Field Fracture (AT2)',
-      description: 'A minimal walkthrough of the staggered phase-field damage solver on a homogeneous, isotropic cube with a pre-damaged seed, showing the brittle snap-through in the macroscopic stress-strain response.',
+      description: 'A minimal walkthrough of the staggered phase-field damage solver on a random periodic carbon fiber RVE with a given fiber volume content of 55%.',
       to: '/documentation/examples/phase-field',
       image: '/img/examples_logo/pff_damage_2.png',
     },  
@@ -70,8 +70,8 @@ Worked examples demonstrating FFTjax in practice.
 <CardGrid
   cards={[
     {
-      title: 'Transverse Modulus vs. Fibre Volume Fraction',
-      description: 'Sweeps fibre volume fraction on a random-fibre RVE, extracting the effective transverse modulus from a mixed-BC displacement solve at each point, then fits a GPJax Gaussian-process surrogate refit inside the loop -- watch its answer at an unsimulated query point sharpen as more real FFT solves arrive.',
+      title: 'Transverse Modulus vs. Fiber Volume Fraction',
+      description: 'Sweeps fiber volume fraction on a random-fiber RVE, extracting the effective transverse modulus from a mixed-BC displacement solve at each point, then fits a GPJax Gaussian-process surrogate refit inside the loop -- watch its answer at an unsimulated query point sharpen as more real FFT solves arrive.',
       to: '/documentation/examples/structure-property',
       image: '/img/examples_logo/structure-property_logo.png',
     },
