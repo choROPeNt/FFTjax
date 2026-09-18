@@ -85,6 +85,20 @@ def rotation_from_direction(d: jnp.ndarray) -> jnp.ndarray:
     reference axis is e_z = [0, 0, 1]. Fully vmap-able over a per-voxel
     direction field (e.g. a spatially varying fibre orientation).
 
+    A zero (or numerically negligible) ``d`` falls back to the identity
+    rotation (d -> [0, 0, 1]) instead of NaN -- ``d / norm(d)`` is 0/0
+    otherwise. This matters for a per-voxel orientation field where "this
+    voxel isn't this material's phase" is conventionally marked by a zero
+    vector (see ``utils.io.reader.read_vtu``'s ``orientations``, zero at
+    every voxel not belonging to the oriented material): the rotation
+    returned for those voxels is discarded by phase selection downstream
+    (``materialmodels.assembly.assemble_C_field``'s ``jnp.where``), but must
+    still be finite, since e.g. ``operators.green.build_reference_green_operator``
+    spatially averages a per-voxel stiffness field across the *whole* grid
+    before that masking happens -- a single NaN voxel there poisons the
+    reference medium (and from it, the whole Lippmann-Schwinger solve) even
+    though it would have been masked out at the very next step.
+
     Parameters
     ----------
     d : (3,)  target direction (not required to be pre-normalized)
@@ -93,7 +107,9 @@ def rotation_from_direction(d: jnp.ndarray) -> jnp.ndarray:
     -------
     R : (3, 3)  columns are the new (e1', e2', d) basis in the global frame
     """
-    d = d / jnp.linalg.norm(d)
+    norm = jnp.linalg.norm(d)
+    degenerate = norm < 1e-12
+    d = jnp.where(degenerate, jnp.array([0., 0., 1.]), d / jnp.where(degenerate, 1.0, norm))
     ref = jnp.where(jnp.abs(d[0]) < 0.9, jnp.array([1., 0., 0.]), jnp.array([0., 1., 0.]))
     e1 = ref - jnp.dot(ref, d) * d
     e1 = e1 / jnp.linalg.norm(e1)

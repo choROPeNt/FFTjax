@@ -2,7 +2,7 @@
 Standalone test for materialmodels.tensors and
 materialmodels.elastic.transversely_isotropic.TransverseIsotropic.
 
-Four checks
+Five checks
 -----------
 1. Voigt round-trip: voigt_to_tensor4(tensor4_to_voigt(C4, eng), eng) == C4,
    for both engineering conventions, on both an isotropic and a
@@ -18,6 +18,14 @@ Four checks
    [0, 0, 1] (the reference axis) but through a different in-plane frame
    must reproduce the unrotated stiffness_tensor() exactly -- that
    invariance is the defining property of transverse isotropy.
+5. Degenerate (zero) direction: rotation_from_direction([0,0,0]) must return
+   the identity rotation, not NaN -- regression check for a real bug where
+   a per-voxel orientation field's zero-vector convention at "not this
+   material's phase" voxels (utils.io.reader.read_vtu's own convention)
+   silently NaN-poisoned operators.green.build_reference_green_operator's
+   spatial average and, from it, the whole Lippmann-Schwinger solve (see
+   test_problems_mechanics_ls_zero_orientation.py for the full end-to-end
+   regression).
 
 Usage
 -----
@@ -100,5 +108,13 @@ err_offaxis = float(jnp.max(jnp.abs(C_offaxis - C_ref)))
 assert err_offaxis > 1.0, "rotating the fibre 90 degrees must change the stiffness tensor"
 print(f"    off-axis rotation changes C as expected: max diff = {err_offaxis:.3e}")
 print("[4] rotational invariance: PASSED")
+
+# ── 5. degenerate (zero) direction falls back to identity, not NaN ────────────
+
+R_zero = rotation_from_direction(jnp.array([0.0, 0.0, 0.0]))
+assert not bool(jnp.any(jnp.isnan(R_zero))), "zero direction must not produce NaN"
+assert jnp.allclose(R_zero, jnp.eye(3)), "zero direction should fall back to the identity rotation"
+print(f"[5] degenerate direction: rotation_from_direction([0,0,0]) = identity, no NaN")
+print("[5] PASSED")
 
 print("\ntest_materialmodels_tensors: all checks passed")
