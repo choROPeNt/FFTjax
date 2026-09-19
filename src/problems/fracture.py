@@ -8,7 +8,7 @@ not itself a reusable numerical algorithm the way solvers.krylov.cg.cg_solve
 or solve_lippmann_schwinger are; it's specific composition of *this*
 problem's physics choices (AT2 degradation, Amor split, hybrid
 irreversibility). Keeping it here keeps solvers/ to its usual habit
-(operate on prepared C_field/green_op/xi_flat arrays, no materialmodels
+(operate on prepared C_field/elastic_op/xi_flat arrays, no materialmodels
 imports, no knowledge of "which degradation law" or "which energy split")
 and keeps materialmodels/ imports confined to the one layer that's already
 allowed to know about them.
@@ -43,11 +43,13 @@ import numpy as np
 from materialmodels.assembly import assemble_pff_local_update
 from materialmodels.phasefield.degradation import Gc_field, k_res_field
 from materialmodels.phasefield.driving_force import lame_field, strain_energy_amor_split, update_history_hybrid
+from operators.galerkin import build_galerkin_projector
 from operators.green import build_freq_grid, build_reference_green_operator
 from post.fields import compute_displacement, field_to_grid, to_voigt, von_mises
 from problems.incremental import IncrementResult, solve_automatic, solve_fixed
 from solvers.elliptic.scalar import solve_damage_helmholtz_cg, solve_damage_helmholtz_cg_het
 from solvers.elliptic.vector.displacement_based import solve_displacement_based
+from solvers.elliptic.vector.fourier_galerkin import solve_fourier_galerkin
 from solvers.elliptic.vector.lippmann_schwinger import solve_lippmann_schwinger
 from solvers.solution import FractureSolution
 from utils.io.xdmf_writer import IncrementalWriter
@@ -94,8 +96,9 @@ def solve_fracture(
                                 at the PREVIOUS iteration's eps (frozen-
                                 tangent scheme -- see _staggered_loop's
                                 docstring for why)
-        2. Mechanical solve:   (eps, sigma) = solve_lippmann_schwinger(C_eff, ...)
-                                or solve_displacement_based(C_eff, ...)
+        2. Mechanical solve:   (eps, sigma) = solve_lippmann_schwinger(C_eff, ...),
+                                solve_fourier_galerkin(C_eff, ...), or
+                                solve_displacement_based(C_eff, ...)
         3. Driving force:      psi+ from the undegraded Amor split
         4. History update:     hybrid irreversibility (Steinke & Kaliske 2019)
         5. Damage solve:       d = solve_damage_helmholtz_cg(H, ...)
@@ -124,10 +127,14 @@ def solve_fracture(
                   docstring for why these solve different equations.
     d_init      : (Nv,)          damage carried in from the previous increment
     H_init      : (Nv,)          history variable carried in from the previous increment
-    formulation : "lippmann_schwinger" (reference-medium, strain BC only) or
-                  "displacement" (true heterogeneous tangent, supports mixed BC)
-    scheme      : "standard" (GreenOperatorBasic) or "rotated" (GreenOperatorWillot)
-                  -- only used by formulation="lippmann_schwinger"
+    formulation : "lippmann_schwinger" (reference-medium, strain BC only),
+                  "displacement" (true heterogeneous tangent, supports mixed BC), or
+                  "fourier_galerkin" (Vondrejc et al 2014 -- no reference medium
+                  either, but strain BC only like lippmann_schwinger; see
+                  operators.galerkin.GalerkinProjector)
+    scheme      : "standard" (GreenOperatorBasic / GalerkinProjector, standard) or
+                  "rotated" (GreenOperatorWillot / GalerkinProjector, rotated)
+                  -- used by formulation="lippmann_schwinger" and "fourier_galerkin"
     control     : (3, 3) 0/1 mask, 1 = stress-controlled, 0 = strain-controlled.
                   None (default) = pure strain BC (all zero). Only
                   formulation="displacement" can have any nonzero entries.
@@ -153,19 +160,20 @@ def solve_fracture(
     converged_helm, converged_staggered, iter_staggered, err_abs, err_rel,
     eps_bar)
     """
-    if formulation not in ("lippmann_schwinger", "displacement"):
+    if formulation not in ("lippmann_schwinger", "displacement", "fourier_galerkin"):
         raise ValueError(
-            f"unknown formulation {formulation!r}, expected 'lippmann_schwinger' or 'displacement'"
+            f"unknown formulation {formulation!r}, expected 'lippmann_schwinger', "
+            f"'displacement', or 'fourier_galerkin'"
         )
 
     control = control if control is not None else _ZERO_CONTROL
     control_nonzero = any(any(row) for row in control)
-    if formulation == "lippmann_schwinger" and control_nonzero:
+    if formulation in ("lippmann_schwinger", "fourier_galerkin") and control_nonzero:
         raise ValueError(
-            "formulation='lippmann_schwinger' cannot do stress-controlled "
-            "macroscopic BC (control has nonzero entries) -- its reference-"
-            "medium approach only supports pure strain BC; "
-            "use formulation='displacement' instead"
+            f"formulation={formulation!r} cannot do stress-controlled "
+            "macroscopic BC (control has nonzero entries) -- it has no "
+            "reference medium to solve for stress-controlled directions "
+            "against, only pure strain BC; use formulation='displacement' instead"
         )
     stress_goal_arr = jnp.zeros((3, 3)) if stress_goal is None else stress_goal
 
@@ -187,14 +195,16 @@ def solve_fracture(
             Gc_heterogeneous = False
 
     if formulation == "lippmann_schwinger":
-        green_op = build_reference_green_operator(n, L, materials, scheme=scheme)
+        elastic_op = build_reference_green_operator(n, L, materials, scheme=scheme)
+    elif formulation == "fourier_galerkin":
+        elastic_op = build_galerkin_projector(n, L, scheme=scheme)
     else:
-        green_op = None
+        elastic_op = None
 
     return _staggered_loop(
         n=n, l0=l0, formulation=formulation, control=control, stress_goal_arr=stress_goal_arr,
         pff_local_update=pff_local_update, lam_vox=lam_vox, mu_vox=mu_vox, xi_flat=xi_flat, k_res_arr=k_res_arr,
-        Gc=Gc, Gc_heterogeneous=Gc_heterogeneous, green_op=green_op,
+        Gc=Gc, Gc_heterogeneous=Gc_heterogeneous, elastic_op=elastic_op,
         eps_bar=eps_bar, d_init=d_init, H_init=H_init,
         toler_lin=toler_lin, maxiter_cg=maxiter_cg,
         toler_helm=toler_helm, maxiter_helm=maxiter_helm,
@@ -206,7 +216,7 @@ def solve_fracture(
 
 def _staggered_loop(
     n, l0, formulation, control, stress_goal_arr,
-    pff_local_update, lam_vox, mu_vox, xi_flat, k_res_arr, Gc, Gc_heterogeneous, green_op,
+    pff_local_update, lam_vox, mu_vox, xi_flat, k_res_arr, Gc, Gc_heterogeneous, elastic_op,
     eps_bar, d_init, H_init,
     toler_lin, maxiter_cg, toler_helm, maxiter_helm, eta, dt, d_thres,
     toler_st_abs, toler_st_rel, maxiter_st, early_exit: bool,
@@ -230,7 +240,8 @@ def _staggered_loop(
     consistent tangent would need eps itself, which only the mechanical
     solve about to run produces; freezing it at the previous iterate keeps
     this loop's linear CG solvers (solve_lippmann_schwinger/
-    solve_displacement_based) usable unchanged instead of a nonlinear
+    solve_fourier_galerkin/solve_displacement_based) usable unchanged instead
+    of a nonlinear
     Newton-CG mechanical sub-solve, exactly mirroring how ``d`` is already
     frozen within one mechanical solve and only updated once per staggered
     iteration. ``eps_prev`` is refreshed every iteration, so the loop still
@@ -253,7 +264,12 @@ def _staggered_loop(
 
         if formulation == "lippmann_schwinger":
             eps, sigma, delta, converged_mech = solve_lippmann_schwinger(
-                n, C_eff, green_op, eps_bar,
+                n, C_eff, elastic_op, eps_bar,
+                toler_lin=toler_lin, maxiter=maxiter_cg,
+            )
+        elif formulation == "fourier_galerkin":
+            eps, sigma, delta, converged_mech = solve_fourier_galerkin(
+                n, C_eff, elastic_op, eps_bar,
                 toler_lin=toler_lin, maxiter=maxiter_cg,
             )
         else:  # "displacement"
@@ -342,19 +358,20 @@ def solve_fracture_fixed(
     See solve_fracture's docstring for every parameter's meaning; unlike it,
     there's no early-exit path, so there's nothing else different here.
     """
-    if formulation not in ("lippmann_schwinger", "displacement"):
+    if formulation not in ("lippmann_schwinger", "displacement", "fourier_galerkin"):
         raise ValueError(
-            f"unknown formulation {formulation!r}, expected 'lippmann_schwinger' or 'displacement'"
+            f"unknown formulation {formulation!r}, expected 'lippmann_schwinger', "
+            f"'displacement', or 'fourier_galerkin'"
         )
 
     control = control if control is not None else _ZERO_CONTROL
     control_nonzero = any(any(row) for row in control)
-    if formulation == "lippmann_schwinger" and control_nonzero:
+    if formulation in ("lippmann_schwinger", "fourier_galerkin") and control_nonzero:
         raise ValueError(
-            "formulation='lippmann_schwinger' cannot do stress-controlled "
-            "macroscopic BC (control has nonzero entries) -- its reference-"
-            "medium approach only supports pure strain BC; "
-            "use formulation='displacement' instead"
+            f"formulation={formulation!r} cannot do stress-controlled "
+            "macroscopic BC (control has nonzero entries) -- it has no "
+            "reference medium to solve for stress-controlled directions "
+            "against, only pure strain BC; use formulation='displacement' instead"
         )
     stress_goal_arr = jnp.zeros((3, 3)) if stress_goal is None else stress_goal
 
@@ -380,14 +397,16 @@ def solve_fracture_fixed(
         Gc_heterogeneous = isinstance(Gc, jnp.ndarray) and jnp.ndim(Gc) > 0
 
     if formulation == "lippmann_schwinger":
-        green_op = build_reference_green_operator(n, L, materials, scheme=scheme)
+        elastic_op = build_reference_green_operator(n, L, materials, scheme=scheme)
+    elif formulation == "fourier_galerkin":
+        elastic_op = build_galerkin_projector(n, L, scheme=scheme)
     else:
-        green_op = None
+        elastic_op = None
 
     return _staggered_loop(
         n=n, l0=l0, formulation=formulation, control=control, stress_goal_arr=stress_goal_arr,
         pff_local_update=pff_local_update, lam_vox=lam_vox, mu_vox=mu_vox, xi_flat=xi_flat, k_res_arr=k_res_arr,
-        Gc=Gc, Gc_heterogeneous=Gc_heterogeneous, green_op=green_op,
+        Gc=Gc, Gc_heterogeneous=Gc_heterogeneous, elastic_op=elastic_op,
         eps_bar=eps_bar, d_init=d_init, H_init=H_init,
         toler_lin=toler_lin, maxiter_cg=maxiter_cg,
         toler_helm=toler_helm, maxiter_helm=maxiter_helm,
