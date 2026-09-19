@@ -37,13 +37,29 @@ PFF params: l0 = 3 voxels, Gc/k_res set per-material (matrix Gc=0.8e-3,
             gathered automatically (Gc=None). The damage-immune fiber keeps
             a rigid load-bearing skeleton through failure, instead of
             softening alongside the matrix.
-Boundary  : displacement-controlled -- formulation="displacement", the loaded
-condition   diagonal component (e.g. eps_11 for tension_x/compression_x) is
+Boundary  : mixed strain/stress, via ``control`` -- the loaded diagonal (or
+condition   shear) component (e.g. eps_11 for tension_x/compression_x) is
             strain-controlled at the prescribed value, every other surface is
             left traction-free (stress_goal=0, control=1) -- the condition an
             actual tensile/compression specimen is under (grips impose the
             axial strain, lateral surfaces free to contract/expand via
             Poisson's effect), not an artificially strain-constrained cube.
+            ``--formulation`` selects which mechanical solver enforces this
+            (default "displacement", its original bordered-CG mixed-BC
+            approach -- unchanged default behavior). "fourier_galerkin"
+            (Lucarini & Segurado 2019a's DC-frequency-projector patch) and
+            "lippmann_schwinger" (Michel et al 1999's outer iterative
+            correction) now support mixed BC too, see solvers.elliptic.
+            vector.mixed_bc and notes/controll.md. CAUTION:
+            "lippmann_schwinger" wraps EVERY staggered mechanical solve in
+            its own outer correction loop (up to 50 extra full CG solves per
+            staggered iteration, on top of this benchmark's own up-to-50
+            staggered iterations per time step and 100 time steps) -- likely
+            impractically slow at this benchmark's default scale; try it on
+            a reduced --realizations/--phi/dt_step run first.
+            ``--scheme`` ("rotated" default or "standard") selects the
+            reference-medium/projector discretisation for "lippmann_schwinger"
+            and "fourier_galerkin" -- ignored by "displacement".
 Load paths: tension_x, compression_x, shear_xy -- same RVE realizations (per
             phi), ramped independently (d/H reset between paths) so their
             responses are directly comparable. Each realization's curve is
@@ -61,6 +77,8 @@ Usage
     python benchmark/benchmark_2/pff_random_periodic.py --phi 0.4           # just one phi
     python benchmark/benchmark_2/pff_random_periodic.py --loading tension_x
     python benchmark/benchmark_2/pff_random_periodic.py --realizations 8
+    python benchmark/benchmark_2/pff_random_periodic.py --formulation fourier_galerkin
+    python benchmark/benchmark_2/pff_random_periodic.py --formulation fourier_galerkin --scheme standard
 """
 
 import os
@@ -82,11 +100,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from generation.rve           import make_random_composite_rve
-from materialmodels.elastic.isotropic import LinearElasticIsotropic
-from materialmodels.elastic.transverse_isotropic import TransverseIsotropic
+from materialmodels.elastic import LinearElasticIsotropic, TransverseIsotropic
 from post.fields               import to_voigt
 from utils.io.xdmf_writer     import IncrementalWriter
 from problems.fracture        import solve_fracture_incremental
+from problems.utils.loadcases import (
+    LoadCase as _SharedLoadCase, free_surface_control, strain_symbol, stress_symbol, voigt_label,
+)
 
 jax.config.update("jax_enable_x64", True)
 
@@ -149,51 +169,111 @@ REF_PHIS = {0.35, 0.55, 0.75}
 
 @dataclass
 class LoadCase:
-    eps_goal: jnp.ndarray
-    i: int
-    j: int
-    comp_symbol: str
-    stress_symbol: str
-    label: str
-    color: str
-    ref_branch: str | None = None  # "tension", "comp", or "shear"; None = no reference
-                                    # available -- the {ij} digits are derived from
-                                    # (i, j) directly (voigt_digit), not stored here
-    plot_abs: bool = False         # take abs(eps)/abs(sigma) when plotting -- the
-                                    # "comp" reference curves are stored as positive
-                                    # magnitude even though the loading is compressive
+    """
+    One PFF-benchmark load path: wraps the repo-level shared
+    problems.utils.loadcases.LoadCase (component, mixed-BC control,
+    engineering-shear-consistent eps_bar -- the same vocabulary
+    scripts/simulation/solve_mechanics.py and solve_inelastic.py already
+    build on) with the presentation/reference-matching metadata that's
+    specific to THIS benchmark's literature comparison (display label,
+    plot color, which assets/ reference branch and whether to plot
+    magnitudes) and has no place in that generic module.
+
+    Previously this benchmark carried its own, independent LoadCase
+    (component/BC vocabulary duplicated wholesale) and its own copy of
+    problems.utils.loadcases.free_surface_control under the name
+    mixed_control -- that module's own docstring already flagged the
+    duplication as a to-do; this is that migration.
+    """
+    case:            _SharedLoadCase
+    label:           str
+    color:           str
+    ref_branch:      str | None = None  # "tension", "comp", or "shear"; None = no reference
+                                         # available -- the {ij} digits are derived from
+                                         # (i, j) directly (voigt_digit), not stored here
+    plot_abs:        bool = False       # take abs(eps)/abs(sigma) when plotting -- the
+                                         # "comp" reference curves are stored as positive
+                                         # magnitude even though the loading is compressive
+    symbol_override: str | None = None  # e.g. "zx" for shear_zx: the shared case's
+                                         # (i, j) = (0, 2) gives voigt_label "xz" (i<j
+                                         # order), but this benchmark's own convention
+                                         # displays that plane "zx" (matching the case's
+                                         # own name) -- purely cosmetic, only shear_zx
+                                         # needs it
+
+    @property
+    def i(self) -> int:
+        return self.case.i
+
+    @property
+    def j(self) -> int:
+        return self.case.j
+
+    @property
+    def control(self) -> tuple[tuple[int, int, int], ...] | None:
+        return self.case.control
+
+    @property
+    def eps_goal(self) -> jnp.ndarray:
+        """(3, 3) target macroscopic strain at the full load -- the shared
+        LoadCase's own gammas path is a single [0, gamma_target] step here
+        (this benchmark's own dt_step-based ramp inside
+        solve_fracture_incremental does the actual load-stepping, not the
+        gammas path), so this is just its endpoint: ``gammas[-1]``, NOT
+        ``gamma_max`` (that property is ``abs()``-max, for cyclic load/
+        unload/reload paths where a caller applies its own sign separately
+        -- using it here silently dropped compression_x's negative sign
+        before this was caught by a before/after numerical comparison)."""
+        return jnp.asarray(self.case.eps_bar(float(self.case.gammas[-1])))
+
+    @property
+    def comp_symbol(self) -> str:
+        return f"ε{self.symbol_override}" if self.symbol_override else strain_symbol(self.i, self.j)
+
+    @property
+    def stress_symbol(self) -> str:
+        return f"σ{self.symbol_override}" if self.symbol_override else stress_symbol(self.i, self.j)
+
+
+def _uniaxial(name: str, i: int, gamma: float) -> _SharedLoadCase:
+    return _SharedLoadCase(name=name, i=i, j=i, gammas=np.array([0.0, gamma]),
+                            control=free_surface_control(i, i), stress_bar=np.zeros((3, 3)))
+
+
+def _shear(name: str, i: int, j: int, gamma_tensor: float) -> _SharedLoadCase:
+    """gamma_tensor is the target TENSOR shear component eps[i,j]=eps[j,i]
+    (this benchmark's own historical convention, matching its assets/
+    reference curves) -- doubled before handing to the shared LoadCase.
+    eps_bar, which uses the ENGINEERING shear convention
+    (eps[i,j]=eps[j,i]=gamma/2, see that method's own docstring) so that
+    .eps_bar(gammas[-1]) (see LoadCase.eps_goal above) reproduces the exact
+    same tensor here. Verified bit-identical to this benchmark's previous
+    hand-written eps_goal arrays
+    before this migration."""
+    return _SharedLoadCase(name=name, i=i, j=j, gammas=np.array([0.0, 2.0 * gamma_tensor]),
+                            control=free_surface_control(i, j), stress_bar=np.zeros((3, 3)))
 
 
 LOADING_CASES: dict[str, LoadCase] = {
-        "tension_z": LoadCase(
-        eps_goal=EPS_TENSION_MAX * jnp.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 1.0]]),
-        i=2, j=2, comp_symbol="εzz", stress_symbol="σzz",
-        label="tension z", color="tab:blue",
-        ref_branch="tension",
+    "tension_z": LoadCase(
+        case=_uniaxial("tension_z", 2, EPS_TENSION_MAX),
+        label="tension z", color="tab:blue", ref_branch="tension",
     ),
     "tension_x": LoadCase(
-        eps_goal=EPS_TENSION_MAX * jnp.array([[1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]),
-        i=0, j=0, comp_symbol="εxx", stress_symbol="σxx",
-        label="tension x", color="tab:blue",
-        ref_branch="tension",
+        case=_uniaxial("tension_x", 0, EPS_TENSION_MAX),
+        label="tension x", color="tab:blue", ref_branch="tension",
     ),
     "compression_x": LoadCase(
-        eps_goal=-EPS_COMP_MAX * jnp.array([[1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]),
-        i=0, j=0, comp_symbol="εxx", stress_symbol="σxx",
-        label="compression x", color="tab:red",
-        ref_branch="comp", plot_abs=True,
+        case=_uniaxial("compression_x", 0, -EPS_COMP_MAX),
+        label="compression x", color="tab:red", ref_branch="comp", plot_abs=True,
     ),
     "shear_xy": LoadCase(
-        eps_goal=EPS_TENSION_MAX * jnp.array([[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 0.0]]),
-        i=0, j=1, comp_symbol="εxy", stress_symbol="σxy",
-        label="xy", color="tab:green",
-        ref_branch="shear",
+        case=_shear("shear_xy", 0, 1, EPS_TENSION_MAX),
+        label="xy", color="tab:green", ref_branch="shear",
     ),
     "shear_zx": LoadCase(
-        eps_goal=EPS_TENSION_MAX * jnp.array([[0.0, 0.0, 1.0], [0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]),
-        i=0, j=2, comp_symbol="εzx", stress_symbol="σzx",
-        label="zx", color="tab:green",
-        ref_branch="shear",
+        case=_shear("shear_zx", 0, 2, EPS_TENSION_MAX),
+        label="zx", color="tab:green", ref_branch="shear", symbol_override="zx",
     ),
 }
 
@@ -203,13 +283,7 @@ STRESS_GOAL_ZERO = jnp.zeros((3, 3))   # every stress-controlled surface targets
 # xyz axis convention for history/CSV columns and plot labels -- matches
 # post.fields.to_voigt's index order (xx, yy, zz, xy, xz, yz), so
 # VOIGT_LABELS[i] pairs 1:1 with to_voigt(tensor)[..., i].
-_AXIS = "xyz"
 VOIGT_LABELS = ("xx", "yy", "zz", "xy", "xz", "yz")
-
-
-def voigt_label(i: int, j: int) -> str:
-    """(i, j) tensor index -> its xyz Voigt label, e.g. (0, 2) -> 'xz'."""
-    return _AXIS[i] + _AXIS[j]
 
 
 def voigt_digit(axis: int) -> str:
@@ -225,27 +299,6 @@ def voigt_ref_digits(i: int, j: int) -> str:
     """(i, j) tensor index -> the two-digit {ij} label in a reference filename,
     e.g. (i=0,j=2) [x,z] -> digits (3,1) -> ascending -> '13'."""
     return "".join(sorted((voigt_digit(i), voigt_digit(j))))
-
-
-def mixed_control(case: LoadCase) -> tuple[tuple[int, int, int], ...]:
-    """
-    Displacement-controlled boundary condition, all surfaces free except the
-    loaded one:
-
-    - Uniaxial (i == j, e.g. tension_x/compression_x): strain-controlled on
-      the loaded diagonal component, stress-free (traction-free, control=1)
-      on the other two normal directions. Shear stays strain-controlled at
-      zero (no shear imposed).
-    - Shear (i != j, e.g. shear_xy): strain-controlled on the loaded shear
-      pair (i, j)/(j, i), stress-free on all three normal directions (every
-      lateral surface free to expand/contract). The other, non-loaded shear
-      pair stays strain-controlled at zero.
-    """
-    if case.i == case.j:
-        diag = [1, 1, 1]
-        diag[case.i] = 0
-        return ((diag[0], 0, 0), (0, diag[1], 0), (0, 0, diag[2]))
-    return ((1, 0, 0), (0, 1, 0), (0, 0, 1))
 
 
 def load_reference(phi: float, case: LoadCase) -> np.ndarray | None:
@@ -296,19 +349,22 @@ def build_rve_realizations(phi: float, n_realizations: int = N_REALIZATIONS):
     return phase_raw_list, n, L, Nv, dx, phi_acts
 
 
-def run_case(name: str, case: LoadCase, phase_raw_list, n, L, Nv, dx, phi_acts, case_dir: str) -> list[dict]:
+def run_case(name: str, case: LoadCase, phase_raw_list, n, L, Nv, dx, phi_acts, case_dir: str,
+             formulation: str = "displacement", scheme: str = "rotated") -> list[dict]:
     n_real = len(phase_raw_list)
     phi_act_mean = float(np.mean(phi_acts))
     print(f"\n=== {name}  (phi_target={PHI:.3f}, phi_actual={phi_act_mean:.4f} +/- {np.std(phi_acts):.4f}, "
-          f"{n_real} realizations) ===")
+          f"{n_real} realizations)  [formulation={formulation}, scheme={scheme}] ===")
     print(f"Grid     : {n}  (Nv = {Nv})   Domain: {tuple(f'{v:.4g}' for v in L)} mm")
     l0 = l0_factor * dx[0]
     print(f"PFF      : l0 = {l0:.4g} mm")
     for m in MATERIALS:
         print(f"           {m.name}: Gc = {m.Gc} MPa*mm  ->  Gc/l0 = {m.Gc/l0:.3g} MPa")
 
-    jobname = f"pff_random_periodic_phi{PHI:.2f}_{name}"
-    control = mixed_control(case)
+    # formulation suffix keeps output from different --formulation runs of
+    # the same (loading, phi) from colliding/overwriting each other.
+    jobname = f"pff_random_periodic_phi{PHI:.2f}_{name}_{formulation}"
+    control = case.control
     print(control)
     history: list[dict] = []
 
@@ -360,7 +416,8 @@ def run_case(name: str, case: LoadCase, phase_raw_list, n, L, Nv, dx, phi_acts, 
                 n, L, phase_k, MATERIALS, case.eps_goal, l0, None, d_init, H_init,
                 stepping     = "fixed",
                 dt_step      = dt_step,
-                formulation  = "displacement",
+                formulation  = formulation,
+                scheme       = scheme,
                 control      = control,
                 stress_goal  = STRESS_GOAL_ZERO,
                 toler_lin    = toler_lin, maxiter_cg=maxiter_cg,
@@ -421,7 +478,7 @@ def run_case(name: str, case: LoadCase, phase_raw_list, n, L, Nv, dx, phi_acts, 
                  label="FFTjax" if k == 0 else None)
     ax.set_xlabel(f"${strain_sym}$")
     ax.set_ylabel(f"${stress_sym}$ [MPa]")
-    ax.set_title(f"{case.label} -- phi={phi_act_mean:.3f} ({n_real} realizations)")
+    ax.set_title(f"{case.label} -- phi={phi_act_mean:.3f} ({n_real} realizations, {formulation})")
     ax.legend()
     ax.grid(True, linewidth=0.5, alpha=0.6)
     fig.tight_layout()
@@ -448,7 +505,7 @@ def run_case(name: str, case: LoadCase, phase_raw_list, n, L, Nv, dx, phi_acts, 
     ax.plot(eps_mean, sig_mean, "b-o", markersize=3, linewidth=1.2, label=f"FFTjax mean (n={n_real})")
     ax.set_xlabel(f"${strain_sym}$")
     ax.set_ylabel(f"${stress_sym}$ [MPa]")
-    ax.set_title(f"{case.label} -- phi={phi_act_mean:.3f}, mean $\\pm$ std ({n_real} realizations)")
+    ax.set_title(f"{case.label} -- phi={phi_act_mean:.3f}, mean $\\pm$ std ({n_real} realizations, {formulation})")
     ax.legend()
     ax.grid(True, linewidth=0.5, alpha=0.6)
     fig.tight_layout()
@@ -469,6 +526,14 @@ def main():
                          help="which load path(s) to run (default: all, run sequentially)")
     parser.add_argument("--realizations", type=int, default=N_REALIZATIONS,
                          help=f"random-seed realizations solved per (loading case, phi) (default: {N_REALIZATIONS})")
+    parser.add_argument("--formulation", choices=["displacement", "fourier_galerkin", "lippmann_schwinger"],
+                         default="displacement",
+                         help="mechanical solver formulation (default: displacement, the original "
+                              "choice for this benchmark -- see module docstring's Boundary section "
+                              "for why 'lippmann_schwinger' is likely impractically slow here)")
+    parser.add_argument("--scheme", choices=["rotated", "standard"], default="rotated",
+                         help="reference-medium/projector discretisation for --formulation "
+                              "lippmann_schwinger/fourier_galerkin (default: rotated); ignored by displacement")
     args = parser.parse_args()
 
     os.makedirs(output, exist_ok=True)
@@ -494,7 +559,8 @@ def main():
         for phi in phis:
             PHI = phi
             phase_raw_list, n, L, Nv, dx, phi_acts = get_rve(phi)
-            run_case(name, LOADING_CASES[name], phase_raw_list, n, L, Nv, dx, phi_acts, case_dir)
+            run_case(name, LOADING_CASES[name], phase_raw_list, n, L, Nv, dx, phi_acts, case_dir,
+                     formulation=args.formulation, scheme=args.scheme)
 
 
 if __name__ == "__main__":

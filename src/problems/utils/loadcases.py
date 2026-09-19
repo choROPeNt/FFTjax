@@ -83,6 +83,20 @@ def voigt_label(i: int, j: int) -> str:
     return _AXIS[i] + _AXIS[j]
 
 
+def strain_symbol(i: int, j: int) -> str:
+    """(i, j) tensor index -> its Greek macroscopic-strain print label, e.g.
+    (0, 1) -> 'εxy'. Generic formatting helper factored out of what used to
+    be per-case hardcoded strings in benchmark_1/benchmark_2's own load-case
+    tables -- see stress_symbol for its stress-side counterpart."""
+    return f"ε{voigt_label(i, j)}"
+
+
+def stress_symbol(i: int, j: int) -> str:
+    """(i, j) tensor index -> its Greek macroscopic-stress print label, e.g.
+    (0, 1) -> 'σxy'."""
+    return f"σ{voigt_label(i, j)}"
+
+
 def free_surface_control(i: int, j: int) -> tuple[tuple[int, int, int], ...]:
     """
     Mixed-BC ``control`` mask for a "load this component, free every other

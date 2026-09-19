@@ -7,7 +7,7 @@ Pure config/bookkeeping logic, so no solve happens here and the test costs
 milliseconds: what it guards is that a six-case sweep means what its config
 says it means, which is otherwise only discoverable hours into a run.
 
-Seven checks
+Eight checks
 ------------
 1. base6 is the six canonical cases, in post.fields.to_voigt's Voigt order
    (11, 22, 33, 12, 13, 23) -- the ordering is load-bearing, since case k is
@@ -30,6 +30,11 @@ Seven checks
    normal cases alike -- eps_bar[i,i] = gamma but eps_bar[i,j] = gamma/2 -- so
    one gamma_max is one load magnitude across a sweep of both, rather than 5%
    axial in one case and 2.5% in the next.
+8. strain_symbol/stress_symbol format a Greek macroscopic-quantity label from
+   (i, j) directly, matching voigt_label's own convention -- factored out of
+   what used to be per-case hardcoded strings in benchmark_1/benchmark_2's
+   own load-case tables (benchmark_2/pff_random_periodic.py now imports
+   these instead of duplicating them).
 
 Usage
 -----
@@ -44,7 +49,7 @@ import numpy as np
 from post.fields import _VOIGT_IJ
 from problems.utils.loadcases import (
     BASE_COMPONENTS, BASE_SIX, cycle_gammas, free_surface_control,
-    resolve_cases, select_cases, voigt_label,
+    resolve_cases, select_cases, strain_symbol, stress_symbol, voigt_label,
 )
 
 # ── [1] base6 == the six Voigt components, in to_voigt's order ──────────────
@@ -184,5 +189,14 @@ except ValueError as exc:
     assert "duplicate" in str(exc)
 else:
     raise AssertionError("expected a ValueError for a duplicate case name (same output path)")
+
+# ── [8] strain_symbol/stress_symbol match voigt_label directly ──────────────
+assert strain_symbol(0, 0) == "εxx" and stress_symbol(0, 0) == "σxx"
+assert strain_symbol(0, 1) == "εxy" and stress_symbol(2, 2) == "σzz"
+for i in range(3):
+    for j in range(i, 3):
+        assert strain_symbol(i, j) == f"ε{voigt_label(i, j)}"
+        assert stress_symbol(i, j) == f"σ{voigt_label(i, j)}"
+print("[8] PASSED")
 
 print("\ntest_problems_utils_loadcases: all checks passed")
