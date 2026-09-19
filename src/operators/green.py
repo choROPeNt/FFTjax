@@ -243,7 +243,7 @@ def build_reference_green_operator(
     L: tuple[float, ...],
     materials: list,
     scheme: str = 'rotated',
-) -> LinearOperator:
+) -> GreenOperatorBasic:
     """
     Build a GreenOperatorBasic/Willot for the arithmetic-mean-Lame reference
     medium of ``materials``. Shared by every problems/ wiring layer that

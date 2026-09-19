@@ -26,20 +26,11 @@ from jax import jit
 
 from operators.green import nyquist_safe_xi
 from solvers.elliptic.vector.base import ElasticitySolver
+from solvers.elliptic.vector.mixed_bc import (
+    _ZERO_CONTROL, _active_pairs, sv2sm as _sv2sm, sm2sv as _sm2sv,
+)
 from solvers.krylov.cg import cg_solve
 from solvers.solution import ElasticitySolution
-
-_ZERO_CONTROL = ((0, 0, 0), (0, 0, 0), (0, 0, 0))
-
-
-def _active_pairs(control: Tuple[Tuple[int, ...], ...]) -> Tuple[Tuple[int, int], ...]:
-    """Upper-triangular (i, j) index pairs, i<=j, where control[i][j] == 1."""
-    return tuple(
-        (i, j)
-        for i in range(3)
-        for j in range(i, 3)
-        if control[i][j]
-    )
 
 
 @partial(jit, static_argnames=("n", "control", "maxiter"))
@@ -85,6 +76,10 @@ def solve_displacement_based(
     Nv = prod(n)
     pairs = _active_pairs(control)
     control_arr = jnp.asarray(control, dtype=eps_bar.dtype)
+    # pack/unpack the macroscopic-strain correction (stress-controlled only) --
+    # shared implementation, see solvers.elliptic.vector.mixed_bc.
+    sv2sm = partial(_sv2sm, pairs=pairs)
+    sm2sv = partial(_sm2sv, pairs=pairs)
 
     iq = 1j * nyquist_safe_xi(xi_flat, n)  # (3, Nv)
 
@@ -96,19 +91,6 @@ def solve_displacement_based(
     def ifft_(x):
         s = x.shape
         return jnp.fft.ifftn(x.reshape(s[:-1] + n), axes=(-3, -2, -1)).real.reshape(s)
-
-    # ── pack/unpack the macroscopic-strain correction (stress-controlled only) ─
-    def sv2sm(sv):
-        sm = jnp.zeros((3, 3), dtype=sv.dtype)
-        for k, (i, j) in enumerate(pairs):
-            sm = sm.at[i, j].set(sv[k])
-            sm = sm.at[j, i].set(sv[k])
-        return sm
-
-    def sm2sv(sm):
-        if not pairs:
-            return jnp.zeros((0,), dtype=sm.dtype)
-        return jnp.stack([sm[i, j] for i, j in pairs])
 
     def unpack(x_flat):
         du = x_flat[: 3 * Nv].reshape(3, Nv)

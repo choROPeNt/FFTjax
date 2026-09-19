@@ -26,8 +26,16 @@ class ElasticitySolution(NamedTuple):
                                            # stress-controlled entries filled in
                                            # by the solve -- None (default) for
                                            # solvers with no mixed-BC concept
-                                           # (e.g. LippmannSchwingerSolver);
-                                           # populated by DisplacementBasedSolver
+                                           # (LippmannSchwingerSolver -- the
+                                           # plain pure-strain-only one; see
+                                           # LippmannSchwingerMixedBCSolver for
+                                           # its mixed-BC counterpart, notes/
+                                           # controll.md); populated
+                                           # unconditionally (trivially equal to
+                                           # the prescribed eps_bar under pure
+                                           # strain BC) by DisplacementBasedSolver,
+                                           # FourierGalerkinSolver, and
+                                           # LippmannSchwingerMixedBCSolver
 
 
 class ThermalSolution(NamedTuple):
@@ -82,8 +90,20 @@ class FractureSolution(NamedTuple):
     err_rel:             float | jnp.ndarray  # err_abs / max|d_new| -- same float/array split
     eps_bar:             jnp.ndarray | None = None  # (3, 3) macroscopic strain with
                                                      # any stress-controlled entries
-                                                     # filled in -- None unless
-                                                     # formulation="displacement"
+                                                     # filled in -- populated for
+                                                     # formulation="displacement" or
+                                                     # "fourier_galerkin" always
+                                                     # (trivially equal to the
+                                                     # prescribed eps_bar under
+                                                     # pure strain BC); for
+                                                     # formulation=
+                                                     # "lippmann_schwinger", only
+                                                     # when ``control`` is
+                                                     # nonzero (the mixed-BC
+                                                     # outer-loop route, see
+                                                     # solve_lippmann_schwinger_
+                                                     # mixed_bc) -- None there
+                                                     # under pure strain BC
 
     @property
     def converged(self) -> bool | jnp.ndarray:

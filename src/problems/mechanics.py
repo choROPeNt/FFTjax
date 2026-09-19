@@ -51,6 +51,7 @@ matters.
 import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on TPU, no GPU prealloc)
 
 import time
+from functools import partial
 from typing import Any, Callable, Tuple, cast
 from math import prod
 
@@ -62,14 +63,15 @@ from operators.galerkin import build_galerkin_projector
 from operators.green import build_freq_grid, build_reference_green_operator, nyquist_safe_xi
 from post.fields import compute_displacement, field_to_grid, to_voigt, von_mises
 from problems.incremental import IncrementResult, solve_automatic, solve_fixed
-from solvers.elliptic.vector.displacement_based import DisplacementBasedSolver, _active_pairs
+from solvers.elliptic.vector.displacement_based import DisplacementBasedSolver
 from solvers.elliptic.vector.fourier_galerkin import FourierGalerkinSolver
-from solvers.elliptic.vector.lippmann_schwinger import LippmannSchwingerSolver
+from solvers.elliptic.vector.lippmann_schwinger import LippmannSchwingerMixedBCSolver, LippmannSchwingerSolver
+from solvers.elliptic.vector.mixed_bc import (
+    _ZERO_CONTROL, _active_pairs, sv2sm as _sv2sm, sm2sv as _sm2sv,
+)
 from solvers.krylov.cg import cg_solve
 from solvers.solution import ElasticitySolution
 from utils.io.xdmf_writer import IncrementalWriter
-
-_ZERO_CONTROL = ((0, 0, 0), (0, 0, 0), (0, 0, 0))
 
 
 def _solve_mechanics_step(
@@ -96,37 +98,32 @@ def _solve_mechanics_step(
     C_field = assemble_C_field(materials, phase)
 
     if formulation == "lippmann_schwinger":
-        if control_nonzero:
-            raise ValueError(
-                "formulation='lippmann_schwinger' cannot do stress-controlled "
-                "macroscopic BC (control has nonzero entries) -- its reference-"
-                "medium approach only supports pure strain BC; "
-                "use formulation='displacement' instead"
-            )
-
         # Reference medium + Green's operator: see module docstring for why
         # this isn't materialmodels/averaging.py yet.
         green_op = build_reference_green_operator(n, L, materials, scheme=scheme)
 
-        solver = LippmannSchwingerSolver(n, green_op, toler_lin, maxiter)
-        return solver.solve(C_field, eps_bar, stress_goal)
+        if control_nonzero:
+            solver = LippmannSchwingerMixedBCSolver(n, green_op, control, toler_lin, maxiter)
+            return solver.solve(C_field, eps_bar, stress_goal)
+        else:
+            # stress_goal here (if given) is in LippmannSchwingerMixedBCSolver's
+            # macroscopic (3,3) convention, NOT the plain LippmannSchwingerSolver's
+            # unrelated per-voxel (3,3,Nv) one -- forwarding it unconditionally
+            # would either silently mean something different or (differing shape)
+            # crash inside solve_lippmann_schwinger's broadcasting. With no active
+            # stress-controlled direction there's nothing for it to apply to
+            # anyway, so it's correctly ignored here, matching
+            # problems.fracture._staggered_loop's equivalent dispatch.
+            solver = LippmannSchwingerSolver(n, green_op, toler_lin, maxiter)
+            return solver.solve(C_field, eps_bar)
     elif formulation == "displacement":
         xi_flat = build_freq_grid(n, L)
         solver = DisplacementBasedSolver(n, xi_flat, control, toler_lin, maxiter)
         return solver.solve(C_field, eps_bar, stress_goal)
     elif formulation == "fourier_galerkin":
-        if control_nonzero:
-            raise ValueError(
-                "formulation='fourier_galerkin' cannot do stress-controlled "
-                "macroscopic BC (control has nonzero entries) -- same "
-                "restriction as formulation='lippmann_schwinger', for the "
-                "same reason (see that branch above); "
-                "use formulation='displacement' instead"
-            )
-
         galerkin_op = build_galerkin_projector(n, L, scheme=scheme)
 
-        solver = FourierGalerkinSolver(n, galerkin_op, toler_lin, maxiter)
+        solver = FourierGalerkinSolver(n, galerkin_op, control, toler_lin, maxiter)
         return solver.solve(C_field, eps_bar, stress_goal)
     else:
         raise ValueError(
@@ -184,22 +181,28 @@ def solve_mechanics(
                                  solve_automatic; dt_init/_min/_max,
                                  factor_inc/_dec, max_cutbacks, max_steps all
                                  forwarded to it).
-    formulation : "lippmann_schwinger" (reference-medium, strain BC only),
-                  "displacement" (true heterogeneous tangent, supports mixed BC), or
-                  "fourier_galerkin" (Vondrejc et al 2014 -- no reference medium
-                  either, but strain BC only like lippmann_schwinger; see
-                  operators.galerkin.GalerkinProjector)
+    formulation : "lippmann_schwinger" (reference-medium; mixed BC via an
+                  outer iterative correction, Michel et al 1999, see
+                  solvers.elliptic.vector.lippmann_schwinger.
+                  solve_lippmann_schwinger_mixed_bc and notes/controll.md),
+                  "displacement" (true heterogeneous tangent, supports mixed
+                  BC via a bordered CG system), or "fourier_galerkin"
+                  (Vondrejc et al 2014 -- no reference medium, supports mixed
+                  BC via the DC-bin identity scheme, Lucarini & Segurado
+                  2019a; see operators.galerkin.GalerkinProjector and
+                  solvers.elliptic.vector.mixed_bc)
     scheme      : "standard" (GreenOperatorBasic / GalerkinProjector, standard) or
                   "rotated" (GreenOperatorWillot / GalerkinProjector, rotated)
                   -- used by formulation="lippmann_schwinger" and "fourier_galerkin"
     control     : (3, 3) 0/1 mask, 1 = stress-controlled, 0 = strain-controlled.
-                  None (default) = pure strain BC (all zero). Only
-                  formulation="displacement" can have any nonzero entries.
+                  None (default) = pure strain BC (all zero). Supported by
+                  all three formulations.
     stress_goal : formulation-specific -- see ElasticitySolver.solve's
-                  docstring. lippmann_schwinger: (3, 3, Nv) per-voxel target
-                  stress field or None (zero). displacement: (3, 3)
-                  macroscopic target stress, used only on ``control``-marked
-                  entries.
+                  docstring. lippmann_schwinger (control all-zero only):
+                  (3, 3, Nv) per-voxel target stress field or None (zero).
+                  Otherwise (any formulation with nonzero ``control``,
+                  displacement, fourier_galerkin): (3, 3) macroscopic target
+                  stress, used only on ``control``-marked entries.
     toler_lin, maxiter : CG tolerance / iteration cap
     dt, dt_init, dt_min, dt_max, factor_inc, factor_dec, max_cutbacks, max_steps :
                   load-stepping controls, forwarded to solve_fixed/
@@ -450,19 +453,11 @@ def solve_displacement_based_nonlinear(
         eps_hat  = eps_hat.at[:, :, 0].set(0.0)
         return ifft_(eps_hat)
 
-    # ── mixed-BC bookkeeping, same convention as solve_displacement_based --
+    # ── mixed-BC bookkeeping, same convention as solve_displacement_based
+    #    (shared implementation, see solvers.elliptic.vector.mixed_bc) --
     #    pairs=() (pure strain) makes every one of these a no-op.
-    def sv2sm(sv):
-        sm = jnp.zeros((3, 3), dtype=sv.dtype)
-        for k, (i, j) in enumerate(pairs):
-            sm = sm.at[i, j].set(sv[k])
-            sm = sm.at[j, i].set(sv[k])
-        return sm
-
-    def sm2sv(sm):
-        if not pairs:
-            return jnp.zeros((0,), dtype=sm.dtype)
-        return jnp.stack([sm[i, j] for i, j in pairs])
+    sv2sm = partial(_sv2sm, pairs=pairs)
+    sm2sv = partial(_sm2sv, pairs=pairs)
 
     def unpack(x_flat):
         du = x_flat[: 3 * Nv].reshape(3, Nv)

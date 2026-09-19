@@ -2,8 +2,8 @@
 Standalone test for operators.galerkin.build_galerkin_projection_operator --
 the reference-medium-free Fourier-Galerkin compatibility projector.
 
-Five checks
------------
+Six checks
+----------
 1. Major symmetry: Gs_ijkl == Gs_klij.
 2. Minor symmetry: Gs_ijkl == Gs_jikl == Gs_ijlk.
 3. Zero at the DC frequency (xi = 0).
@@ -11,6 +11,10 @@ Five checks
 5. Fixed-point / annihilation: a compatible field sym(n_hat outer v) is left
    unchanged by the projection; an n_hat-orthogonal (incompatible) field is
    projected to zero.
+6. solvers.elliptic.vector.mixed_bc.patch_dc_identity: control=all-zero is a
+   strict no-op; a nonzero control leaves every non-DC voxel untouched and
+   sets the DC voxel to a control-masked symmetric identity (verified by
+   contraction against an arbitrary symmetric tensor, not just by shape).
 
 These are the exact properties verified with plain numpy before this
 operator was implemented (see notes/FOURIER_GALERKIN.md) -- this ports that
@@ -35,6 +39,7 @@ import jax.numpy as jnp
 from materialmodels.tensors import is_major_symmetric, is_minor_symmetric
 from operators.galerkin import build_galerkin_projection_operator
 from operators.green import build_freq_grid
+from solvers.elliptic.vector.mixed_bc import _ZERO_CONTROL, patch_dc_identity
 
 n = (6, 5, 4)
 L = (1.0, 1.0, 1.0)
@@ -99,5 +104,37 @@ print(f"[5] incompatible field annihilated: max err = {max_annih_err:.3e}")
 assert max_fixed_err < 1e-8, f"compatible field must be a fixed point: err={max_fixed_err:.3e}"
 assert max_annih_err < 1e-8, f"incompatible field must be annihilated: err={max_annih_err:.3e}"
 print("[5] PASSED")
+
+# ── 6. patch_dc_identity (mixed-BC DC-bin patch) ─────────────────────────────
+
+assert len(dc_idx) == 1  # locks in check 3's own dc_idx == [0] invariant, see
+                          # solvers.elliptic.vector.mixed_bc.patch_dc_identity's
+                          # docstring for why index 0 specifically
+
+G0 = patch_dc_identity(G, _ZERO_CONTROL)
+assert jnp.array_equal(G0, G), "control=all-zero must be a strict no-op"
+
+control = ((1, 0, 0), (0, 1, 0), (0, 0, 1))
+Gc = patch_dc_identity(G, control)
+assert jnp.array_equal(Gc[..., 1:], G[..., 1:]), "non-DC voxels must be untouched"
+
+Gdc = Gc[..., dc_idx[0]]
+assert is_major_symmetric(Gdc), "patched DC slice must stay major-symmetric"
+assert is_minor_symmetric(Gdc), "patched DC slice must stay minor-symmetric"
+
+T = jnp.array([[1.0, 0.5, 0.2], [0.5, 2.0, 0.1], [0.2, 0.1, 3.0]])
+out = jnp.einsum("ijkl,kl->ij", Gdc, T)
+for i in range(3):
+    for j in range(3):
+        expected = float(T[i, j]) if control[i][j] else 0.0
+        assert abs(float(out[i, j]) - expected) < 1e-10, f"({i},{j}): got {out[i,j]}, expected {expected}"
+
+control_all = ((1, 1, 1), (1, 1, 1), (1, 1, 1))
+Gc_all = patch_dc_identity(G, control_all)
+d = jnp.eye(3)
+isym = 0.5 * (jnp.einsum('ik,jl->ijkl', d, d) + jnp.einsum('il,jk->ijkl', d, d))
+assert jnp.allclose(Gc_all[..., dc_idx[0]], isym), "all-ones control must give the full symmetric identity"
+
+print("[6] patch_dc_identity: PASSED (no-op at zero control, identity/zero split, symmetry preserved)")
 
 print("\ntest_operators_green_galerkin: all checks passed")

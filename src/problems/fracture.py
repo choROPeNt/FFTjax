@@ -50,11 +50,10 @@ from problems.incremental import IncrementResult, solve_automatic, solve_fixed
 from solvers.elliptic.scalar import solve_damage_helmholtz_cg, solve_damage_helmholtz_cg_het
 from solvers.elliptic.vector.displacement_based import solve_displacement_based
 from solvers.elliptic.vector.fourier_galerkin import solve_fourier_galerkin
-from solvers.elliptic.vector.lippmann_schwinger import solve_lippmann_schwinger
+from solvers.elliptic.vector.lippmann_schwinger import solve_lippmann_schwinger, solve_lippmann_schwinger_mixed_bc
+from solvers.elliptic.vector.mixed_bc import _ZERO_CONTROL
 from solvers.solution import FractureSolution
 from utils.io.xdmf_writer import IncrementalWriter
-
-_ZERO_CONTROL = ((0, 0, 0), (0, 0, 0), (0, 0, 0))
 
 
 def solve_fracture(
@@ -127,20 +126,24 @@ def solve_fracture(
                   docstring for why these solve different equations.
     d_init      : (Nv,)          damage carried in from the previous increment
     H_init      : (Nv,)          history variable carried in from the previous increment
-    formulation : "lippmann_schwinger" (reference-medium, strain BC only),
-                  "displacement" (true heterogeneous tangent, supports mixed BC), or
-                  "fourier_galerkin" (Vondrejc et al 2014 -- no reference medium
-                  either, but strain BC only like lippmann_schwinger; see
-                  operators.galerkin.GalerkinProjector)
+    formulation : "lippmann_schwinger" (reference-medium; mixed BC via an
+                  outer iterative correction, Michel et al 1999, see
+                  solvers.elliptic.vector.lippmann_schwinger.
+                  solve_lippmann_schwinger_mixed_bc and notes/controll.md),
+                  "displacement" (true heterogeneous tangent, supports mixed
+                  BC via a bordered CG system), or "fourier_galerkin"
+                  (Vondrejc et al 2014 -- no reference medium, supports mixed
+                  BC via the DC-bin identity scheme, Lucarini & Segurado
+                  2019a; see operators.galerkin.GalerkinProjector and
+                  solvers.elliptic.vector.mixed_bc)
     scheme      : "standard" (GreenOperatorBasic / GalerkinProjector, standard) or
                   "rotated" (GreenOperatorWillot / GalerkinProjector, rotated)
                   -- used by formulation="lippmann_schwinger" and "fourier_galerkin"
     control     : (3, 3) 0/1 mask, 1 = stress-controlled, 0 = strain-controlled.
-                  None (default) = pure strain BC (all zero). Only
-                  formulation="displacement" can have any nonzero entries.
+                  None (default) = pure strain BC (all zero). Supported by
+                  all three formulations.
     stress_goal : (3, 3) macroscopic target stress, used only on
-                  ``control``-marked entries -- only meaningful for
-                  formulation="displacement"
+                  ``control``-marked entries
     toler_lin, maxiter_cg     : mechanical CG tolerance / iteration cap
     toler_helm, maxiter_helm  : damage CG tolerance / iteration cap
     eta, dt                  : viscous regularisation of the damage equation
@@ -167,14 +170,6 @@ def solve_fracture(
         )
 
     control = control if control is not None else _ZERO_CONTROL
-    control_nonzero = any(any(row) for row in control)
-    if formulation in ("lippmann_schwinger", "fourier_galerkin") and control_nonzero:
-        raise ValueError(
-            f"formulation={formulation!r} cannot do stress-controlled "
-            "macroscopic BC (control has nonzero entries) -- it has no "
-            "reference medium to solve for stress-controlled directions "
-            "against, only pure strain BC; use formulation='displacement' instead"
-        )
     stress_goal_arr = jnp.zeros((3, 3)) if stress_goal is None else stress_goal
 
     pff_local_update = assemble_pff_local_update(materials, phase)
@@ -256,6 +251,7 @@ def _staggered_loop(
     eps_bar_cur = None
     Nv = lam_vox.shape[0]
     eps_prev = jnp.ones((3, 3, Nv)) * eps_bar[:, :, None]
+    control_nonzero = any(any(row) for row in control)
 
     for iter_st in range(1, maxiter_st + 1):
         d_prev_st = d_st
@@ -263,13 +259,19 @@ def _staggered_loop(
         _, C_eff = pff_local_update(eps_prev, d_st)
 
         if formulation == "lippmann_schwinger":
-            eps, sigma, delta, converged_mech = solve_lippmann_schwinger(
-                n, C_eff, elastic_op, eps_bar,
-                toler_lin=toler_lin, maxiter=maxiter_cg,
-            )
+            if control_nonzero:
+                eps, sigma, delta, eps_bar_cur, converged_mech, _n_iter_outer = solve_lippmann_schwinger_mixed_bc(
+                    n, C_eff, elastic_op, control, eps_bar, stress_goal_arr,
+                    toler_lin=toler_lin, maxiter=maxiter_cg,
+                )
+            else:
+                eps, sigma, delta, converged_mech = solve_lippmann_schwinger(
+                    n, C_eff, elastic_op, eps_bar,
+                    toler_lin=toler_lin, maxiter=maxiter_cg,
+                )
         elif formulation == "fourier_galerkin":
-            eps, sigma, delta, converged_mech = solve_fourier_galerkin(
-                n, C_eff, elastic_op, eps_bar,
+            eps, sigma, delta, eps_bar_cur, converged_mech = solve_fourier_galerkin(
+                n, C_eff, elastic_op, eps_bar, control, stress_goal_arr,
                 toler_lin=toler_lin, maxiter=maxiter_cg,
             )
         else:  # "displacement"
@@ -365,14 +367,6 @@ def solve_fracture_fixed(
         )
 
     control = control if control is not None else _ZERO_CONTROL
-    control_nonzero = any(any(row) for row in control)
-    if formulation in ("lippmann_schwinger", "fourier_galerkin") and control_nonzero:
-        raise ValueError(
-            f"formulation={formulation!r} cannot do stress-controlled "
-            "macroscopic BC (control has nonzero entries) -- it has no "
-            "reference medium to solve for stress-controlled directions "
-            "against, only pure strain BC; use formulation='displacement' instead"
-        )
     stress_goal_arr = jnp.zeros((3, 3)) if stress_goal is None else stress_goal
 
     pff_local_update = assemble_pff_local_update(materials, phase)
