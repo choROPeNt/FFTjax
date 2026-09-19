@@ -28,21 +28,38 @@ plain raise-on-first-non-convergence.
     shear    -- only the mode-II case
     both (default) -- run both, one after the other
 
-Not jax.vmap'd over the two cases: both solve_fracture's staggered loop
-(break on convergence) and solve_fixed's load-stepping loop (raise on
-non-convergence) are Python-level control flow over *traced* convergence
-values -- vmap requires every batch lane to take the same code path on
-different data, but tension and shear can genuinely need a different
-number of staggered iterations or fail to converge at a different step.
-Batching them would need the staggered/stepping loops rewritten around
+``--solvers`` selects which mechanical-solver configuration(s) of
+SOLVER_CONFIGS below to run for each selected loading case -- same
+(label, formulation, scheme) pattern as benchmark_3/elastic_solve_vtu.py's
+SOLVER_CONFIGS, now exercising problems.fracture.solve_fracture's
+formulation="fourier_galerkin" support alongside lippmann_schwinger (rotated
+and standard) and displacement:
+    all (default) -- every configured solver, sequentially
+    a comma-separated subset of labels, e.g. --solvers ls_rotated,galerkin
+
+Every selected (loading, solver) pair is a full independent 100-step
+staggered solve -- nothing is shared across solvers beyond the common
+geometry/material setup below. For each loading case, once all its solvers
+have run, every solver's stress-strain curve is plotted together against
+the reference curve on one combined figure, and a timing/summary table is
+printed and written to CSV.
+
+Not jax.vmap'd over loading cases or solvers: both solve_fracture's
+staggered loop (break on convergence) and solve_fixed's load-stepping loop
+(raise on non-convergence) are Python-level control flow over *traced*
+convergence values -- vmap requires every batch lane to take the same code
+path on different data, but different loadings/solvers can genuinely need a
+different number of staggered iterations or fail to converge at a different
+step. Batching them would need the staggered/stepping loops rewritten around
 lax.while_loop/lax.cond with a fixed iteration budget -- out of scope here;
-"both" just runs the two cases sequentially in one invocation.
+this script just runs every combination sequentially in one invocation.
 
 Usage
 -----
-    python benchmark/single_notch_plate/pff_single_notch.py
-    python benchmark/single_notch_plate/pff_single_notch.py --loading tension
-    python benchmark/single_notch_plate/pff_single_notch.py --loading shear
+    python benchmark/benchmark_1/pff_single_notch.py
+    python benchmark/benchmark_1/pff_single_notch.py --loading tension
+    python benchmark/benchmark_1/pff_single_notch.py --loading shear
+    python benchmark/benchmark_1/pff_single_notch.py --solvers ls_rotated,galerkin
 """
 
 import os
@@ -53,6 +70,7 @@ sys.path.insert(0, "src")
 
 import argparse
 import csv
+import time
 import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on TPU, no GPU prealloc)
 import jax
 import jax.numpy as jnp
@@ -123,17 +141,30 @@ LOADING_CASES = {
     ),
 }
 
+# (label, formulation, scheme) -- scheme selects GreenOperatorWillot vs.
+# GreenOperatorBasic for "lippmann_schwinger", and the equivalent rotated vs.
+# standard discretisation of the reference-medium-free projector for
+# "fourier_galerkin" (operators.galerkin.GalerkinProjector); passed through
+# unchanged for "displacement" too, where solve_fracture ignores it. Mirrors
+# benchmark_3/elastic_solve_vtu.py's SOLVER_CONFIGS.
+SOLVER_CONFIGS: list[tuple[str, str, str]] = [
+    ("ls_rotated",   "lippmann_schwinger", "rotated"),
+    ("ls_standard",  "lippmann_schwinger", "standard"),
+    ("displacement", "displacement",       "rotated"),
+    ("galerkin",     "fourier_galerkin",   "rotated"),
+]
 
-def run_case(name: str, case: dict) -> None:
-    print(f"\n=== {name} ===")
+
+def run_case(name: str, case: dict, solver_label: str, formulation: str, scheme: str) -> list[dict]:
+    print(f"\n=== {name}  [{solver_label}: formulation={formulation}, scheme={scheme}] ===")
     print(f"Grid     : {n}  (Nv = {Nv})   Domain: {L} mm")
     print(f"Crack    : x=[{x_crack[0]},{x_crack[1]}) mm  i=[{i_start},{i_end})  y={j_crack}  "
           f"({int((ms==1).sum())} voxels)")
     print(f"PFF      : l₀ = {l0} mm,  Gc = {Gc} MPa·mm  →  Gc/l₀ = {Gc/l0:.3g} MPa")
     print(f"Viscosity: η = {eta:.1e}  →  η/Δt = {eta/dt_step:.1e} MPa")
 
-    i, j = case["i"], case["j"]
-    jobname = case["jobname"]
+    i, j = int(case["i"]), int(case["j"])
+    jobname = f"{case['jobname']}__{solver_label}"
     d_init = jnp.zeros((Nv,))
     H_init = jnp.zeros((Nv,))
     history: list[dict] = []
@@ -141,12 +172,15 @@ def run_case(name: str, case: dict) -> None:
     def _report(r, write_time):
         sol = r.solution
         eps_bar, sigma_bar = homogenize(sol.eps, sol.sigma)
+        conv_mech = bool(sol.converged_mech)
+        conv_helm = bool(sol.converged_helm)
         print(
             f"  step {r.step:3d}  t={r.t:.3f}  "
             f"{case['comp_symbol']}={float(eps_bar[i, j]):.2e}  "
             f"{case['stress_symbol']}={float(sigma_bar[i, j]):.2f} MPa  "
             f"max(d)={float(jnp.max(sol.d)):.4f}  "
             f"st={sol.iter_staggered}  err_abs={sol.err_abs:.1e}  err_rel={sol.err_rel:.1e}  "
+            f"mech={'ok' if conv_mech else 'FAIL'}  helm={'ok' if conv_helm else 'FAIL'}  "
             f"time={r.wall_time + write_time:.1f}s"
         )
         history.append({
@@ -159,6 +193,7 @@ def run_case(name: str, case: dict) -> None:
             "sig_13": float(sigma_bar[0, 2]), "sig_23": float(sigma_bar[1, 2]),
             "max_d": float(jnp.max(sol.d)), "iter_st": sol.iter_staggered,
             "err_abs": sol.err_abs, "err_rel": sol.err_rel,
+            "converged_mech": conv_mech, "converged_helm": conv_helm,
             "wall_time_s": r.wall_time + write_time,
         })
 
@@ -177,7 +212,8 @@ def run_case(name: str, case: dict) -> None:
             n, L, phase, materials, case["eps_goal"], l0, Gc, d_init, H_init,
             stepping     = "fixed",
             dt_step      = dt_step,
-            scheme       = "rotated",
+            formulation  = formulation,
+            scheme       = scheme,
             toler_lin    = toler_lin, maxiter_cg=maxiter_cg,
             toler_helm   = toler_helm, maxiter_helm=maxiter_helm,
             eta          = eta, d_thres=d_thres,
@@ -196,36 +232,111 @@ def run_case(name: str, case: dict) -> None:
         writer.writerows(history)
     print(f"Written → {csv_path}")
 
-    ref = np.loadtxt(os.path.join(here, case["ref_csv"]), delimiter=",", skiprows=1)
+    return history
+
+
+# Distinct marker/colour per solver so the combined curves stay legible.
+_SOLVER_STYLE = {
+    "ls_rotated":   dict(color="tab:blue",   marker="o"),
+    "ls_standard":  dict(color="tab:orange", marker="s"),
+    "displacement": dict(color="tab:green",  marker="^"),
+    "galerkin":     dict(color="tab:red",    marker="d"),
+}
+
+
+def plot_combined(name: str, case: dict, results: dict[str, list[dict]]) -> None:
+    """One figure per loading case: reference curve plus every solver's
+    stress-strain curve, so all configured mechanical solvers can be
+    compared directly against each other and against Schneider & Kästner
+    (2025)."""
+    i, j = int(case["i"]), int(case["j"])
     eps_key = f"eps_{i+1}{j+1}"
     sig_key = f"sig_{i+1}{j+1}"
 
+    ref = np.loadtxt(os.path.join(here, case["ref_csv"]), delimiter=",", skiprows=1)
+
     fig, ax = plt.subplots(figsize=(6, 4))
     ax.plot(ref[:, 0], ref[:, 1], "k--", linewidth=1.2, label="Schneider & Kästner (2025)")
-    ax.plot([r[eps_key] for r in history], [r[sig_key] for r in history],
-            "b-o", markersize=3, linewidth=1.2, label="FFTjax")
+    for solver_label, history in results.items():
+        style = _SOLVER_STYLE.get(solver_label, {})
+        ax.plot([r[eps_key] for r in history], [r[sig_key] for r in history],
+                 color=style.get("color"), marker=style.get("marker"),
+                 markersize=3, linewidth=1.2, label=solver_label)
     ax.set_xlabel(case["xlabel"])
     ax.set_ylabel(case["ylabel"])
     ax.set_title(case["title"])
     ax.legend()
     ax.grid(True, linewidth=0.5, alpha=0.6)
     fig.tight_layout()
-    plot_path = f"{output}/{jobname}_comparison.png"
+    plot_path = f"{output}/{case['jobname']}_comparison_all_solvers.png"
     fig.savefig(plot_path, dpi=150)
     plt.close(fig)
     print(f"Written → {plot_path}")
+
+
+def print_summary(rows: list[dict]) -> None:
+    print(f"\n{'loading':<8} {'solver':<13} {'formulation':<19} {'scheme':<9} "
+          f"{'steps':>6} {'total time [s]':>15} {'final max(d)':>13} {'final stress [MPa]':>19} "
+          f"{'mech fails':>10} {'helm fails':>10}")
+    for r in rows:
+        print(f"{r['loading']:<8} {r['solver_label']:<13} {r['formulation']:<19} {r['scheme']:<9} "
+              f"{r['n_steps']:>6} {r['total_time_s']:>15.1f} {r['final_max_d']:>13.4f} "
+              f"{r['final_stress_MPa']:>19.2f} {r['n_mech_fail']:>10} {r['n_helm_fail']:>10}")
+
+    summary_path = f"{output}/solver_comparison_summary.csv"
+    with open(summary_path, "w", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=rows[0].keys())
+        writer.writeheader()
+        writer.writerows(rows)
+    print(f"\nWritten → {summary_path}")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--loading", choices=["tension", "shear", "both"], default="both",
                          help="which loading case(s) to run (default: both, run sequentially)")
+    parser.add_argument("--solvers", default="all",
+                         help="comma-separated SOLVER_CONFIGS labels to run, or 'all' (default): "
+                              + ", ".join(label for label, _, _ in SOLVER_CONFIGS))
     args = parser.parse_args()
 
     os.makedirs(output, exist_ok=True)
-    names = list(LOADING_CASES) if args.loading == "both" else [args.loading]
-    for name in names:
-        run_case(name, LOADING_CASES[name])
+    loading_names = list(LOADING_CASES) if args.loading == "both" else [args.loading]
+
+    if args.solvers == "all":
+        solver_configs = SOLVER_CONFIGS
+    else:
+        wanted = {s.strip() for s in args.solvers.split(",")}
+        solver_configs = [c for c in SOLVER_CONFIGS if c[0] in wanted]
+        missing = wanted - {c[0] for c in solver_configs}
+        if missing:
+            raise SystemExit(f"unknown --solvers label(s) {sorted(missing)}, expected one of "
+                              f"{[label for label, _, _ in SOLVER_CONFIGS]}")
+
+    summary_rows = []
+    for loading_name in loading_names:
+        case = LOADING_CASES[loading_name]
+        results: dict[str, list[dict]] = {}
+        for solver_label, formulation, scheme in solver_configs:
+            t0 = time.perf_counter()
+            history = run_case(loading_name, case, solver_label, formulation, scheme)
+            total_time_s = time.perf_counter() - t0
+            results[solver_label] = history
+
+            i, j = int(case["i"]), int(case["j"])
+            summary_rows.append({
+                "loading": loading_name, "solver_label": solver_label,
+                "formulation": formulation, "scheme": scheme,
+                "n_steps": len(history), "total_time_s": total_time_s,
+                "final_max_d": history[-1]["max_d"],
+                "final_stress_MPa": history[-1][f"sig_{i+1}{j+1}"],
+                "n_mech_fail": sum(not h["converged_mech"] for h in history),
+                "n_helm_fail": sum(not h["converged_helm"] for h in history),
+            })
+
+        plot_combined(loading_name, case, results)
+
+    print_summary(summary_rows)
 
 
 if __name__ == "__main__":
