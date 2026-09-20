@@ -144,7 +144,7 @@ def main():
         ("iter_staggered", "i4"), ("err_abs", "f8"), ("err_rel", "f8"),
         ("wall_time", "f8"), ("write_time", "f8"),
         ("eps_bar_voigt", "f8", (6,)), ("sigma_bar_voigt", "f8", (6,)),
-        ("d_max", "f8"),
+        ("d_max", "f8"), ("iter_nr", "i4"), ("alpha_max", "f8"),
     ])
     stats_rows = []
 
@@ -152,8 +152,12 @@ def main():
         sol = cast(FractureSolution, r.solution)
         eps_bar, sigma_bar = homogenize(sol.eps, sol.sigma)
         d_max = float(jnp.max(sol.d))
+        extra = ""
+        if sol.alpha is not None:
+            extra = (f"  nr={sol.iter_nr:2d}  mech={bool(sol.converged_mech)!s:5s}"
+                     f"  alpha_max={float(jnp.max(sol.alpha)):.3e}")
         print(f"  step {r.step:3d}  t={r.t:.4f}  dt={r.dt:.4f}  converged={bool(sol.converged)}  "
-              f"staggered_iters={sol.iter_staggered:3d}  d_max={d_max:.4f}  "
+              f"staggered_iters={sol.iter_staggered:3d}  d_max={d_max:.4f}{extra}  "
               f"solve={r.wall_time:.2f}s  write={write_time:.2f}s  "
               f"total={r.wall_time + write_time:.2f}s")
         # Voigt order: [11, 22, 33, 12, 13, 23]
@@ -166,7 +170,25 @@ def main():
             bool(sol.converged_mech), bool(sol.converged_helm),
             sol.iter_staggered, sol.err_abs, sol.err_rel,
             r.wall_time, write_time, eps_v, sigma_v, d_max,
+            -1 if sol.iter_nr is None else int(sol.iter_nr),
+            0.0 if sol.alpha is None else float(jnp.max(sol.alpha)),
         ))
+
+    # A stateful phase-field material (phasefield_drucker_prager) switches
+    # problems.fracture to its Newton mechanical sub-solve. Report it, because
+    # it changes which controls matter and which entry points are usable.
+    plastic = any(hasattr(m, "driving_force_field") for m in materials)
+    if plastic:
+        print(f"Solver : plastic phase present -> nonlinear (Newton) mechanical "
+              f"sub-solve, toler_nr={float(fcfg.get('toler_nr', 1e-8)):g}, "
+              f"maxiter_nr={int(fcfg.get('maxiter_nr', 50))}")
+    # Opt-in extra output: the plastic strain TENSOR eps_p (Voigt 6), on top of
+    # the scalar strain_p (= alpha) and plastic_work always written for a
+    # plastic phase. Same key and meaning as
+    # scripts/simulation/solve_inelastic.py's.
+    write_eps_p = bool(fcfg.get("write_plastic_strain_tensor", False))
+    if write_eps_p and plastic:
+        print("Output : writing the plastic strain tensor eps_p (Voigt 6) per increment")
 
     mode = scfg.get("mode", "single")
     with IncrementalWriter(stem, grid_shape=n, grid_length=L) as w:
@@ -182,6 +204,14 @@ def main():
             "strain_energy_pos": np.zeros(n),
             "orientation":  orientations_np.T.reshape(*n, 3).astype(np.float64),
         }
+        # Same field set as the later increments, so ParaView sees one
+        # consistent schema across the whole series rather than fields that
+        # appear at increment 1.
+        if plastic:
+            step0_fields["strain_p"] = np.zeros(n)
+            step0_fields["plastic_work"] = np.zeros(n)
+            if write_eps_p:
+                step0_fields["eps_p"] = np.zeros((*n, 6))
         w.write_increment(0, step0_fields, time=0.0)
 
         results = solve_fracture_incremental(
@@ -204,6 +234,13 @@ def main():
             toler_st_abs = float(fcfg.get("toler_st_abs", 1e-2)),
             toler_st_rel = float(fcfg.get("toler_st_rel", 1e-3)),
             maxiter_st   = int(fcfg.get("maxiter_st", 200)),
+            # Newton (mechanical) controls -- only used when a phase is a
+            # stateful phase-field material, which is what makes
+            # problems.fracture switch to its nonlinear sub-solve. Harmless
+            # otherwise: the linear path ignores them.
+            toler_nr     = float(fcfg.get("toler_nr", 1e-8)),
+            maxiter_nr   = int(fcfg.get("maxiter_nr", 50)),
+            write_plastic_strain_tensor = write_eps_p,
             dt_step      = scfg.get("dt_step"),
             dt_init      = float(scfg.get("dt_init", 0.1)),
             dt_min       = float(scfg.get("dt_min", 1e-4)),
