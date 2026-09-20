@@ -1,0 +1,83 @@
+# Square 2-fibre cell sized to the LIGAMENT AT THE ACTUAL DAMAGE SITE of the
+# large RVE — the correct target, after two wrong ones.
+#
+# ---------------------------------------------------------------------------
+# WHY THE EARLIER TARGETS WERE WRONG
+# ---------------------------------------------------------------------------
+# Attempt 1 aimed at the 1st percentile of the random RVE's ALL-PAIRS fibre gap
+# distribution. Wrong reference: most pairs in a 29-fibre cell are not
+# neighbours, so that distribution's median sat at 13 l0.
+#
+# Attempt 2 aimed at the 25th percentile of NEAREST-NEIGHBOUR gaps, 1.39 l0.
+# That distribution was itself corrupted -- it reported a NEGATIVE 1st
+# percentile, i.e. interpenetrating fibres, which is impossible. The cause was
+# measuring fibre radii as r = sqrt(A/pi) on x-perpendicular slices: the fibres
+# are INCLINED to x, so those cuts are ellipses of aspect ratio up to 2.56, and
+# that formula inflates the radius by up to 1.6x. Two inflated radii then sum
+# past the centre distance and produce a spurious negative gap. The whole
+# percentile table was distorted at the tight end and must not be reused.
+#
+# ---------------------------------------------------------------------------
+# THE MEASUREMENT THAT REPLACED THEM
+# ---------------------------------------------------------------------------
+# Measured directly at the damage hot spot of the 152^3 run's last written
+# increment, shape-agnostically: Euclidean distance from each highly-damaged
+# voxel to the nearest fibre, plus the distance to the nearest DIFFERENT fibre.
+# No circle assumption anywhere.
+#
+#     most-damaged voxel (132,121,1)  d_near1  4.12 vox   d_near2 15.91 vox
+#                                     ligament 20.03 vox = 5.01 l0
+#     mean of the top 100 voxels      d_near1  4.40       d_near2 16.07
+#                                     ligament 20.47 vox = 5.12 l0
+#
+#     same measure at random matrix voxels: median 5.74 l0, 10th pct 3.26 l0
+#     -> the hot spot sits at the 39TH PERCENTILE. It is ORDINARY.
+#
+# Two things follow, and both contradict the earlier cells:
+#
+#   1. The crack does NOT nucleate in a tight pair. It nucleates in an
+#      ordinary-width ligament, ~5 l0 across. Every cell built after the first
+#      was tightened in exactly the wrong direction; the original symmetric
+#      cell's 5.01 l0 was already right.
+#   2. The hot spot is NOT midway between two fibres. It sits 1.1 l0 off ONE
+#      fibre surface with the next fibre 4.0 l0 away -- a crack hugging a fibre
+#      pole, not a ligament bridging two.
+#
+# ---------------------------------------------------------------------------
+# THE RESULTING COMPROMISE, STATED PLAINLY
+# ---------------------------------------------------------------------------
+# In a body-centred square cell the SYMMETRIC position maximizes the minimum
+# gap, so every symmetry-breaking offset makes the ligament narrower. At phi
+# 0.0646 the symmetric cell already gives 4.85 l0 and the target is 5.12, so
+# the distance and the eccentricity pull against each other:
+#
+#     offset (vox)   min gap/l0   vs 5.12 target
+#     (0.5, 0.3)        5.02          -1.9%
+#     (1.0, 0.6)        4.90          -4.3%     <- chosen
+#     (1.5, 0.9)        4.75          -7.3%
+#     (3.0, 1.8)        4.32         -15.6%     (the old _offset cell)
+#
+# Holding phi exactly at the large RVE's 0.0646 and taking offset (1.0, 0.6)
+# gives 4.90 l0: within 2% of the argmax ligament (5.01) and 4% of the top-100
+# mean (5.12), and inside the spread of the measurement itself, which ranges
+# 4.94-5.27 l0 depending on how many top voxels are averaged. The alternative
+# was dropping phi to 0.059 to hit 5.14 exactly, trading an 8.7% phi error for
+# a 4% distance error -- not worth it, phi is a hard match worth keeping.
+#
+# The offset is small (2.5% / 1.5% of the cell side) and that is fine: symmetry
+# breaking is binary, and this geometry is verified to differ from the
+# symmetric one. It is a weaker selection than the earlier cells had, which is
+# the price of putting the ligament where the real crack actually forms.
+
+geometry:
+  phi:       0.0646         # EXACTLY the large RVE's measured value
+  r_fib:     0.0070         # mm -- its measured equivalent fibre radius
+  vox:       0.001729443    # mm -- its own voxel size, L/152
+  N_min:     32
+  nz:        40             # cube, 40^3 = 64000 voxels
+  offset_vox: [1.0, 0.6]    # -> min gap 4.90 l0, max 5.16 l0
+  fibre_dir: [0.0, 0.0, 1.0]
+  Vf_yarn:   1.0
+
+output:  sim/sim/11_mini_square
+jobname: "rve_square_2fibre_hotgap"
