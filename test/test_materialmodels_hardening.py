@@ -262,13 +262,26 @@ raises(lambda: J2Plasticity(E=E, nu=NU, sigma_y0=SY0, H=H_LIN, hardening=pw), "m
 raises(lambda: J2Plasticity(E=E, nu=NU), "needs a hardening law")
 raises(lambda: J2Plasticity(E=E, nu=NU, sigma_y0=1.0, hardening=pw), "contradicts")
 raises(lambda: DruckerPrager(E=E, nu=NU, hardening=pw), "a_f is required")
-# a smooth law has no affine segments, so it cannot use the tip-rounded branch
-raises(lambda: DruckerPrager(E=E, nu=NU, hardening=voce, a_f=0.13, a_tip=5.0),
-       "not piecewise affine")
-# ...but the tabulated one can
-DruckerPrager(E=E, nu=NU, hardening=pw, a_f=0.13, a_g=0.05, a_tip=0.1 * SY0)
-print("[7] 11 validation errors raise as documented (transposed table, softening, "
-      "H+hardening, missing a_f, smooth law with a_tip, ...)")
+# A smooth law with a_tip > 0 used to raise here ("not piecewise affine"):
+# the tip-rounded branch solved for q per affine segment, so it needed the
+# law decomposed into segments. It now solves for the plastic multiplier and
+# only ever evaluates sigma_y/dsigma_y, so BOTH of these are valid -- and the
+# smooth one has to actually work, not merely construct, which is what the
+# on-surface assertion below checks (test_materialmodels_drucker_prager's
+# check 14 covers it across every flow regime).
+for law_7, tag_7 in ((voce, "smooth"), (pw, "tabulated")):
+    dp_7 = DruckerPrager(E=E, nu=NU, hardening=law_7, a_f=0.13, a_g=0.05,
+                         a_tip=0.1 * SY0)
+    eps_7 = jnp.array([[0.02, 0.004, 0.0], [0.004, -0.005, 0.0], [0.0, 0.0, -0.005]])
+    sig_7, (ep_7, al_7) = dp_7.stress(eps_7, jnp.zeros((3, 3)), jnp.asarray(0.0))
+    p_7 = jnp.trace(sig_7) / 3.0
+    q_7 = jnp.sqrt(1.5 * jnp.sum((sig_7 - p_7 * jnp.eye(3)) ** 2))
+    f_7 = (jnp.sqrt(q_7 ** 2 + (0.1 * SY0) ** 2) + 3.0 * 0.13 * p_7
+           - law_7.sigma_y(al_7))
+    assert float(al_7) > 1e-12, f"{tag_7} law: state is elastic, nothing tested"
+    assert abs(float(f_7)) < 1e-6 * SY0, f"{tag_7} law with a_tip: f = {float(f_7)}"
+print("[7] 10 validation errors raise as documented (transposed table, softening, "
+      "H+hardening, missing a_f, ...), and a smooth law now runs WITH a_tip")
 print("[7] PASSED")
 
 
