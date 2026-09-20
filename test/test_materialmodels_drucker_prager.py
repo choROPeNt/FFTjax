@@ -53,15 +53,21 @@ Thirteen checks
    table breakpoint within one return -- the case the closed form does a
    segment search to get right.
 12. Tabulated hardening AND tip rounding together: the one branch both
-   features touch, where a table turns the single scalar q-solve into one
-   per affine segment plus a selection. Tangent checked only WITHIN a
-   segment, since a piecewise-linear law is genuinely kinked at its
-   breakpoints.
+   features touch. Tangent checked only WITHIN a segment, since a
+   piecewise-linear law is genuinely kinked at its breakpoints.
 13. The response follows the TABLE: checks 11/12 verify f = 0 against the
    law the model was handed, this verifies the law is the one the config
    asked for -- a monotone uniaxial sweep must trace the tabulated curve
    through both slopes and onto the plateau, and must be distinguishable
    from the linear law it replaces.
+14. A SMOOTH (Voce) hardening law, on the sharp AND the rounded tip. The
+   tip-rounded return used to need sigma_y piecewise affine -- it decomposed
+   the law into segments and pre-selected the one holding the root -- and
+   rejected anything else at construction. It now solves for the plastic
+   multiplier, where xi is explicit in the unknown and only sigma_y/dsigma_y
+   are ever evaluated, so any law works. This asserts the functionality that
+   bought, across all three flow regimes including a_g = 0, where Voce's
+   saturation makes the _unreachable limit live.
 
 Usage
 -----
@@ -82,6 +88,7 @@ import numpy as np
 from generation.rve import make_square_composite_rve
 from materialmodels.assembly import assemble_local_update
 from materialmodels.elastic.isotropic import LinearElasticIsotropic
+from materialmodels.inelastic.hardening import build_hardening
 from materialmodels.inelastic.plasticity_drucker_prager import DruckerPrager
 from materialmodels.inelastic.plasticity_j2 import J2Plasticity
 from operators.green import build_freq_grid
@@ -555,5 +562,60 @@ assert gap_13 > 1.0, (
     "-- check 13 cannot tell them apart, so it is not testing the table"
 )
 print("[13] PASSED")
+
+
+# ── 14. a SMOOTH hardening law, with and without tip rounding ───────────────
+# The tip-rounded return used to decompose sigma_y into affine segments and
+# pre-select the one holding the root, so a law that is not piecewise affine
+# was rejected at construction. It now solves for the plastic multiplier
+# directly, where xi is explicit in the unknown and only sigma_y/dsigma_y are
+# ever evaluated -- so a smooth law is just another law. This is the
+# functionality that change bought, so it is asserted rather than assumed.
+#
+# Voce is the case that matters: it SATURATES, so (unlike linear hardening)
+# sigma_y_max is finite and the a_g = 0 / deep-tension limit _unreachable
+# guards is live for it, exactly as it is for a tabulated law's plateau.
+
+voce_law = build_hardening({"law": "voce", "sigma_y0": SY, "Q": 40.0, "b": 60.0})
+assert voce_law.affine_segments() is None, (
+    "VoceHardening reports affine segments -- check 14 is then not testing the "
+    "non-piecewise-affine path at all"
+)
+assert np.isclose(float(voce_law.sigma_y_max), SY + 40.0)
+
+worst_f14 = 0.0
+n_pl14 = 0
+for a_tip14 in (0.0, 0.1 * SY):
+    for a_g14 in (A_F, 0.05, 0.0):
+        dp14 = DruckerPrager(E=E, nu=NU, a_f=A_F, a_g=a_g14, a_tip=a_tip14,
+                             hardening=build_hardening(
+                                 {"law": "voce", "sigma_y0": SY,
+                                  "Q": 40.0, "b": 60.0}))
+        eps14 = jnp.array(rng.normal(scale=0.015, size=(240, 3, 3)))
+        eps14 = 0.5 * (eps14 + jnp.transpose(eps14, (0, 2, 1)))
+        al14 = jnp.array(rng.uniform(0.0, 0.05, size=240))
+        sig14, C14, (ep14, alnew14) = jax.vmap(dp14.stress_and_tangent)(
+            eps14, jnp.zeros((240, 3, 3)), al14)
+        # Unreachable states are NaN by design (see DruckerPrager._unreachable);
+        # exclude them, and require that the rest are genuinely finite.
+        ok = jnp.all(jnp.isfinite(sig14), axis=(1, 2))
+        plastic14 = ok & (alnew14 > al14 + 1e-12)
+        n_pl14 += int(jnp.sum(plastic14))
+        q14, p14 = _q_p(sig14)
+        f14 = (jnp.sqrt(q14 ** 2 + a_tip14 ** 2) + 3.0 * A_F * p14
+               - voce_law.sigma_y(alnew14))
+        worst_f14 = max(worst_f14, float(jnp.max(jnp.abs(
+            jnp.where(plastic14, f14, 0.0)))))
+        assert bool(jnp.all(jnp.isfinite(jnp.where(
+            ok[:, None, None, None, None], C14, 0.0)))), (
+            f"non-finite tangent at a_tip={a_tip14}, a_g={a_g14}")
+
+print(f"[14] smooth (Voce) law: {n_pl14} plastic states over sharp AND rounded "
+      f"tips, max|f| = {worst_f14:.2e} (sigma_y0={SY:g})")
+assert n_pl14 > 400, (
+    f"only {n_pl14} plastic states -- check 14 is barely exercising the return"
+)
+assert worst_f14 < 1e-6 * SY, worst_f14
+print("[14] PASSED")
 
 print("\ntest_materialmodels_drucker_prager: all checks passed")

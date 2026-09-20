@@ -95,11 +95,14 @@ class IsotropicHardening:
         intervals on which sigma_y is exactly affine, or ``None`` if the law
         is not piecewise affine.
 
-        Only DruckerPrager's tip-rounded branch needs this: it runs its own
-        Newton in q and needs the per-segment affine coefficients to set it
-        up (see _stress_hyperbolic). A law returning None simply cannot be
-        combined with ``a_tip > 0`` until that branch grows a general nested
-        solve -- rejected at construction, not silently.
+        Nothing requires this any more. DruckerPrager's tip-rounded branch
+        used to: it solved for q per affine segment and pre-selected the one
+        holding the root, so a law returning None was rejected at
+        construction. That branch now solves for the plastic multiplier
+        instead, where only sigma_y/dsigma_y are ever evaluated (see
+        plasticity_drucker_prager._solve_dlam_hyperbolic), so a non-affine law
+        is no longer a special case. Kept because it still describes a real
+        property of a law, and a future consumer may want it.
         """
         return None
 
