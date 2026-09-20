@@ -1,0 +1,201 @@
+# TRANSVERSE fracture of the UNIDIRECTIONAL RVE, PP matrix.
+#
+# 152^3, L = 0.2629 mm, phi = 0.065, fibres running along X (verified: the
+# phase fraction varies only 1.46x along x against 7.5x along y and z).
+# Loaded in Y -- transverse to the fibres -- with X and Z traction-free.
+#
+# ---------------------------------------------------------------------------
+# WHY THIS GEOMETRY AND THIS DIRECTION
+# ---------------------------------------------------------------------------
+# The tangled RVE could not complete a crack, and the measured reason is that
+# the fibres BRIDGE it. Imposing a full matrix crack there (a 3-voxel y-z slab
+# at d = 1.0) changed the stiffness of a crack-opening mode by 0.1%, because
+# 4527 damage-immune fibre voxels (k_res = 1.0) sit in the band and carry it at
+# full 70 GPa. So the matrix cracks, the fibres hold the cell together, and the
+# solve is left with matrix at g ~ 1e-6 pressed directly against 70 GPa fibre
+# -- a local contrast of ~1e8 on the crack faces, which is the best candidate
+# for why the Newton solve stopped converging there.
+#
+# Loading a UD RVE TRANSVERSELY puts the crack in the matrix BETWEEN fibres,
+# where there is nothing to bridge it. That is the matrix-dominated failure
+# mode this material model is actually built for, and it is the clean test of
+# whether a crack can complete at all.
+#
+# It also makes d_cap load-bearing for the first time. Without fibre bridging a
+# fully cracked band CAN sever the periodic cell, and the two halves could then
+# slide at zero energy cost -- an extra null mode on top of the three rigid
+# translations, making the linearized system Newton solves genuinely singular.
+# d_cap = 0.975 leaves g = 6.3e-4, i.e. ~0.9 MPa of residual stiffness across
+# the band: effectively cracked, but not a null mode. (In the tangled case the
+# cap was inert, because d never reached it.)
+#
+# Fibres are elastic and unbreakable here, which is appropriate for transverse
+# loading -- fibre failure is an axial mode. An axial test would need a
+# breakable fibre phase, which this package does not have.
+
+fracture:
+  input: sim/sim/01_uni/ReVE_num_fibers=20_uni.vti
+  phase_key: labels
+
+  materials:
+    - model: phasefield_drucker_prager
+      E:        1400.0            # MPa  -- as the existing PP run on this RVE
+      nu:       0.39
+      sigma_y0: 17.0              # MPa  -> sigma_t = 15.04, sigma_c = 19.54
+      H:        250.0             # MPa
+      a_f:      0.13
+      a_g:      0.05
+      # a_tip: the existing PP run on this geometry uses 5.61, and it matters
+      # MORE with damage than without: degradation drives the transmitted
+      # stress toward zero, so the tangent is already badly conditioned, and a
+      # sharp cone vertex on top of that is what makes the inner CG fail.
+      a_tip:    5.61              # = 0.33*sigma_y0, p_tip = 29.2 MPa
+
+      Gc:         2.76712e-2      # N/mm -- = 4.0 * l0, see the header
+      sigma_crit: 22.0            # MPa  -- damage initiation; above sigma_t,
+                                   #         so the matrix must yield first
+      beta_p:     3.0             # plastic work drives the crack
+      k_res:      1.0e-6
+      name:       PP matrix (Drucker-Prager + phase field)
+
+    - model: isotropic_elastic
+      E:     70000.0              # MPa
+      nu:    0.20
+      k_res: 1.0                  # damage-immune fibre
+      Gc:    2.76712e-2           # kept equal to the matrix so the cheaper
+                                   # homogeneous-Gc damage solver is used
+      name:  glass fibre
+
+  eps_bar:                        # TRANSVERSE tension (Y), fibres run along X
+    - [0.0, 0.0,    0.0]
+    - [0.0, 2.0e-2, 0.0]
+    - [0.0, 0.0,    0.0]
+
+  # Traction-free transverse, as the existing runs on this RVE use. It matters
+  # for a pressure-sensitive matrix: clamping the transverse directions
+  # confines it and inflates the tension/compression asymmetry.
+  # Traction-free along the fibre axis (X) and the other transverse
+  # direction (Z); Y is strain-controlled. 1 = stress-controlled.
+  control:
+    - [1, 0, 0]
+    - [0, 0, 0]
+    - [0, 0, 1]
+  stress_bar:
+    - [0.0, 0.0, 0.0]
+    - [0.0, 0.0, 0.0]
+    - [0.0, 0.0, 0.0]
+
+  l0: 6.9178e-3     # mm = 4 * voxel (1.7294e-3). Changing this REQUIRES
+                    # rescaling Gc with it -- see the header.
+
+  formulation:  displacement      # required for a stateful phase-field material
+
+  # ---------------------------------------------------------------------------
+  # DOUBLE PRECISION. Single was tried and abandoned -- see below.
+  # ---------------------------------------------------------------------------
+  # float32 was measured on this exact problem and gave NO net speedup, so the
+  # accuracy it costs buys nothing:
+  #
+  #   cumulative wall to t = 0.225 (same state, d_max ~ 0.19)
+  #     fp64   559.6 s   (3 load steps, 68.7 s per staggered sweep)
+  #     fp32   555.2 s   (4 load steps, 43.6 s per staggered sweep)
+  #
+  # fp32 IS 1.58x faster per sweep -- but its looser tolerances force smaller
+  # load steps and an extra cutback, which cancels the gain to within 0.8%.
+  # The solve is bandwidth- and reduction-bound rather than FLOP-bound, so the
+  # GeForce FP64 penalty (1/64 rate on an RTX 5090) was never the binding
+  # constraint; halving the bytes does not help the kernel-launch latency and
+  # global CG reductions that dominate.
+  #
+  # What it would have cost: on THIS grid fp32 cannot resolve a relative
+  # residual below ~1.6e-4, because the spectral divergence (a multiply by
+  # i*xi) amplifies round-off by ~max|xi| = 1341x before the Newton ratio is
+  # formed. Measured floors, which are GRID-DEPENDENT (they scale as N/L, so a
+  # FINER grid needs a LOOSER fp32 tolerance, not a tighter one):
+  #
+  #     grid    amplification   fp64 floor   fp32 floor
+  #      32^3        262x         5.6e-14      3.1e-05
+  #      64^3        544x         1.2e-13      6.5e-05
+  #     152^3       1341x         2.9e-13      1.6e-04
+  #
+  # So fp32 would have capped macroscopic equilibrium at ~1e-3 relative,
+  # against ~1e-6 here, for a 0.8% wall-clock difference. Not a trade worth
+  # making. (The first fp32 attempt set toler_nr = 1e-5 -- BELOW that floor --
+  # and every Newton solve failed at the first increment, in the elastic
+  # regime, with d_max still 0. If you retry single precision, set the
+  # tolerance from the floor above, not from eps.)
+  toler_lin:    1.0e-7
+  maxiter_cg:   500
+
+  toler_nr:     1.0e-6
+  maxiter_nr:   30
+
+  toler_helm:   1.0e-5
+  maxiter_helm: 300
+
+  eta: 1.0e-6
+  d_thres: 0.95
+
+  # Ceiling on the damage field. This is a CONDITIONING regularization and a
+  # deliberate modelling change, not a numerical detail:
+  #
+  #   d_cap   g(d) = (1-d)^2 + k_res   stiffness contrast 1/g
+  #   1.000   1.0e-6                   1.0e6     <- AT2 as written
+  #   0.999   2.0e-6                   5.0e5
+  #   0.975   6.3e-4                   1.6e3     <- 625x less contrast
+  #
+  # The runs that failed did so once d reached 1.0: the degraded tangent
+  # collapses toward k_res*C, the inner CG grinds to its iteration cap and the
+  # Newton solve stops converging (see materialmodels/phasefield/
+  # drucker_prager.py -- the cause of that failure is documented but NOT
+  # established). Holding d at 0.975 keeps the operator non-degenerate.
+  #
+  # The price: a crack never fully opens. It keeps 0.06% of its stiffness, so
+  # it transmits a small spurious stress and the dissipated energy is slightly
+  # under-counted. Any result from this config should state d_cap alongside it.
+  d_cap: 0.975
+
+  # Loosened from the demo's 1e-4/1e-5: on 3.5M voxels the staggered loop is
+  # the dominant cost (it climbed from 12 to 44 iterations near snap-through on
+  # a 9k-voxel RVE), and each iteration here is a full Newton solve.
+  toler_st_abs: 1.0e-3
+  toler_st_rel: 1.0e-4
+  maxiter_st:   40
+
+  # Staggered accelerator (solvers/damage/anderson.py). Plain Picard staggering
+  # degrades badly as the crack localizes -- on THIS run the sweep count per
+  # increment went 1, 3, 5, 15 and then stalled, and each sweep here is a full
+  # Newton solve (~41 s on this grid), so 15 sweeps is 24 minutes for one
+  # increment. Measured on the coupled solver pre-severance, either accelerator
+  # cuts 11 sweeps to 4 (2.75x) while reaching the same state to 6e-5 MPa.
+  #   accelerator: none      (default) plain Picard, bit-for-bit as before
+  #   accelerator: anderson  Anderson mixing, Type-II; accel_beta damps it
+  #   accelerator: ngmres    Nonlinear GMRES (DAMASK's -snes_type ngmres)
+  # accel_depth is the history window; deeper helps more on a stalled fixed
+  # point but costs a slightly larger dense least-squares solve per sweep
+  # (negligible: O(depth^2) dot products against a whole Newton solve).
+  accelerator:  ngmres
+  accel_depth:  5
+  # accel_beta: 1.0          # anderson only; < 1 damps the step
+
+  stepping:
+    mode:         automatic
+    dt_init:      0.05
+    dt_min:       1.0e-4
+    dt_max:       0.10
+    factor_inc:   1.5
+    factor_dec:   0.5
+    max_cutbacks: 4      # capped: post-crack a Newton failure would otherwise
+                         # burn 8 x ~40 min before raising. The writer is
+                         # incremental, so a mid-run stop still leaves every
+                         # accepted increment on disk.
+    max_steps:    60
+
+  # tr(eps_p) carries the plastic volume change that a_g = 0.05 produces and
+  # alpha alone cannot see. Costs one (152^3, 6) float64 field per increment
+  # (~1.0 GB per 25 increments) -- the plain DP runs on this RVE are already
+  # 22 GB, so budget disk before enabling.
+  # write_plastic_strain_tensor: true
+
+output:  sim/sim/01_uni
+jobname: "ReVE_num_fibers=20_uni_fracture_PP_transverse"
