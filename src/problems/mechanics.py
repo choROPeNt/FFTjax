@@ -439,9 +439,12 @@ def solve_displacement_based_nonlinear(
         return sm
 
     def sm2sv(sm):
+        # Adjoint of sv2sm (sm[i, j] + sm[j, i] off the diagonal), which keeps
+        # stress-controlled shear rows symmetric -- see
+        # solvers.elliptic.vector.displacement_based's sm2sv.
         if not pairs:
             return jnp.zeros((0,), dtype=sm.dtype)
-        return jnp.stack([sm[i, j] for i, j in pairs])
+        return jnp.stack([sm[i, j] if i == j else sm[i, j] + sm[j, i] for i, j in pairs])
 
     def unpack(x_flat):
         du = x_flat[: 3 * Nv].reshape(3, Nv)

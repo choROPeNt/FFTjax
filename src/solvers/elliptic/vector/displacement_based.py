@@ -106,9 +106,17 @@ def solve_displacement_based(
         return sm
 
     def sm2sv(sm):
+        # The ADJOINT of sv2sm, not its inverse: sv2sm writes an off-diagonal
+        # unknown into both (i, j) and (j, i), so the stress it is conjugate
+        # to is sm[i, j] + sm[j, i]. Picking sm[i, j] alone leaves every
+        # stress-controlled SHEAR row of the bordered operator at half its
+        # transpose (1.8e-2 relative asymmetry on a 3^3 heterogeneous probe,
+        # 2e-16 with the sum), which cg_solve does not tolerate. Diagonal
+        # pairs are unchanged, and the equations solved are too: the residual,
+        # the RHS and the preconditioner all go through this same map.
         if not pairs:
             return jnp.zeros((0,), dtype=sm.dtype)
-        return jnp.stack([sm[i, j] for i, j in pairs])
+        return jnp.stack([sm[i, j] if i == j else sm[i, j] + sm[j, i] for i, j in pairs])
 
     def unpack(x_flat):
         du = x_flat[: 3 * Nv].reshape(3, Nv)

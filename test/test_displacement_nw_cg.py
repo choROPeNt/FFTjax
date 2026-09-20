@@ -211,4 +211,37 @@ assert bool(conv_u)  # regression guard: the sign bug made this never converge
 assert abs(float(sigma_mean[0, 0]) - sigma_11_goal) < 1e-4
 assert abs(float(sigma_mean[1, 1])) < 1e-4
 assert abs(float(sigma_mean[2, 2])) < 1e-4
+print("PASSED\n")
+
+# ── Case 5 — heterogeneous, stress-controlled SHEAR ──────────────────────────
+# Uniaxial tension of an anisotropic cell: eps_11 prescribed, EVERY other
+# component (shear included) stress-free. Layers inclined at 45 deg in the
+# x-y plane couple normal loading into shear, so a correct solve needs a
+# nonzero macroscopic eps_12. Functional check only: sm2sv now returns the
+# adjoint of sv2sm (sigma_ij + sigma_ji off the diagonal), which makes the
+# bordered operator exactly symmetric (probed on a 3^3 cell: 1.8e-2 relative
+# asymmetry before, 2e-16 after). This well-conditioned elastic case still
+# converged with the old, asymmetric rows, so it does NOT catch that bug.
+print("── Case 5: heterogeneous, stress-controlled shear ───────────────────")
+
+ix, iy, _ = np.meshgrid(*[np.arange(8)] * 3, indexing="ij")
+phase_layers = jnp.array((((ix + iy) % 4) < 2).astype(int).ravel())
+C_field_layers = assemble_C_field([mat, mat2], phase_layers)
+control = ((0, 1, 1), (1, 1, 1), (1, 1, 1))
+eps_bar_guess = jnp.zeros((3, 3)).at[0, 0].set(1e-3)
+
+eps_u, sigma_u, delta_u, eps_bar_out, conv_u = solve_displacement_based(
+    n_het, C_field_layers, xi_flat_het, eps_bar_guess, control, jnp.zeros((3, 3)),
+    toler_lin=1e-10, maxiter=2000,
+)
+sigma_mean = jnp.mean(sigma_u, axis=-1)
+free = np.array(control, dtype=bool)
+print(f"disp-based CG : converged={bool(conv_u)}")
+print(f"mean sigma_11 = {float(sigma_mean[0, 0]):.4f}   max |free sigma| = "
+      f"{float(jnp.max(jnp.abs(sigma_mean[free]))):.3e}")
+print(f"macroscopic eps_12 = {float(eps_bar_out[0, 1]):.4e}  eps_22 = {float(eps_bar_out[1, 1]):.4e}")
+
+assert bool(conv_u)
+assert float(jnp.max(jnp.abs(sigma_mean[free]))) < 1e-6 * abs(float(sigma_mean[0, 0]))
+assert abs(float(eps_bar_out[0, 1])) > 1e-5    # the layering must actually shear
 print("PASSED")
