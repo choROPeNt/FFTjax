@@ -100,6 +100,31 @@ def test_helmholtz_heterogeneous_distributed_matches_single_device():
     assert bool(converged)
 
 
+@pytest.mark.parametrize("het", [False, True])
+def test_helmholtz_separate_floor_and_viscous_reference_distributed(het):
+    """d_floor and x0 apart from d_prev (the staggered loop's viscous
+    reference is the increment's damage, its floor the previous sweep's) must
+    reach the sharded solve too -- and must change the answer, so the
+    comparison is not between two solves that both ignored them."""
+    _require_multi_device()
+    xi_flat = build_freq_grid(N, L)
+    rng = np.random.default_rng(4)
+    H_field = jnp.asarray(np.abs(rng.standard_normal(NV)))
+    d_n = jnp.asarray(0.1 * rng.random(NV))                   # viscous reference
+    d_floor = jnp.asarray(np.clip(np.asarray(d_n) + 0.5 * rng.random(NV), 0, 1))
+    Gc = (jnp.asarray(1.0e-3 * (1.0 + 0.5 * rng.integers(0, 2, size=NV)))
+          if het else 1.0e-3)
+    solver = solve_damage_helmholtz_cg_het if het else solve_damage_helmholtz_cg
+    kw = dict(toler_cg=1e-10, maxiter=500, eta=0.5, dt=0.1)
+
+    d, converged = _compare(solver, H_field, xi_flat, N, 1.0, Gc, d_n,
+                            d_floor=d_floor, x0=d_floor, **kw)
+    assert bool(converged)
+    assert bool(jnp.all(d >= d_floor))
+    d_default, _ = solver(H_field, xi_flat, N, 1.0, Gc, d_n, n_devices=None, **kw)
+    assert float(jnp.max(jnp.abs(d - d_default))) > 1e-3
+
+
 def test_thermal_conduction_pure_gradient_bc_distributed_matches_single_device():
     _require_multi_device()
     xi_flat = build_freq_grid(N, L)
@@ -143,6 +168,8 @@ def test_thermal_conduction_mixed_flux_bc_distributed_matches_single_device():
 if __name__ == "__main__":
     test_helmholtz_homogeneous_distributed_matches_single_device()
     test_helmholtz_heterogeneous_distributed_matches_single_device()
+    test_helmholtz_separate_floor_and_viscous_reference_distributed(False)
+    test_helmholtz_separate_floor_and_viscous_reference_distributed(True)
     test_thermal_conduction_pure_gradient_bc_distributed_matches_single_device()
     test_thermal_conduction_mixed_flux_bc_distributed_matches_single_device()
     print(f"ok -- backend={jax.default_backend()}  local_device_count={jax.local_device_count()}")

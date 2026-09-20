@@ -44,6 +44,8 @@ def solve_damage_helmholtz_cg(
     dt: float = 1.0,
     k: float | jnp.ndarray = 0.0,
     n_devices: int | None = None,
+    d_floor: jnp.ndarray | None = None,
+    x0: jnp.ndarray | None = None,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """
     Preconditioned CG solve of the AT2 Helmholtz damage equation with
@@ -74,7 +76,7 @@ def solve_damage_helmholtz_cg(
     broad zone). With η > 0 the crack grows gradually from the notch tip,
     allowing it to fully sever the domain before σ drops to zero.
 
-    Irreversibility is enforced post-solve: d = max(d_prev, d_cg).
+    Irreversibility is enforced post-solve: d = max(d_floor, d_cg).
 
     Parameters
     ----------
@@ -83,8 +85,15 @@ def solve_damage_helmholtz_cg(
     n        : tuple       grid shape -- must be static for JIT
     l0       : float       phase-field length scale
     Gc       : float       critical energy release rate (homogeneous)
-    d_prev   : (Nv,)      damage from the previous iteration (initial guess
-                           AND irreversibility floor)
+    d_prev   : (Nv,)      dₙ, the damage at the last CONVERGED increment -- the
+                           viscous term's reference. Inside a staggered loop
+                           this must be the increment's starting damage, not
+                           the previous sweep's, or the viscous term vanishes
+                           at the fixed point (see problems.fracture.
+                           _staggered_loop). Also the default for d_floor and x0
+    d_floor  : (Nv,) or None  irreversibility floor, d = max(d_floor, d_cg);
+                           None uses d_prev
+    x0       : (Nv,) or None  CG initial guess; None uses d_floor
     toler_cg : float       CG relative residual tolerance
     maxiter  : int         max CG iterations -- must be static for JIT
     eta      : float       viscosity η (default 0 -> no regularisation)
@@ -120,10 +129,13 @@ def solve_damage_helmholtz_cg(
     d          : (Nv,)        updated damage field in [0, 1]
     converged  : bool array   True if residual tolerance met
     """
+    floor = d_prev if d_floor is None else d_floor
+    x0 = floor if x0 is None else x0
     resolved_n_devices = choose_device_count(n, n_devices)
     if resolved_n_devices > 1:
         return _solve_damage_helmholtz_cg_sharded(
-            H_field, xi_flat, n, l0, Gc, d_prev, toler_cg, maxiter, eta, dt, k, resolved_n_devices,
+            H_field, xi_flat, n, l0, Gc, d_prev, floor, x0, toler_cg, maxiter, eta, dt, k,
+            resolved_n_devices,
         )
 
     xi_sq = jnp.sum(xi_flat ** 2, axis=0)   # |ξ|²  (Nv,) -- even power, no Nyquist issue
@@ -149,13 +161,13 @@ def solve_damage_helmholtz_cg(
 
     bb = driving + eta_dt * d_prev
 
-    d_cg, converged = cg_solve(A_op, bb, d_prev, toler_cg, maxiter, M=P_op)
+    d_cg, converged = cg_solve(A_op, bb, x0, toler_cg, maxiter, M=P_op)
 
-    d = jnp.maximum(d_prev, d_cg)
+    d = jnp.maximum(floor, d_cg)
     return jnp.clip(d, 0.0, 1.0), converged
 
 
-def _solve_damage_helmholtz_cg_sharded(H_field, xi_flat, n, l0, Gc, d_prev, toler_cg, maxiter, eta, dt, k, n_devices):
+def _solve_damage_helmholtz_cg_sharded(H_field, xi_flat, n, l0, Gc, d_prev, d_floor, x0, toler_cg, maxiter, eta, dt, k, n_devices):
     """
     Fully domain-decomposed counterpart of ``solve_damage_helmholtz_cg``'s CG
     solve, for ``n_devices > 1``. No DC-bin macroscopic-correction trick is
@@ -181,9 +193,11 @@ def _solve_damage_helmholtz_cg_sharded(H_field, xi_flat, n, l0, Gc, d_prev, tole
     driving_sharded = split_x_slabs(driving, n_devices)
     xi_sq_sharded = split_x_slabs(xi_sq, n_devices)
     d_prev_sharded = split_x_slabs(d_prev, n_devices)
+    d_floor_sharded = split_x_slabs(d_floor, n_devices)
+    x0_sharded = split_x_slabs(x0, n_devices)
     P_denom_sharded = split_x_slabs(P_denom, n_devices)
 
-    def solve_local(driving_local, xi_sq_local, d_prev_local, P_denom_local):
+    def solve_local(driving_local, xi_sq_local, d_prev_local, d_floor_local, x0_local, P_denom_local):
         def fft_(v):
             return pfft3d_flat(v, n_local, "i")
 
@@ -199,12 +213,12 @@ def _solve_damage_helmholtz_cg_sharded(H_field, xi_flat, n, l0, Gc, d_prev, tole
             return ifft_(fft_(v_flat) / P_denom_local)
 
         bb = driving_local + eta_dt * d_prev_local
-        d_cg, converged = cg_solve_pmap(A_op, bb, d_prev_local, toler_cg, maxiter, axis_name="i", M=P_op)
-        d_local = jnp.maximum(d_prev_local, d_cg)
+        d_cg, converged = cg_solve_pmap(A_op, bb, x0_local, toler_cg, maxiter, axis_name="i", M=P_op)
+        d_local = jnp.maximum(d_floor_local, d_cg)
         return jnp.clip(d_local, 0.0, 1.0), converged
 
     d_sharded, converged_sharded = jax.pmap(solve_local, axis_name="i")(
-        driving_sharded, xi_sq_sharded, d_prev_sharded, P_denom_sharded,
+        driving_sharded, xi_sq_sharded, d_prev_sharded, d_floor_sharded, x0_sharded, P_denom_sharded,
     )
     return gather_x_slabs(d_sharded), converged_sharded[0]
 
@@ -223,6 +237,8 @@ def solve_damage_helmholtz_cg_het(
     dt: float = 1.0,
     k: float | jnp.ndarray = 0.0,
     n_devices: int | None = None,
+    d_floor: jnp.ndarray | None = None,
+    x0: jnp.ndarray | None = None,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """
     Preconditioned CG solve of the AT2 Helmholtz damage equation for a
@@ -259,7 +275,7 @@ def solve_damage_helmholtz_cg_het(
     mirroring how ``solvers.elliptic.vector.displacement_based`` builds its
     preconditioner from a reference stiffness C0 = mean(C_field).
 
-    Irreversibility is enforced post-solve: d = max(d_prev, d_cg).
+    Irreversibility is enforced post-solve: d = max(d_floor, d_cg).
 
     Parameters
     ----------
@@ -268,8 +284,10 @@ def solve_damage_helmholtz_cg_het(
     n        : tuple       grid shape -- must be static for JIT
     l0       : float       phase-field length scale
     Gc       : (Nv,)      critical energy release rate, per voxel
-    d_prev   : (Nv,)      damage from the previous iteration (initial guess
-                           AND irreversibility floor)
+    d_prev   : (Nv,)      dₙ, the last converged increment's damage (viscous
+                           reference) -- see ``solve_damage_helmholtz_cg``
+    d_floor  : (Nv,) or None  irreversibility floor; None uses d_prev
+    x0       : (Nv,) or None  CG initial guess; None uses d_floor
     toler_cg : float       CG relative residual tolerance
     maxiter  : int         max CG iterations -- must be static for JIT
     eta      : float       viscosity η (default 0 -> no regularisation)
@@ -287,10 +305,13 @@ def solve_damage_helmholtz_cg_het(
     d          : (Nv,)        updated damage field in [0, 1]
     converged  : bool array   True if residual tolerance met
     """
+    floor = d_prev if d_floor is None else d_floor
+    x0 = floor if x0 is None else x0
     resolved_n_devices = choose_device_count(n, n_devices)
     if resolved_n_devices > 1:
         return _solve_damage_helmholtz_cg_het_sharded(
-            H_field, xi_flat, n, l0, Gc, d_prev, toler_cg, maxiter, eta, dt, k, resolved_n_devices,
+            H_field, xi_flat, n, l0, Gc, d_prev, floor, x0, toler_cg, maxiter, eta, dt, k,
+            resolved_n_devices,
         )
 
     iq = 1j * nyquist_safe_xi(xi_flat, n)   # (ndim, Nv) -- odd-power ξ, needs Nyquist zeroing
@@ -329,13 +350,13 @@ def solve_damage_helmholtz_cg_het(
 
     bb = driving + eta_dt * d_prev
 
-    d_cg, converged = cg_solve(A_op, bb, d_prev, toler_cg, maxiter, M=P_op)
+    d_cg, converged = cg_solve(A_op, bb, x0, toler_cg, maxiter, M=P_op)
 
-    d = jnp.maximum(d_prev, d_cg)
+    d = jnp.maximum(floor, d_cg)
     return jnp.clip(d, 0.0, 1.0), converged
 
 
-def _solve_damage_helmholtz_cg_het_sharded(H_field, xi_flat, n, l0, Gc, d_prev, toler_cg, maxiter, eta, dt, k, n_devices):
+def _solve_damage_helmholtz_cg_het_sharded(H_field, xi_flat, n, l0, Gc, d_prev, d_floor, x0, toler_cg, maxiter, eta, dt, k, n_devices):
     """
     Fully domain-decomposed counterpart of ``solve_damage_helmholtz_cg_het``'s
     CG solve, for ``n_devices > 1`` -- same pattern as
@@ -365,9 +386,11 @@ def _solve_damage_helmholtz_cg_het_sharded(H_field, xi_flat, n, l0, Gc, d_prev, 
     Gc_sharded = split_x_slabs(Gc, n_devices)
     driving_sharded = split_x_slabs(driving, n_devices)
     d_prev_sharded = split_x_slabs(d_prev, n_devices)
+    d_floor_sharded = split_x_slabs(d_floor, n_devices)
+    x0_sharded = split_x_slabs(x0, n_devices)
     P_denom_sharded = split_x_slabs(P_denom, n_devices)
 
-    def solve_local(iq_local, Gc_local, driving_local, d_prev_local, P_denom_local):
+    def solve_local(iq_local, Gc_local, driving_local, d_prev_local, d_floor_local, x0_local, P_denom_local):
         def fft_(v):
             return pfft3d_flat(v, n_local, "i")
 
@@ -387,12 +410,12 @@ def _solve_damage_helmholtz_cg_het_sharded(H_field, xi_flat, n, l0, Gc, d_prev, 
             return ifft_(fft_(v_flat) / P_denom_local)
 
         bb = driving_local + eta_dt * d_prev_local
-        d_cg, converged = cg_solve_pmap(A_op, bb, d_prev_local, toler_cg, maxiter, axis_name="i", M=P_op)
-        d_local = jnp.maximum(d_prev_local, d_cg)
+        d_cg, converged = cg_solve_pmap(A_op, bb, x0_local, toler_cg, maxiter, axis_name="i", M=P_op)
+        d_local = jnp.maximum(d_floor_local, d_cg)
         return jnp.clip(d_local, 0.0, 1.0), converged
 
     d_sharded, converged_sharded = jax.pmap(solve_local, axis_name="i")(
-        iq_sharded, Gc_sharded, driving_sharded, d_prev_sharded, P_denom_sharded,
+        iq_sharded, Gc_sharded, driving_sharded, d_prev_sharded, d_floor_sharded, x0_sharded, P_denom_sharded,
     )
     return gather_x_slabs(d_sharded), converged_sharded[0]
 
