@@ -212,7 +212,12 @@ def main():
         print("Output : writing the plastic strain tensor eps_p (Voigt 6) per increment")
 
     mode = scfg.get("mode", "single")
-    with monitor_from(cfg, args.log_level), IncrementalWriter(stem, grid_shape=n, grid_length=L) as w:
+    # Older configs ask for per-sweep lines with fracture.log_sweeps: true;
+    # that is log level "sweep" now, unless the CLI or log_level says otherwise.
+    log_level = args.log_level
+    if log_level is None and "log_level" not in cfg and fcfg.get("log_sweeps", False):
+        log_level = "sweep"
+    with monitor_from(cfg, log_level), IncrementalWriter(stem, grid_shape=n, grid_length=L) as w:
         # step 0 -- initial condition (t=0): whatever damage state was loaded
         # in (zero for a fresh geometry file), zero strain/stress/displacement.
         step0_fields = {

@@ -632,8 +632,13 @@ def _staggered_loop(
                 err_rel = float(diff / (jnp.max(jnp.abs(d_st)) + 1e-30))
                 staggered_converged = err_abs < toler_st_abs or err_rel < toler_st_rel
                 if mon.enabled("sweep"):
+                    # On the newton path, also the Newton count and residual --
+                    # what separated a cycling cold-start Newton from a
+                    # genuinely slow fixed point.
+                    nr_note = ("" if mechanics != "newton" else
+                               f"  nr={iter_nr}  r_nr={res_nr:.1e}")
                     sw.note(f"err_abs={err_abs:.3e}  d_max={float(jnp.max(d_st)):.4f}  "
-                            f"mech={bool(converged_mech)}  helm={bool(converged_helm)}")
+                            f"mech={bool(converged_mech)}  helm={bool(converged_helm)}{nr_note}")
                 if staggered_converged:
                     break
             else:
@@ -963,6 +968,7 @@ def solve_fracture_incremental(
         accel = accelerator
     if accel is not None:
         print(f"Solver : staggered accelerator = {accel!r}")
+
     # ``eps`` is the last accepted increment's strain, the first sweep's
     # starting point in solve_fracture (eps_init) -- threaded the same way as
     # d/H, so a cutback retry restarts from the accepted strain and never from
@@ -971,7 +977,7 @@ def solve_fracture_incremental(
 
     def solve_fn(t: float) -> FractureSolution:
         dt_actual = t - _state["t_prev"]
-        return solve_fracture(
+        sol = solve_fracture(
             n, L, phase, materials, t * eps_bar, l0, Gc,
             d_init=_state["d"], H_init=_state["H"],
             formulation=formulation, scheme=scheme, control=control, stress_goal=stress_goal,
@@ -983,6 +989,19 @@ def solve_fracture_incremental(
             line_search=line_search,
             accelerator=accel, d_cap=d_cap, eps_init=_state["eps"],
         )
+        # Per-attempt fields for the monitor's "solve" line (problems.
+        # incremental opens one per cutback attempt and adds the clock and
+        # elapsed time): a rejected attempt's cost and state are otherwise
+        # invisible, since on_increment fires only on the accepted one.
+        mon = get_monitor()
+        if mon.enabled("solve"):
+            acc_note = ("" if accel is None else
+                        f"  accel={accel.n_accelerated}/{accel.n_steps}"
+                        f"  rej={accel.n_rejected}")
+            mon.note(f"staggered={sol.iter_staggered}  mech={bool(sol.converged_mech)}  "
+                     f"d_max={float(jnp.max(sol.d)):.4f}  err_abs={float(sol.err_abs):.3e}"
+                     f"{acc_note}", kind="solve")
+        return sol
 
     def _on_increment(result: IncrementResult) -> None:
         sol = cast(FractureSolution, result.solution)
