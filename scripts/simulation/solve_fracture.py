@@ -244,6 +244,10 @@ def main():
             # full steps. See problems.fracture.solve_fracture's line_search.
             line_search  = int(fcfg.get("newton_line_search", 0)),
             write_plastic_strain_tensor = write_eps_p,
+            # Ceiling on damage. 1.0 = unmodified AT2; below 1 keeps the
+            # degraded tangent non-degenerate at the cost of a crack that
+            # never fully opens. See problems.fracture.solve_fracture.
+            d_cap        = float(fcfg.get("d_cap", 1.0)),
             dt_step      = scfg.get("dt_step"),
             dt_init      = float(scfg.get("dt_init", 0.1)),
             dt_min       = float(scfg.get("dt_min", 1e-4)),

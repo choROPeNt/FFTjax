@@ -114,6 +114,7 @@ def solve_fracture(
     state_init:   object | None = None,
     toler_nr:     float = 1e-8,
     maxiter_nr:   int = 50,
+    d_cap:        float = 1.0,
     eps_init:     jnp.ndarray | None = None,
     line_search:  int = 0,
 ) -> FractureSolution:
@@ -182,6 +183,26 @@ def solve_fracture(
                                 explicit (Nv,) array to override the per-phase
                                 gather entirely (e.g. a smoothly-varying field).
     toler_st_abs, toler_st_rel, maxiter_st : staggered fixed-point convergence
+    d_cap       : float, ceiling on the damage field. 1.0 (default) is the
+                  unmodified AT2 model, where a fully cracked voxel keeps only
+                  ``k_res`` of its stiffness (1e-6 by default).
+
+                  Below 1 this is a CONDITIONING regularization, and a
+                  deliberate modelling change: a crack retains
+                  g(d_cap) = (1 - d_cap)^2 + k_res of its stiffness, so at
+                  d_cap = 0.975 that is 6.3e-4 -- roughly 600x stiffer than
+                  k_res. The point is the tangent. As d -> 1 the degraded
+                  tangent collapses toward k_res*C and the mechanical Newton
+                  solve stops converging (the failure documented at length in
+                  materialmodels/phasefield/drucker_prager.py, whose cause is
+                  not established); holding d below 1 keeps the operator
+                  non-degenerate.
+
+                  The cost is physical: the crack never fully opens, so it
+                  transmits a small spurious stress and the dissipated energy
+                  is slightly under-counted. Choose d_cap as loose as the
+                  solve tolerates -- it trades fidelity for solvability, and
+                  a result obtained with it should say so.
     eps_init    : (3, 3, Nv) or None -- the strain field the FIRST staggered
                   sweep starts from, normally the previous accepted
                   increment's converged ``eps``. None (default) starts from
@@ -289,7 +310,7 @@ def solve_fracture(
         mechanics=mechanics, nl_local_update=nl_local_update,
         nl_driving_force=nl_driving_force, state_init=state_init,
         toler_nr=toler_nr, maxiter_nr=maxiter_nr, C0=C0,
-        eps_init=eps_init,
+        d_cap=d_cap, eps_init=eps_init,
         line_search=line_search,
     )
 
@@ -303,7 +324,7 @@ def _staggered_loop(
     mechanics: str = "linear",
     nl_local_update=None, nl_driving_force=None, state_init=None,
     toler_nr: float = 1e-8, maxiter_nr: int = 50, C0=None,
-    eps_init=None,
+    d_cap: float = 1.0, eps_init=None,
     line_search: int = 0,
 ) -> FractureSolution:
     """
@@ -469,10 +490,20 @@ def _staggered_loop(
         H_st = update_history_hybrid(H_st, drive, d_prev_st, d_thres=d_thres)
 
         damage_solve = solve_damage_helmholtz_cg_het if Gc_heterogeneous else solve_damage_helmholtz_cg
-        d_st, converged_helm = damage_solve(
+        d_picard, converged_helm = damage_solve(
             H_st, xi_flat, n, l0, Gc, d_prev_st,
             toler_cg=toler_helm, maxiter=maxiter_helm, eta=eta, dt=dt, k=k_res_arr,
         )
+
+        # Cap the damage BEFORE it becomes the iterate, so both the fixed
+        # point and the accelerator see the capped map. d_cap < 1 leaves a
+        # crack with g(d_cap) = (1 - d_cap)^2 + k_res residual stiffness
+        # instead of k_res, which is what keeps the tangent from degenerating
+        # -- see solve_fracture's docstring for the trade that makes.
+        if d_cap < 1.0:
+            d_picard = jnp.minimum(d_picard, d_cap)
+
+        d_st = d_picard
 
         diff = jnp.max(jnp.abs(d_st - d_prev_st))
         if early_exit:
@@ -739,6 +770,7 @@ def solve_fracture_incremental(
     maxiter_nr:   int = 50,
     line_search:  int = 0,
     write_plastic_strain_tensor: bool = False,
+    d_cap:        float = 1.0,
     dt_step:      float | None = None,
     dt_init:      float = 0.1,
     dt_min:       float = 1e-4,
@@ -816,7 +848,7 @@ def solve_fracture_incremental(
             toler_st_abs=toler_st_abs, toler_st_rel=toler_st_rel, maxiter_st=maxiter_st,
             state_init=_state["plastic"], toler_nr=toler_nr, maxiter_nr=maxiter_nr,
             line_search=line_search,
-            eps_init=_state["eps"],
+            d_cap=d_cap, eps_init=_state["eps"],
         )
 
     def _on_increment(result: IncrementResult) -> None:
