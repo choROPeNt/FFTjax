@@ -244,6 +244,11 @@ def main():
             # full steps. See problems.fracture.solve_fracture's line_search.
             line_search  = int(fcfg.get("newton_line_search", 0)),
             write_plastic_strain_tensor = write_eps_p,
+            # Staggered accelerator (solvers.damage.anderson). None/"none" is
+            # plain Picard, i.e. exactly the behaviour before it existed.
+            accelerator  = fcfg.get("accelerator"),
+            accel_depth  = int(fcfg.get("accel_depth", 5)),
+            accel_beta   = float(fcfg.get("accel_beta", 1.0)),
             # Ceiling on damage. 1.0 = unmodified AT2; below 1 keeps the
             # degraded tangent non-degenerate at the cost of a crack that
             # never fully opens. See problems.fracture.solve_fracture.

@@ -49,6 +49,7 @@ from operators.green import build_freq_grid, build_reference_green_operator
 from post.fields import compute_displacement, field_to_grid, to_voigt, von_mises
 from problems.incremental import IncrementResult, solve_automatic, solve_fixed
 from problems.mechanics import solve_displacement_based_nonlinear
+from solvers.damage.anderson import build_accelerator
 from solvers.elliptic.scalar import solve_damage_helmholtz_cg, solve_damage_helmholtz_cg_het
 from solvers.elliptic.vector.displacement_based import solve_displacement_based
 from solvers.elliptic.vector.lippmann_schwinger import solve_lippmann_schwinger
@@ -114,6 +115,7 @@ def solve_fracture(
     state_init:   object | None = None,
     toler_nr:     float = 1e-8,
     maxiter_nr:   int = 50,
+    accelerator:  object | None = None,
     d_cap:        float = 1.0,
     eps_init:     jnp.ndarray | None = None,
     line_search:  int = 0,
@@ -203,6 +205,8 @@ def solve_fracture(
                   is slightly under-counted. Choose d_cap as loose as the
                   solve tolerates -- it trades fidelity for solvability, and
                   a result obtained with it should say so.
+    accelerator : staggered accelerator instance (solvers.damage.anderson) or
+                  None for plain Picard.
     eps_init    : (3, 3, Nv) or None -- the strain field the FIRST staggered
                   sweep starts from, normally the previous accepted
                   increment's converged ``eps``. None (default) starts from
@@ -310,7 +314,7 @@ def solve_fracture(
         mechanics=mechanics, nl_local_update=nl_local_update,
         nl_driving_force=nl_driving_force, state_init=state_init,
         toler_nr=toler_nr, maxiter_nr=maxiter_nr, C0=C0,
-        d_cap=d_cap, eps_init=eps_init,
+        accelerator=accelerator, d_cap=d_cap, eps_init=eps_init,
         line_search=line_search,
     )
 
@@ -324,7 +328,7 @@ def _staggered_loop(
     mechanics: str = "linear",
     nl_local_update=None, nl_driving_force=None, state_init=None,
     toler_nr: float = 1e-8, maxiter_nr: int = 50, C0=None,
-    d_cap: float = 1.0, eps_init=None,
+    accelerator=None, d_cap: float = 1.0, eps_init=None,
     line_search: int = 0,
 ) -> FractureSolution:
     """
@@ -427,6 +431,18 @@ def _staggered_loop(
         delta_st = eps_init - eps_bar_init[:, :, None]
         eps_bar_free_st = control_arr * eps_bar_init
 
+    # One increment = one fixed point, so the history must not carry across
+    # increments: pairs from the previous applied strain extrapolate toward
+    # the previous solution. d_init is the irreversibility floor -- an
+    # extrapolated iterate is a linear combination with possibly negative
+    # weights, so without the floor the accelerator can un-crack voxels.
+    if accelerator is not None:
+        # The accelerator clamps its own extrapolation, so it needs the same
+        # ceiling -- otherwise it can step past d_cap and the cap below would
+        # be doing the work of undoing it every sweep.
+        accelerator.bounds = (0.0, float(d_cap))
+        accelerator.reset(floor=np.asarray(d_init))
+
     for iter_st in range(1, maxiter_st + 1):
         d_prev_st = d_st
 
@@ -503,9 +519,41 @@ def _staggered_loop(
         if d_cap < 1.0:
             d_picard = jnp.minimum(d_picard, d_cap)
 
-        d_st = d_picard
+        # d_picard IS G(d_prev_st) -- one full sweep of the fixed point. The
+        # accelerator recombines it with earlier sweeps (solvers.damage.
+        # anderson); with none, d_st is d_picard and this path is bit-for-bit
+        # the plain staggering it replaces.
+        #
+        # The accelerated iterate is floored at d_picard, i.e. it may add
+        # damage on top of a Picard sweep but never take less. The
+        # accelerator's own floor is d_init (reset above), and NGMRES
+        # recombines with negative weights, so on its own it can take back
+        # damage that an earlier sweep already locked in -- while every
+        # Picard sweep after it re-floors at that lowered field. The two
+        # floors disagree, and past the stress peak that is a cycle: on the
+        # 60^3 mini RVEs (sim/sim/12_mini_eta, eta = 0.5) all three cases
+        # stalled right after the peak, d_max going 0.975 -> 0.961 -> 0.975
+        # and err_abs stuck at 2-6e-2 for 20-40 sweeps.
+        # Flooring at d_prev_st instead is NOT enough: where the extrapolation
+        # lies below d_prev_st but Picard wants to grow, max(cand, d_prev_st)
+        # discards the Picard growth, and the loop stalled with an unchanged
+        # residual for several sweeps. With d_picard (itself >= d_prev_st) as
+        # the floor, every iterate makes at least Picard's progress and stays
+        # <= d_cap, so it cannot cycle or stall; overshoot is permanent, the
+        # same d >= D(d) price the Picard floor already pays.
+        if accelerator is not None:
+            d_st = jnp.maximum(
+                jnp.asarray(accelerator.step(d_prev_st, d_picard), dtype=d_picard.dtype),
+                d_picard)
+        else:
+            d_st = d_picard
 
-        diff = jnp.max(jnp.abs(d_st - d_prev_st))
+        # Convergence is measured on the PICARD residual ||G(d) - d||, not on
+        # the accelerated step ||d_st - d_prev_st||. They are the same thing
+        # without an accelerator, but an extrapolated step is deliberately
+        # LARGER than the Picard one, so testing the step would make a
+        # converging accelerated run look divergent and never terminate.
+        diff = jnp.max(jnp.abs(d_picard - d_prev_st))
         if early_exit:
             # concrete Python float/bool -- fine outside vmap/jit (eager),
             # which is the only context solve_fracture is ever called in.
@@ -770,6 +818,9 @@ def solve_fracture_incremental(
     maxiter_nr:   int = 50,
     line_search:  int = 0,
     write_plastic_strain_tensor: bool = False,
+    accelerator:  str | object | None = None,
+    accel_depth:  int = 5,
+    accel_beta:   float = 1.0,
     d_cap:        float = 1.0,
     dt_step:      float | None = None,
     dt_init:      float = 0.1,
@@ -830,6 +881,19 @@ def solve_fracture_incremental(
     # increment before accepting one. Writing it ONLY in _on_increment -- which
     # problems.incremental guarantees fires once per ACCEPTED increment -- is
     # what keeps a rejected cutback attempt from advancing plastic flow.
+    # One accelerator instance for the whole run, reset per increment inside
+    # _staggered_loop (the fixed point moves with the applied strain). Built
+    # from a name so a YAML config can select it; an already-built instance is
+    # passed through untouched.
+    if accelerator is None or isinstance(accelerator, str):
+        kw = {"depth": accel_depth}
+        if accelerator is not None and str(accelerator).lower() == "anderson":
+            kw["beta"] = accel_beta
+        accel = build_accelerator(accelerator, **kw)
+    else:
+        accel = accelerator
+    if accel is not None:
+        print(f"Solver : staggered accelerator = {accel!r}")
     # ``eps`` is the last accepted increment's strain, the first sweep's
     # starting point in solve_fracture (eps_init) -- threaded the same way as
     # d/H, so a cutback retry restarts from the accepted strain and never from
@@ -848,7 +912,7 @@ def solve_fracture_incremental(
             toler_st_abs=toler_st_abs, toler_st_rel=toler_st_rel, maxiter_st=maxiter_st,
             state_init=_state["plastic"], toler_nr=toler_nr, maxiter_nr=maxiter_nr,
             line_search=line_search,
-            d_cap=d_cap, eps_init=_state["eps"],
+            accelerator=accel, d_cap=d_cap, eps_init=_state["eps"],
         )
 
     def _on_increment(result: IncrementResult) -> None:
