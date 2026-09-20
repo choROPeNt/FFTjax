@@ -175,7 +175,20 @@ def solve_fracture(
                   formulation="displacement"
     toler_lin, maxiter_cg     : mechanical CG tolerance / iteration cap
     toler_helm, maxiter_helm  : damage CG tolerance / iteration cap
-    eta, dt                  : viscous regularisation of the damage equation
+    eta, dt                  : viscous regularisation of the damage equation,
+                                (eta/dt)*(d - d_init) with d_init the
+                                increment's starting damage. It is what
+                                makes a load cutback stabilize a softening
+                                increment: the staggered map's gain falls as
+                                eta/dt grows. With eta ~ 0 an unstable
+                                increment diverges at any dt -- see the
+                                damage-solve comment in _staggered_loop.
+                                A MODELLING choice, not a free solver knob:
+                                it makes damage rate-dependent, with a lag
+                                of roughly eta/(Gc/l0) in units of dt. dt
+                                is the LOAD FRACTION here, so the same eta
+                                means a different strain lag when eps_bar
+                                changes
     d_thres                  : hybrid irreversibility threshold
     k_res                    : AT2 residual stiffness. None (default) gathers
                                 each material's own .k_res per-phase (see
@@ -505,10 +518,43 @@ def _staggered_loop(
             psi_pos = drive
         H_st = update_history_hybrid(H_st, drive, d_prev_st, d_thres=d_thres)
 
+        # Two different "previous damage" fields go into the damage solve,
+        # and they must not be the same one:
+        #
+        # - d_n, the VISCOUS reference, is d_init. The term (eta/dt)*(d - d_n)
+        #   only regularizes if d_n is the last converged increment. With the
+        #   previous sweep there (as this loop used to pass) it vanishes at
+        #   the staggered fixed point, so eta regularizes nothing: it merely
+        #   under-relaxes each sweep, and an under-relaxed map with an
+        #   eigenvalue above 1 still diverges. Measured on the 152^3 UD RVE
+        #   (configs/simulation/fracture_uni_transverse_pp.yaml),
+        #   t = 0.525 -> 0.625, where the original run hit staggered=40:
+        #   plain Picard DIVERGES (residual 4.3e-2 -> 8.6e-2 over sweeps 3-7,
+        #   total damage accelerating), so no accelerator or cutback can
+        #   rescue it while eta is inert. With d_n = d_init and eta = 0.5
+        #   (eta/dt = 5) the same increment converges in 5 sweeps, residual
+        #   6.3e-2 -> 7.8e-4 at ~0.33 per sweep. See solve_fracture's eta note.
+        #
+        # - The irreversibility FLOOR stays the previous sweep, d_prev_st. A
+        #   floor at d_init lets damage heal back within the increment
+        #   wherever hybrid irreversibility leaves H unrestricted (d below
+        #   d_thres), and on a localizing crack that oscillates instead of
+        #   converging. Measured on
+        #   test_materialmodels_phasefield_drucker_prager's seeded cube,
+        #   eps_11 = 0.004: floor d_prev_st converges in 22 monotone sweeps;
+        #   floor d_init overshoots to d_max 0.992, heals back, and is still
+        #   cycling at 1-3e-2 after 30. The price of the per-sweep floor is
+        #   that overshoot cannot be taken back, so a converged d satisfies
+        #   d >= D(d) rather than d = D(d).
+        #
+        # At eta = 0 this is bit-for-bit the solve the loop always did; at the
+        # eta = 1e-6 the configs so far use, the viscous change is below any
+        # printed digit.
         damage_solve = solve_damage_helmholtz_cg_het if Gc_heterogeneous else solve_damage_helmholtz_cg
         d_picard, converged_helm = damage_solve(
-            H_st, xi_flat, n, l0, Gc, d_prev_st,
+            H_st, xi_flat, n, l0, Gc, d_init,
             toler_cg=toler_helm, maxiter=maxiter_helm, eta=eta, dt=dt, k=k_res_arr,
+            d_floor=d_prev_st,
         )
 
         # Cap the damage BEFORE it becomes the iterate, so both the fixed

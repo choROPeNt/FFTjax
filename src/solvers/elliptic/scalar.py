@@ -36,6 +36,8 @@ def solve_damage_helmholtz_cg(
     eta: float = 0.0,
     dt: float = 1.0,
     k: float | jnp.ndarray = 0.0,
+    d_floor: jnp.ndarray | None = None,
+    x0: jnp.ndarray | None = None,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """
     Preconditioned CG solve of the AT2 Helmholtz damage equation with
@@ -66,7 +68,7 @@ def solve_damage_helmholtz_cg(
     broad zone). With η > 0 the crack grows gradually from the notch tip,
     allowing it to fully sever the domain before σ drops to zero.
 
-    Irreversibility is enforced post-solve: d = max(d_prev, d_cg).
+    Irreversibility is enforced post-solve: d = max(d_floor, d_cg).
 
     Parameters
     ----------
@@ -75,8 +77,15 @@ def solve_damage_helmholtz_cg(
     n        : tuple       grid shape -- must be static for JIT
     l0       : float       phase-field length scale
     Gc       : float       critical energy release rate (homogeneous)
-    d_prev   : (Nv,)      damage from the previous iteration (initial guess
-                           AND irreversibility floor)
+    d_prev   : (Nv,)      dₙ, the damage at the last CONVERGED increment -- the
+                           viscous term's reference. Inside a staggered loop
+                           this must be the increment's starting damage, not
+                           the previous sweep's, or the viscous term vanishes
+                           at the fixed point (see problems.fracture.
+                           _staggered_loop). Also the default for d_floor and x0
+    d_floor  : (Nv,) or None  irreversibility floor, d = max(d_floor, d_cg);
+                           None uses d_prev
+    x0       : (Nv,) or None  CG initial guess; None uses d_floor
     toler_cg : float       CG relative residual tolerance
     maxiter  : int         max CG iterations -- must be static for JIT
     eta      : float       viscosity η (default 0 -> no regularisation)
@@ -121,9 +130,10 @@ def solve_damage_helmholtz_cg(
 
     bb = driving + eta_dt * d_prev
 
-    d_cg, converged = cg_solve(A_op, bb, d_prev, toler_cg, maxiter, M=P_op)
+    floor = d_prev if d_floor is None else d_floor
+    d_cg, converged = cg_solve(A_op, bb, floor if x0 is None else x0, toler_cg, maxiter, M=P_op)
 
-    d = jnp.maximum(d_prev, d_cg)
+    d = jnp.maximum(floor, d_cg)
     return jnp.clip(d, 0.0, 1.0), converged
 
 
@@ -140,6 +150,8 @@ def solve_damage_helmholtz_cg_het(
     eta: float = 0.0,
     dt: float = 1.0,
     k: float | jnp.ndarray = 0.0,
+    d_floor: jnp.ndarray | None = None,
+    x0: jnp.ndarray | None = None,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """
     Preconditioned CG solve of the AT2 Helmholtz damage equation for a
@@ -176,7 +188,7 @@ def solve_damage_helmholtz_cg_het(
     mirroring how ``solvers.elliptic.vector.displacement_based`` builds its
     preconditioner from a reference stiffness C0 = mean(C_field).
 
-    Irreversibility is enforced post-solve: d = max(d_prev, d_cg).
+    Irreversibility is enforced post-solve: d = max(d_floor, d_cg).
 
     Parameters
     ----------
@@ -185,8 +197,10 @@ def solve_damage_helmholtz_cg_het(
     n        : tuple       grid shape -- must be static for JIT
     l0       : float       phase-field length scale
     Gc       : (Nv,)      critical energy release rate, per voxel
-    d_prev   : (Nv,)      damage from the previous iteration (initial guess
-                           AND irreversibility floor)
+    d_prev   : (Nv,)      dₙ, the last converged increment's damage (viscous
+                           reference) -- see ``solve_damage_helmholtz_cg``
+    d_floor  : (Nv,) or None  irreversibility floor; None uses d_prev
+    x0       : (Nv,) or None  CG initial guess; None uses d_floor
     toler_cg : float       CG relative residual tolerance
     maxiter  : int         max CG iterations -- must be static for JIT
     eta      : float       viscosity η (default 0 -> no regularisation)
@@ -237,7 +251,8 @@ def solve_damage_helmholtz_cg_het(
 
     bb = driving + eta_dt * d_prev
 
-    d_cg, converged = cg_solve(A_op, bb, d_prev, toler_cg, maxiter, M=P_op)
+    floor = d_prev if d_floor is None else d_floor
+    d_cg, converged = cg_solve(A_op, bb, floor if x0 is None else x0, toler_cg, maxiter, M=P_op)
 
-    d = jnp.maximum(d_prev, d_cg)
+    d = jnp.maximum(floor, d_cg)
     return jnp.clip(d, 0.0, 1.0), converged
