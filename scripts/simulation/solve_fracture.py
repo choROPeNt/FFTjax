@@ -116,14 +116,17 @@ def main():
     for i, m in enumerate(materials):
         print(f"  phase {i}: {m}  k_res={m.k_res}  Gc={m.Gc}")
 
-    eps_bar_target = jnp.array(fcfg["eps_bar"], dtype=jnp.float64)
+    # No hardcoded dtype: this script runs in whatever precision
+    # utils.precision selected (JAX_ENABLE_X64), and pinning float64 here made
+    # every fp32 run emit a truncation warning per array.
+    eps_bar_target = jnp.array(fcfg["eps_bar"])
 
     # mixed strain/stress BC -- formulation="displacement" only (see
     # problems.fracture.solve_fracture docstring).
     control_cfg = fcfg.get("control")
     control = tuple(tuple(int(c) for c in row) for row in control_cfg) if control_cfg else None
     stress_bar_cfg = fcfg.get("stress_bar")
-    stress_goal = jnp.array(stress_bar_cfg, dtype=jnp.float64) if stress_bar_cfg else None
+    stress_goal = jnp.array(stress_bar_cfg) if stress_bar_cfg else None
 
     # ── output ────────────────────────────────────────────────────────────────
     output  = cfg["output"]
