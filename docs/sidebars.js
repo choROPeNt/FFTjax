@@ -36,7 +36,10 @@ const sidebars = {
         {
           type: 'category',
           label: 'Damage & Fracture Solvers',
-          items: ['examples/phase-field'],
+          items: [
+            'examples/phase-field',
+            'examples/phase-field-drucker-prager',
+          ],
         },
         {
           type: 'category',

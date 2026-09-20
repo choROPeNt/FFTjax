@@ -1,0 +1,154 @@
+# Phase-field fracture on a PLASTIC matrix — Drucker-Prager elastoplasticity
+# coupled to AT2 damage through the effective stress.
+#
+# Same script and same microstructure as configs/simulation/fracture_example.yaml,
+# with the matrix phase swapped from `isotropic_elastic` to
+# `phasefield_drucker_prager`. That swap is the whole diff, but it changes the
+# solver underneath: a stateful phase-field material makes the mechanical
+# sub-problem nonlinear, so problems.fracture switches its mechanical sub-solve
+# from one linear CG solve to a Newton iteration automatically. Consequences:
+#
+#   * `formulation: displacement` is REQUIRED (the lippmann_schwinger
+#     reference-medium form has no nonlinear path — it raises, naming the
+#     material).
+#   * `toler_nr` / `maxiter_nr` below now matter; they are the Newton controls,
+#     the same pair scripts/simulation/solve_inelastic.py takes.
+#   * the run cannot be jax.vmap'd over several RVE realizations, unlike a
+#     purely brittle fracture config — see problems.fracture.solve_fracture_fixed.
+#
+# `input` below must already exist -- generate it with
+# scripts/generation/generate_rve.py and configs/generation/rve_random_small.yaml
+# (the same coarse 94x98 RVE configs/simulation/inelastic_drucker_prager_example.yaml
+# uses, chosen here for the same reason: a nonlinear phase-field run makes many
+# Newton solves, so a ~630^2 grid is far too slow for a demo).
+
+fracture:
+  input: output/generation/rve_random_small_phi-0.35_seed-67.xdmf
+  # input_L / input_dx (mm): domain size, for .npy or a bare .h5 only.
+  # phase_key (default "phase"), orientation_key (default "orientation").
+
+  materials:
+    - model: phasefield_drucker_prager
+      E:        3.76e3            # MPa
+      nu:       0.39
+      # --- plasticity: exactly the parameters of `drucker_prager`, see
+      #     configs/simulation/inelastic_drucker_prager_example.yaml for how
+      #     a_f and sigma_y0 are calibrated from a tension/compression
+      #     asymmetry, and for the Mohr-Coulomb conversions.
+      sigma_y0: 56.1              # MPa -- SHEAR-meridian intercept, not a
+                                   # uniaxial strength once a_f > 0
+      H:        1.0e3             # MPa. Replace with a `hardening:` block for
+                                   # a calibrated curve -- `piecewise_linear`
+                                   # (Abaqus *PLASTIC column order) or the
+                                   # smooth `voce`. See
+                                   # materialmodels.inelastic.hardening.
+      a_f:      0.13              # friction coefficient
+      a_g:      0.05              # dilatancy; omit for associated flow (a_g = a_f)
+      # a_tip: rounds the cone's tensile vertex, keeping the deviatoric part of
+      #   the tangent non-singular. Worth reaching for HERE in particular:
+      #   damage drives the transmitted stress toward zero, so the tangent is
+      #   already badly conditioned, and a sharp vertex on top of that is what
+      #   makes the inner CG fail. A few percent of sigma_y0 is plenty.
+      #   Note a smooth (`voce`) hardening law with a_tip > 0 takes a slower
+      #   return-mapping path -- correct, roughly 5x the local solve.
+      # a_tip:  5.61              # = 0.10 * sigma_y0
+
+      # --- fracture
+      Gc:       5.0e-3            # N/mm. Scales with l0: the AT2 strength goes
+                                   # ~sqrt(E*Gc/l0), so a value calibrated at one
+                                   # length scale does NOT transfer to another.
+                                   # This one is set for the l0 below (coarse
+                                   # RVE) to crack inside the eps_bar range;
+                                   # re-calibrate if you change l0 or the grid.
+      k_res:    1.0e-6            # AT2 residual stiffness
+      # beta_p: weight on accumulated plastic work in the crack driving force,
+      #   H = psi_e+(eps - eps_p) + beta_p * W_p.
+      #     0 (default) -- a BRITTLE crack in a plastic solid. Plasticity only
+      #       blunts the crack, by capping the elastic energy that can be
+      #       stored. Start here: it is the one setting that needs no extra
+      #       calibration.
+      #     > 0 -- DUCTILE fracture: plastic work also drives the crack, so a
+      #       voxel that has yielded heavily cracks sooner. Dimensionless, and
+      #       it trades off directly against Gc -- raising beta_p at fixed Gc
+      #       lowers the apparent toughness, so re-calibrate Gc if you change
+      #       it rather than treating the two as independent.
+      beta_p:   0.0
+      name:     epoxy matrix (Drucker-Prager + phase field)
+
+    - model: isotropic_elastic
+      E:     70.0e3               # MPa
+      nu:    0.20
+      k_res: 1.0                  # damage-immune fibre
+      Gc:    1.0e-2               # kept >= the matrix so the homogeneous-Gc
+                                   # damage solver is used (k_res=1.0 already
+                                   # makes this phase immune regardless)
+      name:  glass fibre
+
+  eps_bar:                        # prescribed macroscopic strain, reached at t=1
+    - [2.0e-2, 0.0, 0.0]
+    - [0.0,    0.0, 0.0]
+    - [0.0,    0.0, 0.0]
+
+  # Mixed BC matters more here than in a purely brittle run: a pure-strain BC
+  # aims the local stress path nearly along the hydrostatic axis, straight at
+  # the cone's tensile vertex, which is exactly where the plastic tangent is
+  # worst conditioned. Relaxing the transverse directions stops aiming at it.
+  control:
+    - [0, 0, 0]
+    - [0, 1, 0]
+    - [0, 0, 1]
+  stress_bar:
+    - [0.0, 0.0, 0.0]
+    - [0.0, 0.0, 0.0]
+    - [0.0, 0.0, 0.0]
+
+  l0: 2.4e-3        # mm -- phase-field length scale, = 4 * voxel size
+                    # (voxel = 6e-4 mm for configs/generation/rve_random_small.yaml)
+
+  formulation:  displacement      # REQUIRED for this material (see the header)
+  toler_lin:    1.0e-8            # inner CG; tighter than the brittle config,
+                                   # since it now sits inside a Newton loop
+  maxiter_cg:   600
+
+  toler_nr:     1.0e-7            # Newton (mechanical) convergence
+  maxiter_nr:   40
+
+  toler_helm:   1.0e-6            # damage CG
+  maxiter_helm: 300
+
+  eta: 1.0e-6       # damage-equation viscous regularisation (0 = none)
+  d_thres: 0.95     # hybrid irreversibility threshold
+
+  toler_st_abs: 1.0e-4            # staggered fixed-point convergence
+  toler_st_rel: 1.0e-5
+  maxiter_st:   50
+
+  # `automatic` is the mode to want here. Unlike the brittle path, an
+  # increment's MECHANICAL solve can genuinely fail once a crack localizes
+  # (the tangent then spans ~1e6 in stiffness), and that failure is folded
+  # into the increment's convergence flag, so the stepper cuts back on it
+  # instead of accepting a non-equilibrium state.
+  stepping:
+    mode:         automatic
+    dt_init:      0.05
+    dt_min:       1.0e-4
+    dt_max:       0.10
+    factor_inc:   1.5
+    factor_dec:   0.5
+    max_cutbacks: 8
+    max_steps:    2000
+
+  # Also write the plastic strain TENSOR eps_p (Voigt 6), on top of the scalar
+  # `strain_p` (= alpha) and `plastic_work` (= W_p) always written when a phase
+  # is plastic. Worth turning on when a_g > 0: the plastic volume change lives
+  # in tr(eps_p) alone and alpha never sees it.
+  #
+  # Reading these inside a crack: a fully cracked voxel keeps its EFFECTIVE
+  # stress on the yield surface, so its plastic strain keeps growing while it
+  # transmits almost nothing. That is inherent to effective-stress ductile
+  # phase field, not a bug -- but it does mean a homogenized plastic strain
+  # that includes cracked voxels reads high. Mask on damage before averaging.
+  write_plastic_strain_tensor: true
+
+output:  output/simulation
+jobname: "{fracture.input.stem}_fracture_drucker_prager"
