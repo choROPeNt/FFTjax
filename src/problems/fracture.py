@@ -40,12 +40,15 @@ from typing import Callable, Tuple, cast
 import jax.numpy as jnp
 import numpy as np
 
-from materialmodels.assembly import assemble_pff_local_update
+from materialmodels.assembly import (assemble_C_field,
+                                     assemble_inelastic_pff_local_update,
+                                     assemble_pff_local_update)
 from materialmodels.phasefield.degradation import Gc_field, k_res_field
 from materialmodels.phasefield.driving_force import lame_field, strain_energy_amor_split, update_history_hybrid
 from operators.green import build_freq_grid, build_reference_green_operator
 from post.fields import compute_displacement, field_to_grid, to_voigt, von_mises
 from problems.incremental import IncrementResult, solve_automatic, solve_fixed
+from problems.mechanics import solve_displacement_based_nonlinear
 from solvers.elliptic.scalar import solve_damage_helmholtz_cg, solve_damage_helmholtz_cg_het
 from solvers.elliptic.vector.displacement_based import solve_displacement_based
 from solvers.elliptic.vector.lippmann_schwinger import solve_lippmann_schwinger
@@ -53,6 +56,34 @@ from solvers.solution import FractureSolution
 from utils.io.xdmf_writer import IncrementalWriter
 
 _ZERO_CONTROL = ((0, 0, 0), (0, 0, 0), (0, 0, 0))
+
+
+def _has_plastic_pff(materials) -> bool:
+    """
+    Whether any material is a STATEFUL phase-field material, i.e. carries
+    plastic state as well as reacting to damage
+    (materialmodels.phasefield.drucker_prager.PhaseFieldDruckerPrager).
+
+    Duck-typed on ``driving_force_field``, the same marker
+    materialmodels.assembly.assemble_inelastic_pff_local_update dispatches on
+    -- so a future coupled model needs no edit here either. Static (plain
+    Python over the materials list), never traced.
+    """
+    return any(hasattr(m, "driving_force_field") for m in materials)
+
+
+def _require_newton_compatible(formulation: str, materials) -> None:
+    """Raise for the combinations the nonlinear mechanical path cannot do."""
+    if formulation != "displacement":
+        names = [str(m) for m in materials if hasattr(m, "driving_force_field")]
+        raise ValueError(
+            f"formulation={formulation!r} cannot be used with a stateful "
+            f"phase-field material ({names[0]}) -- its mechanical sub-solve is "
+            "a Newton iteration on the true heterogeneous tangent, which only "
+            "the displacement-based formulation provides; the "
+            "lippmann_schwinger reference-medium form has no nonlinear path. "
+            "Use formulation='displacement'"
+        )
 
 
 def solve_fracture(
@@ -80,6 +111,10 @@ def solve_fracture(
     toler_st_abs: float = 1e-2,
     toler_st_rel: float = 1e-3,
     maxiter_st:   int = 200,
+    state_init:   object | None = None,
+    toler_nr:     float = 1e-8,
+    maxiter_nr:   int = 50,
+    eps_init:     jnp.ndarray | None = None,
 ) -> FractureSolution:
     """
     Solve one staggered mechanics<->phase-field increment under a
@@ -146,6 +181,26 @@ def solve_fracture(
                                 explicit (Nv,) array to override the per-phase
                                 gather entirely (e.g. a smoothly-varying field).
     toler_st_abs, toler_st_rel, maxiter_st : staggered fixed-point convergence
+    eps_init    : (3, 3, Nv) or None -- the strain field the FIRST staggered
+                  sweep starts from, normally the previous accepted
+                  increment's converged ``eps``. None (default) starts from
+                  the uniform ``eps_bar``, with zero strain on every
+                  stress-controlled direction.
+
+                  On the newton path this is the Newton initial guess, and
+                  it is not optional in practice. Measured on the 40^3
+                  two-fibre cell (configs/simulation/
+                  fracture_rve_square_2fibre_hotgap_transverse.yaml), t = 0.41
+                  -> 0.45: from the uniform guess, which also drops the
+                  converged -1.5% lateral contraction, the first Newton step
+                  moves the strain by up to 0.17, flips every matrix voxel
+                  into hydrostatic compression, and Newton then locks into a
+                  period-2 cycle (residual 1.8e6 <-> 2.1e6) for all 30
+                  iterations, sweep after sweep -- 29 sweeps, 1213 s, not
+                  converged. From the previous increment's strain the same
+                  increment converges in 5 sweeps of 4-6 Newton iterations
+                  each, 51 s. On the linear path it is the frozen-tangent
+                  evaluation point of the first sweep (see _staggered_loop).
 
     Returns
     -------
@@ -169,7 +224,25 @@ def solve_fracture(
         )
     stress_goal_arr = jnp.zeros((3, 3)) if stress_goal is None else stress_goal
 
-    pff_local_update = assemble_pff_local_update(materials, phase)
+    # A stateful phase-field material (PhaseFieldDruckerPrager) makes the
+    # mechanical sub-problem genuinely nonlinear and path-dependent, so the
+    # frozen-tangent linear solve cannot represent it at all -- switch to the
+    # Newton driver. Decided from `materials`, which is static Python, so no
+    # new config key is needed; see _staggered_loop for the two paths.
+    mechanics = "newton" if _has_plastic_pff(materials) else "linear"
+    if mechanics == "newton":
+        _require_newton_compatible(formulation, materials)
+        nl_local_update, nl_driving_force, state0 = (
+            assemble_inelastic_pff_local_update(materials, phase))
+        state_init = state0 if state_init is None else state_init
+        # Fixed elastic reference for the CG preconditioner -- see
+        # _staggered_loop's docstring for why not the default.
+        C0 = jnp.mean(assemble_C_field(materials, phase), axis=-1)
+        pff_local_update = None
+    else:
+        nl_local_update = nl_driving_force = C0 = None
+        pff_local_update = assemble_pff_local_update(materials, phase)
+
     lam_vox, mu_vox = lame_field(materials, phase)
     xi_flat = build_freq_grid(n, L)
     k_res_arr = k_res_field(materials, phase) if k_res is None else k_res
@@ -201,6 +274,10 @@ def solve_fracture(
         eta=eta, dt=dt, d_thres=d_thres,
         toler_st_abs=toler_st_abs, toler_st_rel=toler_st_rel, maxiter_st=maxiter_st,
         early_exit=True,
+        mechanics=mechanics, nl_local_update=nl_local_update,
+        nl_driving_force=nl_driving_force, state_init=state_init,
+        toler_nr=toler_nr, maxiter_nr=maxiter_nr, C0=C0,
+        eps_init=eps_init,
     )
 
 
@@ -210,6 +287,10 @@ def _staggered_loop(
     eps_bar, d_init, H_init,
     toler_lin, maxiter_cg, toler_helm, maxiter_helm, eta, dt, d_thres,
     toler_st_abs, toler_st_rel, maxiter_st, early_exit: bool,
+    mechanics: str = "linear",
+    nl_local_update=None, nl_driving_force=None, state_init=None,
+    toler_nr: float = 1e-8, maxiter_nr: int = 50, C0=None,
+    eps_init=None,
 ) -> FractureSolution:
     """
     The mechanics<->damage staggered fixed-point loop shared by solve_fracture
@@ -239,32 +320,138 @@ def _staggered_loop(
     (plain LinearElasticIsotropic) ignore eps_prev entirely in
     ``pff_local_update``'s fallback branch, so this changes nothing for an
     all-elastic ``materials`` list.
+
+    ``mechanics`` picks the mechanical sub-solve. "linear" is exactly the
+    behaviour described above, unchanged:
+
+    - "linear" -- one linear CG solve against the frozen degraded tangent
+      (solve_lippmann_schwinger / solve_displacement_based).
+    - "newton" -- problems.mechanics.solve_displacement_based_nonlinear, for a
+      materials list holding a stateful phase-field material
+      (materialmodels.phasefield.drucker_prager.PhaseFieldDruckerPrager),
+      whose stress is genuinely path-dependent and so cannot be reached by a
+      frozen-tangent linear solve at all. ``d`` is still frozen per sub-solve:
+      the loop closes over it to hand that solver the two-argument
+      (eps, state) signature it requires, which also means the tangent it
+      differentiates is dsigma/deps at fixed d -- the right one here.
+
+    Three things the "newton" branch has to get right, all about WHICH state
+    each solve starts from:
+
+    - ``state_init`` stays FROZEN across the whole staggered loop. Every
+      staggered iteration re-runs the return mapping from the increment's last
+      ACCEPTED plastic state, never from the previous staggered iterate's.
+      Same argument, one level up, as the frozen-state comment inside
+      solve_displacement_based_nonlinear's own Newton loop: advancing it per
+      iteration ratchets plastic flow once per iteration and the stress drifts
+      under the fixed point.
+    - ``delta``/``eps_bar_free`` ARE carried across staggered iterations, as a
+      warm start -- d changes between iterations and eps changes with it, so
+      the previous iterate is much the better guess. Both are recovered from
+      the returned eps, since that solver returns neither: delta is zero-mean
+      by construction and eps0 = eps_bar*(1 - control), so mean(eps) is the
+      resolved macroscopic strain and eps - mean(eps) the fluctuation. The
+      first sweep takes the same split of ``eps_init``, the previous
+      increment's strain -- see solve_fracture's docstring for what starting
+      it from the uniform eps_bar instead does to Newton.
+    - ``C0`` is passed as a FIXED elastic reference, which saves rebuilding and
+      inverting the preconditioner every Newton iteration. It was expected to
+      also help conditioning as the crack grows -- the default rebuilds from
+      the voxel-mean of a partly cracked tangent, which looked like a poor
+      reference for the intact material carrying the load. MEASURED, it makes
+      no difference at all: on fixed localized-crack fields spanning
+      d = 0.5 .. 0.9999 (a 1e6 stiffness contrast) the two choices give
+      identical iteration counts and identical stresses to every printed
+      digit. It is kept only for the saved work per iteration, not for
+      robustness.
     """
+    if mechanics not in ("linear", "newton"):
+        raise ValueError(
+            f"unknown mechanics {mechanics!r}, expected 'linear' or 'newton'"
+        )
     d_st = d_init
     H_st = H_init
     eps_bar_cur = None
     Nv = lam_vox.shape[0]
-    eps_prev = jnp.ones((3, 3, Nv)) * eps_bar[:, :, None]
+    control_arr = jnp.asarray(control, dtype=eps_bar.dtype)
+
+    state_st = state_init
+    iter_nr = None
+    if eps_init is None:
+        eps_prev = jnp.ones((3, 3, Nv)) * eps_bar[:, :, None]
+        delta_st = None
+        eps_bar_free_st = None
+    else:
+        # Same mean/fluctuation split the loop applies to each sweep's result
+        # below. Only the stress-controlled part of the mean is kept: the
+        # strain-controlled entries are this increment's eps_bar, not the
+        # previous one's, and the Newton solver re-projects delta to zero
+        # mean regardless.
+        eps_prev = eps_init
+        eps_bar_init = jnp.mean(eps_init, axis=-1)
+        delta_st = eps_init - eps_bar_init[:, :, None]
+        eps_bar_free_st = control_arr * eps_bar_init
 
     for iter_st in range(1, maxiter_st + 1):
         d_prev_st = d_st
 
-        _, C_eff = pff_local_update(eps_prev, d_st)
+        if mechanics == "newton":
+            def _nl(e, st, _d=d_st):
+                return nl_local_update(e, _d, st)
 
-        if formulation == "lippmann_schwinger":
+            eps, sigma, state_new, converged_mech, iter_nr = (
+                solve_displacement_based_nonlinear(
+                    n, xi_flat, eps_bar, _nl, state_init,
+                    toler_lin=toler_lin, maxiter_lin=maxiter_cg,
+                    toler_nr=toler_nr, maxiter_nr=maxiter_nr, C0=C0,
+                    delta_init=delta_st, eps_bar_free_init=eps_bar_free_st,
+                    control=control, stress_goal=stress_goal_arr,
+                )
+            )
+            # A FAILED Newton returns the increment-START plastic state (its
+            # contract for callers that ignore the flag). The driving force
+            # below must not see that: it would build psi+ and W_p from
+            # plastic flow that is already gone from the strain. Converged
+            # sweeps then see this increment's plastic work and failed ones
+            # do not, so H jumps on every converged sweep. Measured on the
+            # 60^3 bi cell (eta 0.25, eps_22 ~ 2.9%, Newton at a 1-3e-5
+            # floor): a four-sweep cycle -- Newton converges, err_abs jumps
+            # to 3-5e-3, three failed sweeps settle it to 3e-4, repeat -- for
+            # 168 sweeps. Return-map at the returned strain instead, so every
+            # sweep's driving force is consistent with its own strain.
+            if not bool(converged_mech):
+                _, _, state_new = nl_local_update(eps, d_st, state_init)
+            # Recover what that solver does not return, for the next
+            # iteration's warm start and for FractureSolution -- see above.
+            eps_bar_cur = jnp.mean(eps, axis=-1)
+            delta = eps - eps_bar_cur[:, :, None]
+            delta_st = delta
+            eps_bar_free_st = control_arr * eps_bar_cur
+            state_st = state_new
+        elif formulation == "lippmann_schwinger":
+            _, C_eff = pff_local_update(eps_prev, d_st)
             eps, sigma, delta, converged_mech = solve_lippmann_schwinger(
                 n, C_eff, green_op, eps_bar,
                 toler_lin=toler_lin, maxiter=maxiter_cg,
             )
         else:  # "displacement"
+            _, C_eff = pff_local_update(eps_prev, d_st)
             eps, sigma, delta, eps_bar_cur, converged_mech = solve_displacement_based(
                 n, C_eff, xi_flat, eps_bar, control, stress_goal_arr,
                 toler_lin=toler_lin, maxiter=maxiter_cg,
             )
         eps_prev = eps
 
-        psi_pos, _ = strain_energy_amor_split(eps, lam_vox, mu_vox)
-        H_st = update_history_hybrid(H_st, psi_pos, d_prev_st, d_thres=d_thres)
+        if mechanics == "newton":
+            # The driving force has to come from the materials here: psi+ is
+            # built on the ELASTIC strain eps - eps_p (plastic strain stores no
+            # energy), and it carries each phase's own beta_p*W_p term --
+            # neither reconstructible from eps alone.
+            drive, psi_pos = nl_driving_force(eps, state_st)
+        else:
+            drive, _ = strain_energy_amor_split(eps, lam_vox, mu_vox)
+            psi_pos = drive
+        H_st = update_history_hybrid(H_st, drive, d_prev_st, d_thres=d_thres)
 
         damage_solve = solve_damage_helmholtz_cg_het if Gc_heterogeneous else solve_damage_helmholtz_cg
         d_st, converged_helm = damage_solve(
@@ -290,12 +477,35 @@ def _staggered_loop(
             err_rel = diff / (jnp.max(jnp.abs(d_st)) + 1e-30)
             staggered_converged = jnp.logical_or(err_abs < toler_st_abs, err_rel < toler_st_rel)
 
+    eps_p_out, alpha_out, W_p_out = (
+        state_st if mechanics == "newton" else (None, None, None))
+    if mechanics == "newton":
+        # Fold the mechanical result into the increment's own convergence, so
+        # solve_automatic's cutback can actually see it. FractureSolution.
+        # converged returns converged_staggered alone, which is defensible on
+        # the linear path (a failed CG there is rare and its damage update is
+        # still a contraction) but not here: a failed Newton sub-solve returns
+        # a non-equilibrium state -- observed as a small NEGATIVE macroscopic
+        # stress under applied tension. Without this, the stepper accepts
+        # that increment and carries the bad plastic state forward. The
+        # failures behind that observation were cold Newton starts, which
+        # eps_init removes (see solve_fracture), but Newton can still fail on
+        # too large a step, so the fold stays.
+        #
+        # Only the newton path is changed; the linear path's reporting is left
+        # exactly as it was.
+        if early_exit:
+            staggered_converged = bool(staggered_converged) and bool(converged_mech)
+        else:
+            staggered_converged = jnp.logical_and(
+                staggered_converged, jnp.asarray(converged_mech))
     return FractureSolution(
         eps=eps, sigma=sigma, delta=delta, d=d_st, H=H_st, psi_pos=psi_pos,
         converged_mech=converged_mech, converged_helm=converged_helm,
         converged_staggered=staggered_converged,
         iter_staggered=iter_st, err_abs=err_abs, err_rel=err_rel,
         eps_bar=eps_bar_cur,
+        eps_p=eps_p_out, alpha=alpha_out, W_p=W_p_out, iter_nr=iter_nr,
     )
 
 
@@ -345,6 +555,22 @@ def solve_fracture_fixed(
     if formulation not in ("lippmann_schwinger", "displacement"):
         raise ValueError(
             f"unknown formulation {formulation!r}, expected 'lippmann_schwinger' or 'displacement'"
+        )
+    # No stateful phase-field material here, and this is not a limitation that
+    # can be worked around at this level: the nonlinear mechanical sub-solve
+    # such a material needs is solve_displacement_based_nonlinear, which
+    # concretizes its Newton residual to a Python float, so the path cannot be
+    # traced -- and being traceable under jax.vmap is the only reason these
+    # _fixed entry points exist. solve_fracture_incremental_fixed reaches this
+    # check through here too.
+    if _has_plastic_pff(materials):
+        raise ValueError(
+            "solve_fracture_fixed cannot take a stateful phase-field material "
+            "(PhaseFieldDruckerPrager): its mechanical sub-solve is a Newton "
+            "iteration whose residual is concretized to a Python float, so it "
+            "cannot run under jax.jit or jax.vmap. Use solve_fracture or "
+            "solve_fracture_incremental instead -- eager, with early exit and "
+            "load-step cutback"
         )
 
     control = control if control is not None else _ZERO_CONTROL
@@ -494,6 +720,9 @@ def solve_fracture_incremental(
     toler_st_abs: float = 1e-2,
     toler_st_rel: float = 1e-3,
     maxiter_st:   int = 200,
+    toler_nr:     float = 1e-8,
+    maxiter_nr:   int = 50,
+    write_plastic_strain_tensor: bool = False,
     dt_step:      float | None = None,
     dt_init:      float = 0.1,
     dt_min:       float = 1e-4,
@@ -547,7 +776,17 @@ def solve_fracture_incremental(
     -------
     list[IncrementResult] -- .solution is a FractureSolution per increment.
     """
-    _state = {"d": d_init, "H": H_init, "t_prev": 0.0}
+    # ``state`` (the plastic state, only for a stateful phase-field material)
+    # is threaded here exactly like d/H/t_prev, and for the same reason: it is
+    # path-dependent, and solve_automatic may call solve_fn several times per
+    # increment before accepting one. Writing it ONLY in _on_increment -- which
+    # problems.incremental guarantees fires once per ACCEPTED increment -- is
+    # what keeps a rejected cutback attempt from advancing plastic flow.
+    # ``eps`` is the last accepted increment's strain, the first sweep's
+    # starting point in solve_fracture (eps_init) -- threaded the same way as
+    # d/H, so a cutback retry restarts from the accepted strain and never from
+    # a rejected attempt's.
+    _state = {"d": d_init, "H": H_init, "t_prev": 0.0, "plastic": None, "eps": None}
 
     def solve_fn(t: float) -> FractureSolution:
         dt_actual = t - _state["t_prev"]
@@ -559,6 +798,8 @@ def solve_fracture_incremental(
             toler_helm=toler_helm, maxiter_helm=maxiter_helm,
             eta=eta, dt=dt_actual, d_thres=d_thres, k_res=k_res,
             toler_st_abs=toler_st_abs, toler_st_rel=toler_st_rel, maxiter_st=maxiter_st,
+            state_init=_state["plastic"], toler_nr=toler_nr, maxiter_nr=maxiter_nr,
+            eps_init=_state["eps"],
         )
 
     def _on_increment(result: IncrementResult) -> None:
@@ -566,6 +807,9 @@ def solve_fracture_incremental(
         _state["d"] = sol.d
         _state["H"] = sol.H
         _state["t_prev"] = result.t
+        _state["eps"] = sol.eps
+        if sol.eps_p is not None:
+            _state["plastic"] = (sol.eps_p, sol.alpha, sol.W_p)
 
         write_time = 0.0
         if writer is not None:
@@ -584,6 +828,17 @@ def solve_fracture_incremental(
                 "damage":       np.asarray(sol.d).reshape(n).astype(np.float64),
                 "strain_energy_pos": np.asarray(sol.psi_pos).reshape(n).astype(np.float64),
             }
+            # Plastic output, only when a stateful phase-field material made
+            # the run plastic at all. Field names match
+            # scripts/simulation/solve_inelastic.py's ("strain_p" = alpha, the
+            # eps_p tensor behind the same opt-in) so
+            # scripts/postprocessing/homogenize.py picks them up unchanged.
+            if sol.alpha is not None:
+                fields["strain_p"] = np.asarray(sol.alpha).reshape(n).astype(np.float64)
+                fields["plastic_work"] = np.asarray(sol.W_p).reshape(n).astype(np.float64)
+                if write_plastic_strain_tensor:
+                    fields["eps_p"] = to_voigt(
+                        field_to_grid(sol.eps_p, n)).astype(np.float64)
             if orientation is not None:
                 fields["orientation"] = np.asarray(orientation).T.reshape(*n, 3).astype(np.float64)
             writer.write_increment(result.step, fields, time=result.t)
