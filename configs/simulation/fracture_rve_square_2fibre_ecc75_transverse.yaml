@@ -1,0 +1,171 @@
+# TRANSVERSE fracture at 75th-PERCENTILE ECCENTRICITY.
+#
+# The spacing target is set from the large RVE's 1468 NEAREST-NEIGHBOUR fibre
+# gaps, not from the all-pairs distribution the earlier cells used -- see
+# configs/generation/rve_square_2fibre_ecc75.yaml for why that reference was
+# wrong and for the full percentile table. 75th-pct eccentricity = 25th-pct
+# gap = 1.39 l0; both cells realize 1.42-1.43 l0 on the voxelized geometry.
+#
+# Fibre Gc is 100x the matrix here, carried over from the fix that made
+# "unbreakable" mean the same thing in the damage PDE as in the stiffness.
+# Solver settings are again copied verbatim -- this file was GENERATED from
+# fracture_square_2fibre_tight_transverse.yaml by substituting the input path
+# and the jobname, nothing else.
+#
+# phi 0.065 -- MATCHES THE LARGE RVE in fibre volume fraction, voxel size,
+# fibre radius AND now nearest-neighbour spacing. The most representative mini
+# cell built so far. Strongly lopsided: closest gap 1.43 l0 against a widest of
+# 8.83 l0 (ratio 6.19), which is what a random packing looks like locally.
+
+#
+# RESULT (2026-09-14). THE CLOSEST TO THE 152^3 FAILURE ANY MINI CELL HAS GOT,
+# AND STILL NOT THERE.
+#
+# 11 steps, 2 min 50 s, zero cutbacks, staggered peaking at 6 of 40. Every
+# localization measure is the best of the five square cells:
+#
+#   cell                      peak   final  soften   d_max  rate@t=1  stag
+#   sym   phi.065 gap 5.01   15.120  10.925  27.7%  0.4333    0.815     5
+#   ecc   phi.065 gap 4.32   15.151   9.492  37.3%  0.4738    1.015     7
+#   ECC75 phi.065 gap 1.43   15.226   8.564  43.8%  0.5148    1.024     6
+#   152^3 random  gap 1.39                                    3.372  STALLS
+#
+# Its damage rate peaks at 1.100 (t=.825) and then DECLINES to 1.024. The
+# random RVE went 1.620 -> 3.372 and died. So the rate still turns over instead
+# of running away, and that turnover is the whole difference.
+#
+# Tightening the gap 4.32 -> 1.43 l0 bought less than expected: d_max 0.474 ->
+# 0.515 and softening 37.3% -> 43.8%, but the terminal rate barely moved
+# (1.015 -> 1.024). Spacing is NOT the missing ingredient either.
+#
+# What this cell still does not have, and the random RVE does: ~29 fibres and
+# therefore many competing nucleation sites rather than one; a crack path free
+# to leave a plane; a POPULATION of tight pairs (1.8% of its neighbours below
+# 2 l0) instead of a single one; and a cell 152 voxels across, so its crack is
+# ~38 l0 long against this one's ~10. Two fibres may simply be too few to snap.
+#
+# The one untried lever left is LOAD. This cell ends at d_max 0.5148 while
+# still softening hard, and the 152^3 run was failing at d_max 0.52-0.64 --
+# i.e. this cell stops exactly where that one starts to break. eps_bar 4-5%
+# is the obvious next run and costs ~5 minutes.
+
+fracture:
+  input: sim/sim/11_mini_square/rve_square_2fibre_ecc75.xdmf
+  # phase_key omitted: generate_rve_quad.py writes the default "phase" key.
+  # (The random RVE needed phase_key: labels because it came from a .vti.)
+
+  materials:
+    - model: phasefield_drucker_prager
+      E:        1400.0            # MPa
+      nu:       0.39
+      sigma_y0: 17.0              # MPa  -> sigma_t = 15.04, sigma_c = 19.54
+      H:        250.0             # MPa
+      a_f:      0.13
+      a_g:      0.05
+      a_tip:    5.61              # = 0.33*sigma_y0, p_tip = 29.2 MPa
+
+      Gc:         2.76712e-2      # N/mm
+      sigma_crit: 22.0            # MPa  -- damage initiation (psi_c = 0.1729)
+      beta_p:     3.0             # plastic work drives the crack
+      k_res:      1.0e-6
+      name:       PP matrix (Drucker-Prager + phase field)
+
+    - model: isotropic_elastic
+      E:     70000.0              # MPa
+      nu:    0.20
+      k_res: 1.0                  # damage-immune fibre -- g = (1-k)(1-d)^2 + k
+                                   # is exactly 1 at k_res = 1, whatever d does
+      # 100x the matrix Gc. This is what makes "unbreakable" mean the same
+      # thing in the damage PDE as it already did in the stiffness.
+      #
+      # It used to be EQUAL to the matrix, chosen so the cheaper homogeneous-Gc
+      # solver would be used. The measured cost of that shortcut: with Gc equal
+      # the damage equation treats the fibre as ordinary crackable material, so
+      # d diffuses into it over a decay length of l0 -- and the fibre RADIUS is
+      # about l0 here, so fibres were semi-transparent. Mean damage inside the
+      # fibre reached 0.127 against a matrix peak of 0.34, none of it driven
+      # locally (fibre psi_pos 0.011, against the 0.1729 initiation threshold).
+      # Mechanically inert, but it charges AT2 surface energy over a phase that
+      # supplies no driving force, making the fibre a sink that blurs the band.
+      #
+      # Why 100x: the interface value of d falls off roughly as 1/(Gc_f/Gc_m),
+      # so 100x takes the leak from ~37% of d_max to well under 1%, while
+      # staying finite -- Gc_f -> infinity would hard-clamp d = 0 at the fibre
+      # surface, and transverse cracks nucleate right there, at the pole.
+      #
+      # Switches problems.fracture to solve_damage_helmholtz_cg_het
+      # automatically (it picks the solver off whether Gc actually varies).
+      # That solver is CG on a divergence-form operator, so a 100x coefficient
+      # contrast costs iterations -- watch converged_helm and the sweep counts.
+      Gc:    2.76712
+      name:  glass fibre
+
+  eps_bar:                        # TRANSVERSE tension (Y); fibres run along Z
+    - [0.0, 0.0,    0.0]
+    - [0.0, 2.0e-2, 0.0]
+    - [0.0, 0.0,    0.0]
+
+  # Y strain-controlled, X and Z traction-free. 1 = stress-controlled.
+  # Byte-identical to the random-RVE config -- see the fibre-axis note above
+  # for why the same matrix means something slightly different here.
+  control:
+    - [1, 0, 0]
+    - [0, 0, 0]
+    - [0, 0, 1]
+  stress_bar:
+    - [0.0, 0.0, 0.0]
+    - [0.0, 0.0, 0.0]
+    - [0.0, 0.0, 0.0]
+
+  # l0 and Gc are carried over UNCHANGED from the random-RVE config rather than
+  # rescaled to this cell's voxel. The realized voxel here is 1.725884e-3 mm
+  # against that run's 1.729443e-3, so this l0 is 4.008 voxels instead of
+  # 4.000 -- a 0.2% difference. Re-deriving them would have changed Gc too (the
+  # two are tied, Gc = 4.0 * l0) and introduced a second difference between the
+  # runs for no numerical benefit.
+  l0: 6.9178e-3
+
+  formulation:  displacement      # required for a stateful phase-field material
+
+  # fp64, as the random RVE run -- see that config for the measured fp32
+  # comparison. The grid-dependent fp32 residual floor is LOOSER on a coarser
+  # grid, so 40^3 would tolerate fp32 better than 152^3 did (max|xi| scales as
+  # N/L), but this run is cheap enough that the question does not arise.
+  toler_lin:    1.0e-7
+  maxiter_cg:   500
+
+  toler_nr:     1.0e-6
+  maxiter_nr:   30
+
+  toler_helm:   1.0e-5
+  maxiter_helm: 300
+
+  eta: 1.0e-6
+  d_thres: 0.95
+
+  # d_cap 0.975 -> g = 6.3e-4, a 1.6e3 stiffness contrast instead of AT2's
+  # 1e6. Held at the random RVE's value. Unlike the tangled RVE this cell has
+  # no fibre bridging a transverse crack, so the cap IS load-bearing: a fully
+  # severed periodic cell would give the two halves a zero-energy sliding mode
+  # on top of the three rigid translations.
+  d_cap: 0.975
+
+  toler_st_abs: 1.0e-3
+  toler_st_rel: 1.0e-4
+  maxiter_st:   40            # DELIBERATELY unchanged -- see the header
+
+  accelerator:  ngmres
+  accel_depth:  5
+
+  stepping:
+    mode:         automatic
+    dt_init:      0.05
+    dt_min:       1.0e-4
+    dt_max:       0.10
+    factor_inc:   1.5
+    factor_dec:   0.5
+    max_cutbacks: 4
+    max_steps:    60
+
+output:  sim/sim/11_mini_square
+jobname: "rve_square_2fibre_ecc75_fracture_PP_transverse"

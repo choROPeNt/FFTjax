@@ -1,0 +1,66 @@
+# Square 2-fibre cell at HIGHER FIBRE VOLUME and HIGHER ECCENTRICITY — the
+# variant built to carry a real stress concentrator.
+#
+# Third in the series. rve_square_2fibre.yaml (phi 0.065, no offset) could not
+# localize at all; rve_square_2fibre_offset.yaml (phi 0.065, offset 3,2)
+# localized into an inclined band but its damage rate levelled off near 1.0
+# instead of running away. What both lacked is a TIGHT LIGAMENT. Measured on
+# the random UD RVE, over 10463 sampled fibre pairs:
+#
+#     surface-to-surface gap    1st pct  1.39 l0     50th pct 13.0 l0
+#                               minimum -0.17 l0 (touching)
+#     fraction of pairs < 2 l0  1.8%      < 1 l0     0.5%
+#
+# The random RVE is full of near-touching pairs. The phi = 0.065 square cell
+# had exactly one gap and it was 5.0 l0 wide. That is the concentrator the
+# square cells were missing, and this config supplies it.
+#
+# ---------------------------------------------------------------------------
+# phi AND ECCENTRICITY SPEND THE SAME BUDGET, AND l0 SETS ITS SIZE
+# ---------------------------------------------------------------------------
+# With r = 7.0 um and l0 = 6.9178 um the regularization length is one fibre
+# radius, so the centre-to-corner gap r*(sqrt(pi/phi) - 2) runs out fast:
+#
+#     phi     0.065   0.100   0.150   0.200   0.300   0.500
+#     gap/l0   5.01    3.65    2.61    1.99    1.25    0.51
+#
+# A full AT2 band wants ~4 l0 and needs 2 l0 at the very least, so at THIS l0
+# the ceiling is phi <= 0.089 for a clean crack and phi <= 0.199 for a marginal
+# one. Realistic composite volume fractions (0.5-0.6) are simply unreachable
+# without shrinking l0 -- which means rescaling Gc with it (Gc = 4.0 * l0, the
+# relation the whole series uses) and refining the grid. That is a different
+# material, so it is deliberately NOT done here.
+#
+# phi = 0.150 is therefore the practical maximum: 2.3x the earlier cells, gap
+# 2.61 l0 unoffset, still resolvable. The eccentricity then spends what is
+# left. Offset (5,3) puts the tightest gap at 1.46 l0 -- matched to the random
+# RVE's 1.39 l0 first percentile -- while the opposite gap stays at 3.77 l0, a
+# 2.6x ratio, so one crack path is now clearly cheapest.
+#
+# CAVEAT, and it is the same one the random RVE run already carries: a 1.46 l0
+# gap cannot hold a full AT2 band, so the crack energy through it is
+# over-regularized. That is the regime being reproduced on purpose, not an
+# oversight. Do not quote a fracture energy off this cell.
+#
+# Components stay unequal (5 != 3) for the reason given in the offset config:
+# an equal shift preserves the diagonal mirror.
+
+geometry:
+  phi:       0.150          # was 0.0646 -- at the ceiling l0 allows, see above
+  r_fib:     0.0070         # mm -- unchanged, measured off the random UD RVE
+  vox:       0.0014160      # mm -- set to the REALIZED in-plane voxel, not the
+                            # random RVE's 1.729443e-3. At phi 0.15 the cell is
+                            # only 45.3 um across, so N_min would clamp N to 32
+                            # and make the in-plane voxel 18% finer than the z
+                            # voxel; pinning vox here keeps them equal and the
+                            # cell cubic. Side effect: l0 is now 4.89 voxels
+                            # instead of 4.00, i.e. BETTER resolved.
+  N_min:     32
+  nz:        32             # cube, 32^3 = 32768 voxels (half the earlier cells)
+  offset_vox: [5.0, 3.0]    # was [3.0, 2.0]; 15.6%/9.4% of the cell side
+                            # against the earlier 7.5%/5.0%
+  fibre_dir: [0.0, 0.0, 1.0]
+  Vf_yarn:   1.0
+
+output:  sim/sim/11_mini_square
+jobname: "rve_square_2fibre_tight"
