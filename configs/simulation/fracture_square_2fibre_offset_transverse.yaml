@@ -1,0 +1,191 @@
+# TRANSVERSE fracture of the SYMMETRY-BROKEN square 2-fibre cell, PP matrix.
+#
+# Second half of the pair. configs/simulation/fracture_square_2fibre_transverse
+# .yaml runs the EXACTLY SYMMETRIC cell and converges cleanly through the whole
+# load path without ever cracking -- its two candidate crack planes are exact
+# images of one another, damage grows on both at a peak ratio of 1.000000, and
+# nothing localizes. This config runs the same test on the same cell with the
+# centre fibre moved 3 voxels in x and 2 in y (configs/generation/
+# rve_square_2fibre_offset.yaml), which destroys the body-centring translation,
+# both axis reflections and the diagonal mirror.
+#
+# Every solver number below, and the whole materials/loading block, is copied
+# verbatim from the symmetric config -- this file was GENERATED from it by
+# substituting the input path and the jobname, nothing else. phi is unchanged
+# at 0.065 and the cell is still exactly z-invariant, so the fibre-axis
+# correctness check still applies.
+#
+# The question it answers: is the 152^3 run's stall a consequence of
+# LOCALIZATION as such -- in which case breaking the symmetry should be enough
+# to reproduce it in 64k voxels -- or does it need the random microstructure's
+# competing nucleation sites and non-planar crack path, which two fibres in a
+# near-regular array cannot supply no matter how the symmetry is broken.
+#
+# ---------------------------------------------------------------------------
+# RESULT (2026-09-14). IT LOCALIZES, BUT IT STILL DOES NOT STALL.
+# ---------------------------------------------------------------------------
+# Reached t = 1.0 in 11 steps, 2 min 46 s, zero cutbacks, staggered sweeps
+# peaking at 7 against the cap of 40 (the symmetric cell peaked at 5).
+#
+# Breaking the symmetry did what it was supposed to. The body-centring residual
+# went from 2.0e-13 to 3.3e-2, the damage field stopped being a standing
+# symmetric pattern and became a single INCLINED band running diagonally across
+# the cell, and the cell softened materially harder -- final sigma_yy 9.321 MPa
+# against the symmetric cell's 10.932, from an identical peak (15.147 vs
+# 15.121 at the same t = 0.525). Final d_max 0.4686 against 0.4205.
+#
+# It still converges easily, and the damage GROWTH RATE says why. d(d_max)/dt
+# per load step, which is the runaway signature:
+#
+#     t        0.625   0.725   0.825   0.925   1.000
+#     symmetric 0.736   0.890   0.912   0.871   0.816    saturating
+#     offset    0.712   0.927   1.010   1.054   1.016    marginal, flat
+#     152^3     --      --      1.620   3.372(t=.55)     ACCELERATING -> stall
+#
+# The random RVE doubles its damage rate every step and then fails at 40
+# sweeps. Both square cells level off near 1.0 and stay there. So the stall is
+# not a consequence of high damage as such -- this cell sits at d_max 0.47,
+# inside the 0.52-0.64 range where the 152^3 run was failing, and converges in
+# 5 sweeps. It is a consequence of SNAP-THROUGH: the staggered fixed point
+# moves too far between the mechanical and damage solves when the crack is
+# running away, and no amount of NGMRES history rescues that.
+#
+# What this cell lacks is not symmetry, it is a sharp enough stress
+# concentration to snap. Two fibres at phi = 0.065 leave 20-voxel ligaments;
+# the random RVE has near-touching fibre pairs. The next lever is therefore
+# either more load (this cell is still softening at t = 1.0 with d_max 0.47, so
+# eps_bar 4-5% should drive it to d_cap) or a higher phi to tighten the
+# ligaments -- NOT a further symmetry perturbation, which is now spent.
+#
+# The fibre-axis correctness check still passes here: 2.4e-14 relative.
+#
+# Read the rest of the header from the symmetric config; it applies unchanged
+# except where this one overrides it.
+
+#
+# ADDENDUM (2026-09-14, fibre Gc raised to 100x). Fibre damage leak
+# 11.8% -> 0.5% of d_max. Macroscopically unmoved: peak 15.151 (was 15.147),
+# final 9.492 (was 9.321), softening 37.3% (was 38.5%), d_max 0.4738 (was
+# 0.4686), 7 sweeps either way. The damage rate still levels off near 1.0.
+# Pre-fix run archived under sim/sim/11_mini_square/gc_equal_baseline/.
+
+fracture:
+  input: sim/sim/11_mini_square/rve_square_2fibre_offset.xdmf
+  # phase_key omitted: generate_rve_quad.py writes the default "phase" key.
+  # (The random RVE needed phase_key: labels because it came from a .vti.)
+
+  materials:
+    - model: phasefield_drucker_prager
+      E:        1400.0            # MPa
+      nu:       0.39
+      sigma_y0: 17.0              # MPa  -> sigma_t = 15.04, sigma_c = 19.54
+      H:        250.0             # MPa
+      a_f:      0.13
+      a_g:      0.05
+      a_tip:    5.61              # = 0.33*sigma_y0, p_tip = 29.2 MPa
+
+      Gc:         2.76712e-2      # N/mm
+      sigma_crit: 22.0            # MPa  -- damage initiation (psi_c = 0.1729)
+      beta_p:     3.0             # plastic work drives the crack
+      k_res:      1.0e-6
+      name:       PP matrix (Drucker-Prager + phase field)
+
+    - model: isotropic_elastic
+      E:     70000.0              # MPa
+      nu:    0.20
+      k_res: 1.0                  # damage-immune fibre -- g = (1-k)(1-d)^2 + k
+                                   # is exactly 1 at k_res = 1, whatever d does
+      # 100x the matrix Gc. This is what makes "unbreakable" mean the same
+      # thing in the damage PDE as it already did in the stiffness.
+      #
+      # It used to be EQUAL to the matrix, chosen so the cheaper homogeneous-Gc
+      # solver would be used. The measured cost of that shortcut: with Gc equal
+      # the damage equation treats the fibre as ordinary crackable material, so
+      # d diffuses into it over a decay length of l0 -- and the fibre RADIUS is
+      # about l0 here, so fibres were semi-transparent. Mean damage inside the
+      # fibre reached 0.127 against a matrix peak of 0.34, none of it driven
+      # locally (fibre psi_pos 0.011, against the 0.1729 initiation threshold).
+      # Mechanically inert, but it charges AT2 surface energy over a phase that
+      # supplies no driving force, making the fibre a sink that blurs the band.
+      #
+      # Why 100x: the interface value of d falls off roughly as 1/(Gc_f/Gc_m),
+      # so 100x takes the leak from ~37% of d_max to well under 1%, while
+      # staying finite -- Gc_f -> infinity would hard-clamp d = 0 at the fibre
+      # surface, and transverse cracks nucleate right there, at the pole.
+      #
+      # Switches problems.fracture to solve_damage_helmholtz_cg_het
+      # automatically (it picks the solver off whether Gc actually varies).
+      # That solver is CG on a divergence-form operator, so a 100x coefficient
+      # contrast costs iterations -- watch converged_helm and the sweep counts.
+      Gc:    2.76712
+      name:  glass fibre
+
+  eps_bar:                        # TRANSVERSE tension (Y); fibres run along Z
+    - [0.0, 0.0,    0.0]
+    - [0.0, 2.0e-2, 0.0]
+    - [0.0, 0.0,    0.0]
+
+  # Y strain-controlled, X and Z traction-free. 1 = stress-controlled.
+  # Byte-identical to the random-RVE config -- see the fibre-axis note above
+  # for why the same matrix means something slightly different here.
+  control:
+    - [1, 0, 0]
+    - [0, 0, 0]
+    - [0, 0, 1]
+  stress_bar:
+    - [0.0, 0.0, 0.0]
+    - [0.0, 0.0, 0.0]
+    - [0.0, 0.0, 0.0]
+
+  # l0 and Gc are carried over UNCHANGED from the random-RVE config rather than
+  # rescaled to this cell's voxel. The realized voxel here is 1.725884e-3 mm
+  # against that run's 1.729443e-3, so this l0 is 4.008 voxels instead of
+  # 4.000 -- a 0.2% difference. Re-deriving them would have changed Gc too (the
+  # two are tied, Gc = 4.0 * l0) and introduced a second difference between the
+  # runs for no numerical benefit.
+  l0: 6.9178e-3
+
+  formulation:  displacement      # required for a stateful phase-field material
+
+  # fp64, as the random RVE run -- see that config for the measured fp32
+  # comparison. The grid-dependent fp32 residual floor is LOOSER on a coarser
+  # grid, so 40^3 would tolerate fp32 better than 152^3 did (max|xi| scales as
+  # N/L), but this run is cheap enough that the question does not arise.
+  toler_lin:    1.0e-7
+  maxiter_cg:   500
+
+  toler_nr:     1.0e-6
+  maxiter_nr:   30
+
+  toler_helm:   1.0e-5
+  maxiter_helm: 300
+
+  eta: 1.0e-6
+  d_thres: 0.95
+
+  # d_cap 0.975 -> g = 6.3e-4, a 1.6e3 stiffness contrast instead of AT2's
+  # 1e6. Held at the random RVE's value. Unlike the tangled RVE this cell has
+  # no fibre bridging a transverse crack, so the cap IS load-bearing: a fully
+  # severed periodic cell would give the two halves a zero-energy sliding mode
+  # on top of the three rigid translations.
+  d_cap: 0.975
+
+  toler_st_abs: 1.0e-3
+  toler_st_rel: 1.0e-4
+  maxiter_st:   40            # DELIBERATELY unchanged -- see the header
+
+  accelerator:  ngmres
+  accel_depth:  5
+
+  stepping:
+    mode:         automatic
+    dt_init:      0.05
+    dt_min:       1.0e-4
+    dt_max:       0.10
+    factor_inc:   1.5
+    factor_dec:   0.5
+    max_cutbacks: 4
+    max_steps:    60
+
+output:  sim/sim/11_mini_square
+jobname: "rve_square_2fibre_offset_fracture_PP_transverse"
