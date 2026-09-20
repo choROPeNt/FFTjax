@@ -6,6 +6,7 @@ isotropic phases in one materials: list)."""
 from materialmodels.base import ConstitutiveModel
 from materialmodels.elastic.isotropic import LinearElasticIsotropic
 from materialmodels.elastic.transverse_isotropic import TransverseIsotropic
+from materialmodels.inelastic.hardening import build_hardening
 from materialmodels.inelastic.plasticity_drucker_prager import DruckerPrager
 from materialmodels.inelastic.plasticity_j2 import J2Plasticity
 from materialmodels.phasefield.isotropic import PhaseFieldIsotropic
@@ -35,6 +36,21 @@ def build_material(cfg: dict, orientations=None) -> ConstitutiveModel:
     itself has no default for it), so a config that omits it fails
     immediately with a missing-argument error naming this material, not
     later inside a fracture solve.
+
+    ``hardening`` (the plasticity models only -- see
+    materialmodels.inelastic.hardening) is handled specially for the same
+    reason as ``fiber_dir``: it is a nested mapping, not a scalar, so the
+    blanket float-cast would raise on it. It is forwarded as a built
+    IsotropicHardening:
+
+        hardening:
+          law: piecewise_linear
+          table:                  # (plastic_strain, yield_stress)
+            - [0.000, 56.1]
+            - [0.020, 70.0]
+
+    Omitting it leaves the models' original ``sigma_y0``/``H`` linear
+    hardening, which the blanket cast forwards unchanged.
 
     ``fiber_dir`` (transverse_isotropic only -- see TransverseIsotropic's
     docstring) is handled specially, before the blanket float-cast, since it
@@ -67,7 +83,11 @@ def build_material(cfg: dict, orientations=None) -> ConstitutiveModel:
         raise ValueError(f"unknown material model {model!r}, expected one of {list(_MODELS)}")
 
     fiber_dir_cfg = cfg.pop("fiber_dir", None)
+    hardening_cfg = cfg.pop("hardening", None)
     kwargs = {k: (v if k == "name" else float(v)) for k, v in cfg.items()}
+
+    if hardening_cfg is not None:
+        kwargs["hardening"] = build_hardening(hardening_cfg)
 
     if model == "transverse_isotropic" and fiber_dir_cfg is None:
         raise ValueError(

@@ -34,6 +34,31 @@ inelastic:
       # a compression/tension ratio of 1.3 typical of a cured epoxy.
       sigma_y0: 56.1              # MPa
       H:        1.0e3             # MPa, linear isotropic hardening modulus
+      # For a CALIBRATED hardening curve instead of one constant slope,
+      # replace H with a `hardening:` block. The law is named explicitly --
+      # there is no default -- and the table is Abaqus' *PLASTIC card in the
+      # same column order, (plastic strain, yield stress), so a measured
+      # material card transcribes row for row:
+      #
+      #   hardening:
+      #     law: piecewise_linear
+      #     table:
+      #       - [0.000, 56.1]     # first row MUST be at zero plastic strain
+      #       - [0.020, 70.0]
+      #       - [0.100, 78.0]     # perfectly plastic beyond the last row
+      #
+      # sigma_y0 then comes from the table's first row, and H must be
+      # dropped (the two are the same quantity, so giving both raises).
+      # Cover the strains you will actually reach: past the last row the
+      # curve is PERFECTLY PLASTIC, and perfect plasticity is much harder to
+      # converge than any positive slope -- a reversal that takes 6 Newton
+      # iterations while hardening can burn maxiter_nr once voxels run onto
+      # the plateau. Compare the "max accumulated plastic strain" this script
+      # prints per case against the table's last row, and extend the table if
+      # it has run past it.
+      # Columns the other way round is caught at construction, not silently
+      # run. `law: linear` with sigma_y0/H is the spelling above, written
+      # out. See materialmodels.inelastic.hardening.
       a_f:      0.13              # friction coefficient; a_f = (m-1)/(m+1), m = sigma_c/sigma_t
       # a_g: dilatancy coefficient. Omit for associated flow (a_g = a_f);
       # set below a_f for the much weaker plastic dilatancy real polymers
