@@ -57,6 +57,11 @@ from solvers.solution import FractureSolution
 from utils.io.xdmf_writer import IncrementalWriter
 
 _ZERO_CONTROL = ((0, 0, 0), (0, 0, 0), (0, 0, 0))
+# Consecutive sweeps with a converged damage field but a failed Newton solve
+# after which _staggered_loop gives up on the increment -- see the comment at
+# its use.
+_NR_STALL_SWEEPS = 10   # Newton converged ~1 sweep in 4 at its floor on the bi cell;
+                        # at 5, P(premature give-up) ~ 0.75^5 = 24%, at 10 ~ 6%
 
 
 def _has_plastic_pff(materials) -> bool:
@@ -460,6 +465,7 @@ def _staggered_loop(
         accelerator.bounds = (0.0, float(d_cap))
         accelerator.reset(floor=np.asarray(d_init))
 
+    nr_stall = 0
     for iter_st in range(1, maxiter_st + 1):
         d_prev_st = d_st
         t_sweep = time.perf_counter()
@@ -622,7 +628,27 @@ def _staggered_loop(
                 print(f"      [sweep {iter_st:3d}] {time.strftime('%H:%M:%S')} "
                       f"err_abs={err_abs:.3e} d_max={float(jnp.max(d_st)):.4f}"
                       f"{nr_note} ({time.perf_counter() - t_sweep:.1f}s)", flush=True)
-            if staggered_converged:
+            # On the Newton path, a converged damage field is not enough to
+            # stop: if this sweep's Newton failed, the fold below rejects the
+            # increment, and the cutback that follows cannot help -- the miss
+            # is a Newton accuracy floor in the cracked voxels, not a step
+            # that is too large. Sweep again instead; Newton restarts warm
+            # from its own last iterate and usually converges. Measured on the
+            # 60^3 uni RVE (sim/sim/12_mini_eta, eta = 0.25, eps_22 ~ 5.9%):
+            # sweeps went newton fail / ok / fail with err_abs 3e-4 on the
+            # last, and the same pattern repeated at dt/2, so two attempts
+            # (11 min) were thrown away on increments whose damage had
+            # converged. Bounded by maxiter_st like any other sweep.
+            if staggered_converged and (mechanics != "newton" or bool(converged_mech)):
+                break
+            # ...but not indefinitely. Where Newton sits at an accuracy floor
+            # just above toler_nr, re-sweeping a converged damage field never
+            # ends: uni at eta 0.25, eps_22 ~ 7.5%, ran 90+ sweeps with
+            # err_abs 1e-8..1e-6 and Newton 30/30 in every one (~3 h). After
+            # NR_STALL_SWEEPS such sweeps in a row, stop and leave the verdict
+            # to the fold below (rejected -> the stepper's cutback).
+            nr_stall = nr_stall + 1 if staggered_converged else 0
+            if nr_stall >= _NR_STALL_SWEEPS:
                 break
         else:
             # stay array-valued -- float()/bool() on a batched/traced value
