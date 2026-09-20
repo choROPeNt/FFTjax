@@ -50,6 +50,7 @@ Output
 
 import argparse
 import sys
+import time
 from pathlib import Path
 from typing import cast
 
@@ -156,7 +157,12 @@ def main():
         if sol.alpha is not None:
             extra = (f"  nr={sol.iter_nr:2d}  mech={bool(sol.converged_mech)!s:5s}"
                      f"  alpha_max={float(jnp.max(sol.alpha)):.3e}")
-        print(f"  step {r.step:3d}  t={r.t:.4f}  dt={r.dt:.4f}  converged={bool(sol.converged)}  "
+        # Stamped like the [attempt] lines (problems.fracture), so a step and
+        # the attempts it is made of can be read on one clock. This one is the
+        # time the step FINISHED -- it prints after the write; the step's start
+        # is the stamp on its first [attempt] line.
+        print(f"  step {r.step:3d}  {time.strftime('%H:%M:%S')}  "
+              f"t={r.t:.4f}  dt={r.dt:.4f}  converged={bool(sol.converged)}  "
               f"staggered_iters={sol.iter_staggered:3d}  d_max={d_max:.4f}{extra}  "
               f"solve={r.wall_time:.2f}s  write={write_time:.2f}s  "
               f"total={r.wall_time + write_time:.2f}s")
@@ -253,6 +259,9 @@ def main():
             # degraded tangent non-degenerate at the cost of a crack that
             # never fully opens. See problems.fracture.solve_fracture.
             d_cap        = float(fcfg.get("d_cap", 1.0)),
+            # One log line per staggered sweep -- for diagnosing a stalled
+            # attempt, which is otherwise silent until it ends.
+            log_sweeps   = bool(fcfg.get("log_sweeps", False)),
             dt_step      = scfg.get("dt_step"),
             dt_init      = float(scfg.get("dt_init", 0.1)),
             dt_min       = float(scfg.get("dt_min", 1e-4)),

@@ -118,6 +118,7 @@ def solve_fracture(
     accelerator:  object | None = None,
     d_cap:        float = 1.0,
     eps_init:     jnp.ndarray | None = None,
+    log_sweeps:   bool = False,
     line_search:  int = 0,
 ) -> FractureSolution:
     """
@@ -240,6 +241,9 @@ def solve_fracture(
                   increment converges in 5 sweeps of 4-6 Newton iterations
                   each, 51 s. On the linear path it is the frozen-tangent
                   evaluation point of the first sweep (see _staggered_loop).
+    log_sweeps  : print one line per staggered sweep (residual, d_max, and on
+                  the newton path the Newton flag and iteration count).
+                  Default False, which prints nothing.
     line_search : newton path only -- max step halvings of the backtracking
                   line search in problems.mechanics.
                   solve_displacement_based_nonlinear. 0 (default) takes full
@@ -328,7 +332,7 @@ def solve_fracture(
         nl_driving_force=nl_driving_force, state_init=state_init,
         toler_nr=toler_nr, maxiter_nr=maxiter_nr, C0=C0,
         accelerator=accelerator, d_cap=d_cap, eps_init=eps_init,
-        line_search=line_search,
+        log_sweeps=log_sweeps, line_search=line_search,
     )
 
 
@@ -342,7 +346,7 @@ def _staggered_loop(
     nl_local_update=None, nl_driving_force=None, state_init=None,
     toler_nr: float = 1e-8, maxiter_nr: int = 50, C0=None,
     accelerator=None, d_cap: float = 1.0, eps_init=None,
-    line_search: int = 0,
+    log_sweeps: bool = False, line_search: int = 0,
 ) -> FractureSolution:
     """
     The mechanics<->damage staggered fixed-point loop shared by solve_fracture
@@ -458,6 +462,7 @@ def _staggered_loop(
 
     for iter_st in range(1, maxiter_st + 1):
         d_prev_st = d_st
+        t_sweep = time.perf_counter()
 
         if mechanics == "newton":
             def _nl(e, st, _d=d_st):
@@ -606,6 +611,17 @@ def _staggered_loop(
             err_abs = float(diff)
             err_rel = float(diff / (jnp.max(jnp.abs(d_st)) + 1e-30))
             staggered_converged = err_abs < toler_st_abs or err_rel < toler_st_rel
+            if log_sweeps:
+                # One line per sweep, so a stalled attempt is not a black box:
+                # which sweep, whether the residual is falling, whether
+                # damage is running away, and whether Newton converged (and
+                # in how many iterations) -- the last is what separated a
+                # cycling cold-start Newton from a genuinely slow fixed point.
+                nr_note = ("" if mechanics != "newton" else
+                           f" newton={bool(converged_mech)}/{iter_nr} r={res_nr:.1e}")
+                print(f"      [sweep {iter_st:3d}] {time.strftime('%H:%M:%S')} "
+                      f"err_abs={err_abs:.3e} d_max={float(jnp.max(d_st)):.4f}"
+                      f"{nr_note} ({time.perf_counter() - t_sweep:.1f}s)", flush=True)
             if staggered_converged:
                 break
         else:
@@ -868,6 +884,7 @@ def solve_fracture_incremental(
     accel_depth:  int = 5,
     accel_beta:   float = 1.0,
     d_cap:        float = 1.0,
+    log_sweeps:   bool = False,
     dt_step:      float | None = None,
     dt_init:      float = 0.1,
     dt_min:       float = 1e-4,
@@ -940,6 +957,10 @@ def solve_fracture_incremental(
         accel = accelerator
     if accel is not None:
         print(f"Solver : staggered accelerator = {accel!r}")
+    # The one dated stamp of the run. Every per-attempt stamp below is bare
+    # HH:MM:SS local time, which is only unambiguous against this.
+    print(f"Started: {time.strftime('%Y-%m-%d %H:%M:%S %Z')}", flush=True)
+
     # ``eps`` is the last accepted increment's strain, the first sweep's
     # starting point in solve_fracture (eps_init) -- threaded the same way as
     # d/H, so a cutback retry restarts from the accepted strain and never from
@@ -948,7 +969,26 @@ def solve_fracture_incremental(
 
     def solve_fn(t: float) -> FractureSolution:
         dt_actual = t - _state["t_prev"]
-        return solve_fracture(
+        # Log EVERY attempt, not just accepted increments. solve_automatic may
+        # call this several times per increment (one per cutback) and
+        # on_increment fires only on the accepted one, so without this a
+        # cutback sequence is completely silent -- on a large grid that reads
+        # as a hung run for tens of minutes at a time. Printed before the
+        # solve, so the line appears while it is working, not after.
+        #
+        # The wall-clock stamp is what makes a log readable after the fact:
+        # without it a stalled attempt is indistinguishable from a finished
+        # one whose result line simply hasn't been written yet, and there is
+        # no way to line the run up against nvidia-smi, the scheduler, or
+        # anything else that happened on the machine. Local time, HH:MM:SS --
+        # the date is printed once in the run banner ("Started:" above),
+        # so a run that crosses midnight is still unambiguous.
+        _state["attempt"] = _state.get("attempt", 0) + 1
+        t_wall = time.perf_counter()
+        print(f"    [attempt {_state['attempt']:3d}] {time.strftime('%H:%M:%S')} "
+              f"t={t:.5f} dt={dt_actual:.5f} "
+              f"from t_prev={_state['t_prev']:.5f} ...", flush=True)
+        sol = solve_fracture(
             n, L, phase, materials, t * eps_bar, l0, Gc,
             d_init=_state["d"], H_init=_state["H"],
             formulation=formulation, scheme=scheme, control=control, stress_goal=stress_goal,
@@ -959,7 +999,21 @@ def solve_fracture_incremental(
             state_init=_state["plastic"], toler_nr=toler_nr, maxiter_nr=maxiter_nr,
             line_search=line_search,
             accelerator=accel, d_cap=d_cap, eps_init=_state["eps"],
+            log_sweeps=log_sweeps,
         )
+        acc_note = ("" if accel is None else
+                    f" accel={accel.n_accelerated}/{accel.n_steps}"
+                    f" rej={accel.n_rejected}")
+        # Elapsed per ATTEMPT, which the accepted-increment line cannot give:
+        # IncrementResult.wall_time covers every cutback attempt of a step
+        # lumped together, so a rejected attempt's cost is otherwise invisible.
+        print(f"    [attempt {_state['attempt']:3d}] {time.strftime('%H:%M:%S')} "
+              f"-> converged={bool(sol.converged)} "
+              f"staggered={sol.iter_staggered} "
+              f"mech={bool(sol.converged_mech)} "
+              f"d_max={float(jnp.max(sol.d)):.4f} err_abs={float(sol.err_abs):.3e}"
+              f"{acc_note} ({time.perf_counter() - t_wall:.1f}s)", flush=True)
+        return sol
 
     def _on_increment(result: IncrementResult) -> None:
         sol = cast(FractureSolution, result.solution)
