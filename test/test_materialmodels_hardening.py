@@ -61,7 +61,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from materialmodels.inelastic.hardening import (
-    IsotropicHardening, LinearHardening, PiecewiseLinearHardening,
+    IsotropicHardening, LinearHardening, PiecewiseLinearHardening, VoceHardening,
     build_hardening, resolve_hardening,
 )
 from materialmodels.inelastic.plasticity_drucker_prager import DruckerPrager
@@ -166,10 +166,13 @@ print("[4] PASSED")
 class Voce(IsotropicHardening):
     """sigma_y = sigma_y0 + Q*(1 - exp(-b*alpha)) -- smooth, saturating.
 
-    Defined in the TEST, not the module: it implements only sigma_y and
-    dsigma_y and inherits solve_return, which is exactly what a future
-    production law would do. It deliberately does not override
-    affine_segments, so it is not usable with a_tip > 0 (see check 7).
+    Kept defined in the TEST even though the module now ships
+    VoceHardening, and deliberately so: it implements ONLY sigma_y and
+    dsigma_y and inherits everything else, which is exactly the contract a
+    third-party law extends. If the generic solve_return ever regrows a
+    dependency on affine_segments or on a law-specific attribute, this class
+    is what notices -- the shipped VoceHardening might satisfy it by
+    accident. Check 8 cross-checks the two against each other.
     """
 
     def __init__(self, sigma_y0, Q, b):
@@ -274,7 +277,15 @@ b_pw = build_hardening({"law": "piecewise_linear", "table": TABLE})
 assert float(b_pw.sigma_y(jnp.asarray(0.05))) == float(pw.sigma_y(jnp.asarray(0.05)))
 b_lin = build_hardening({"law": "linear", "sigma_y0": SY0, "H": "1.0e3"})  # YAML str exponent
 assert isinstance(b_lin, LinearHardening) and b_lin.H == H_LIN
-raises(lambda: build_hardening({"law": "voce", "Q": 1.0}), "unknown law")
+b_voce = build_hardening({"law": "voce", "sigma_y0": SY0, "Q": 22.0, "b": "1.5e1"})
+assert isinstance(b_voce, VoceHardening)
+assert float(b_voce.sigma_y(jnp.asarray(0.05))) == float(voce.sigma_y(jnp.asarray(0.05))), (
+    "build_hardening's voce disagrees with the test's own reference Voce -- one of "
+    "the two has the wrong formula"
+)
+assert b_voce.sigma_y_max == SY0 + 22.0
+raises(lambda: build_hardening({"law": "ludwik", "Q": 1.0}), "unknown law")
+raises(lambda: build_hardening({"law": "voce", "sigma_y0": SY0, "Q": 22.0, "b": 0.0}), "must be > 0")
 raises(lambda: build_hardening({"law": "piecewise_linear"}), "requires a 'table'")
 raises(lambda: build_hardening({"law": "piecewise_linear", "table": TABLE, "H": 1.0}), "unexpected key")
 raises(lambda: build_hardening(TABLE), "'law'")

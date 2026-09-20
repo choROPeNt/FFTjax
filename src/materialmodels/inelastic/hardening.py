@@ -346,9 +346,71 @@ class PiecewiseLinearHardening(IsotropicHardening):
         return f"piecewise_linear[{self.n_segments} pts: {pts}, then plateau]"
 
 
+class VoceHardening(IsotropicHardening):
+    """
+    Saturating exponential (Voce) law
+
+        sigma_y(alpha) = sigma_y0 + Q*(1 - exp(-b*alpha))
+
+    which rises from sigma_y0 with initial slope Q*b and saturates at
+    sigma_y0 + Q -- the usual fit for a metal or polymer whose hardening
+    clearly rolls off, where a piecewise-linear table would need many rows to
+    round the knee.
+
+    The first law here that is NOT piecewise affine, so ``affine_segments``
+    stays None (inherited). That used to rule it out of DruckerPrager's
+    tip-rounded branch entirely; that branch now solves for the plastic
+    multiplier directly and needs only sigma_y/dsigma_y, so a smooth law is
+    no longer a special case -- see
+    materialmodels.inelastic.plasticity_drucker_prager._solve_dlam_hyperbolic.
+
+    Parameters
+    ----------
+    sigma_y0 : float  initial (virgin) yield stress, > 0
+    Q        : float  saturation increment, >= 0 (0 = perfectly plastic)
+    b        : float  saturation rate, > 0 -- initial slope is Q*b
+    """
+
+    def __init__(self, sigma_y0: float, Q: float, b: float):
+        self.sigma_y0 = float(sigma_y0)
+        self.Q = float(Q)
+        self.b = float(b)
+        # Bounded by construction: the exponential saturates. DruckerPrager
+        # uses this to decide whether a tensile trial state is reachable at
+        # all (see its _unreachable).
+        self.sigma_y_max = self.sigma_y0 + self.Q
+        if self.sigma_y0 <= 0.0:
+            raise ValueError(
+                f"VoceHardening: sigma_y0={self.sigma_y0} must be > 0 -- a "
+                "material that yields at zero stress has no elastic range"
+            )
+        if self.Q < 0.0:
+            raise ValueError(
+                f"VoceHardening: Q={self.Q} < 0 -- softening is not supported, "
+                "for the reason LinearHardening's H < 0 check gives"
+            )
+        if self.b <= 0.0:
+            raise ValueError(
+                f"VoceHardening: b={self.b} must be > 0 -- b = 0 leaves "
+                "sigma_y identically sigma_y0, which is LinearHardening(H=0); "
+                "b < 0 diverges instead of saturating"
+            )
+
+    def sigma_y(self, alpha):
+        return self.sigma_y0 + self.Q * (1.0 - jnp.exp(-self.b * alpha))
+
+    def dsigma_y(self, alpha):
+        return self.Q * self.b * jnp.exp(-self.b * alpha)
+
+    def __repr__(self) -> str:
+        return (f"voce(sigma_y0={self.sigma_y0:.4g}, Q={self.Q:.4g}, "
+                f"b={self.b:.4g}, sigma_y_max={self.sigma_y_max:.4g})")
+
+
 _HARDENING = {
     "linear":           LinearHardening,
     "piecewise_linear": PiecewiseLinearHardening,
+    "voce":             VoceHardening,
 }
 
 
@@ -370,6 +432,12 @@ def build_hardening(cfg: dict) -> IsotropicHardening:
             - [0.000, 56.1]
             - [0.020, 70.0]
             - [0.100, 78.0]     # perfectly plastic beyond here
+
+        hardening:
+          law: voce             # smooth, saturating at sigma_y0 + Q
+          sigma_y0: 56.1
+          Q: 40.0
+          b: 60.0
 
     ``law`` is REQUIRED and has no default, for the reason
     factory.build_material gives about fiber_dir: quietly assuming one here
@@ -401,9 +469,9 @@ def build_hardening(cfg: dict) -> IsotropicHardening:
     # YAML's float regex misses exponents without an explicit sign ("1.0e3"
     # loads as a str), so cast here -- same reason factory.build_material does.
     try:
-        return LinearHardening(**{k: float(v) for k, v in cfg.items()})
+        return _HARDENING[law](**{k: float(v) for k, v in cfg.items()})
     except TypeError as exc:
-        raise ValueError(f"hardening: law 'linear' -- {exc}") from None
+        raise ValueError(f"hardening: law {law!r} -- {exc}") from None
 
 
 def resolve_hardening(hardening, sigma_y0, H, who: str = "") -> IsotropicHardening:
