@@ -1,0 +1,48 @@
+# Square 2-fibre cell with the fibres CLOSE — separation set from an EXACT
+# surface-to-surface measurement at the large RVE's damage site.
+#
+# ---------------------------------------------------------------------------
+# THIS CORRECTS A MEASUREMENT ERROR IN rve_square_2fibre_hotgap.yaml
+# ---------------------------------------------------------------------------
+# That file put the damage-site ligament at 5.12 l0 and concluded the crack
+# nucleates in an ORDINARY-width gap. The number was wrong. It was built as
+# d_near1 + d_near2 -- the distance from the damaged voxel to the nearest
+# fibre, plus the distance to the nearest DIFFERENT fibre -- which is only a
+# ligament width if those two fibres sit on OPPOSITE sides of the point. They
+# do not. The second-nearest fibre lay off to the side, so the sum inflated the
+# separation by roughly 2x.
+#
+# Redone as an exact voxel-set minimum distance between fibre bodies, with no
+# circle or ellipse fit anywhere, in the slice through the damage peak
+# (x = 132, peak at y,z = 121,1, d = 0.3756):
+#
+#     the two fibres FLANKING the damage peak   2.66 l0 apart
+#     damage peak to the nearest fibre surface  1.12 l0
+#
+#     all nearest-neighbour separations in that slice:
+#       min 1.25 l0    median 2.54 l0    max 4.70 l0
+#
+# So the fibres at the damage site are separated by 2.66 l0, essentially the
+# median neighbour spacing -- close, not the 5.12 l0 the broken measure gave.
+# The crack forms in a gap about two and a half regularization lengths wide,
+# hugging one of the two fibre surfaces.
+
+# SEPARATION 1.25 l0 -- the TIGHTEST neighbour pair in the damage slice, i.e.
+# the most severe concentrator the real RVE actually contains. Brackets the
+# gap266 cell from below so the separation sweep has a tight end.
+#
+# At 1.25 l0 the gap cannot hold a full AT2 band (~4 l0), so crack energy
+# through it is over-regularized -- the same caveat the 152^3 run carries.
+
+geometry:
+  phi:       0.0646
+  r_fib:     0.0070         # mm -- the large RVE's measured equivalent radius
+  vox:       0.001729443    # mm -- its own voxel size, L/152
+  N_min:     32
+  nz:        40
+  offset_vox: [14.5, 8.7]   # -> realized separation 1.25 l0
+  fibre_dir: [0.0, 0.0, 1.0]
+  Vf_yarn:   1.0
+
+output:  sim/sim/11_mini_square
+jobname: "rve_square_2fibre_gap125"
