@@ -50,12 +50,23 @@ import numpy as np
 
 _EPS_TINY = 1e-12
 
-# Safeguarded-Newton iterations for the GENERIC solve_return fallback (no
-# shipped law uses it -- both invert [*] exactly). Same fixed-count rationale
-# as plasticity_drucker_prager._NEWTON_ITERS: a batched while_loop runs until
+# Safeguarded-Newton iterations for the GENERIC solve_return fallback, used
+# by any law that does not invert [*] in closed form -- VoceHardening is the
+# first. Same fixed-count rationale as
+# plasticity_drucker_prager._NEWTON_ITERS_TIP: a batched while_loop runs until
 # every voxel in the grid has converged, so vmap pays the worst voxel anyway
 # and a fixed count is cheaper and predictable.
-_NEWTON_ITERS = 8
+#
+# 32, not the 8 this held while nothing reached it: the bracket below is now
+# found by doubling rather than by the closed form max(R(0), 0)/B, which
+# degenerates at B = 0 (see solve_return). A doubled bracket can need one
+# bisection per halving, and 8 left DruckerPrager's non-dilatant apex return
+# off the yield surface by O(0.5 MPa).
+_NEWTON_ITERS = 32
+
+# Geometric doublings allowed when bracketing that solve from above -- same
+# device, and same count, as plasticity_drucker_prager._BRACKET_DOUBLINGS.
+_BRACKET_DOUBLINGS = 8
 
 
 class IsotropicHardening:
@@ -111,20 +122,46 @@ class IsotropicHardening:
         Solve [*] for dlam >= 0 -- generic safeguarded Newton, for any law
         that does not override it.
 
-        The bracket is free: R is strictly decreasing, R(0) = A -
-        sigma_y(alpha_prev), and since sigma_y is non-decreasing,
-        R(dlam) <= R(0) - B*dlam, so dlam_hi = max(R(0), 0)/B always has
-        R(dlam_hi) <= 0. An elastic state gives dlam_hi = 0 and every
-        iteration below leaves dlam at exactly 0, which is the required
-        elastic identity -- no separate branch.
-        """
-        B_safe = jnp.maximum(B, _EPS_TINY)
+        R is strictly decreasing, and R(0) = A - sigma_y(alpha_prev) <= 0 is
+        exactly the elastic condition, which the max(., 0) on the seed turns
+        into dlam = 0 through every iteration below -- the required elastic
+        identity, with no separate branch.
 
+        The upper bracket is found by DOUBLING a linearized seed rather than
+        taken as max(R(0), 0)/B. The closed form is the honest bound while
+        B > 0, but DruckerPrager's apex return calls this with
+        B = 9*K*a_f*a_g, which is exactly 0 for a non-dilatant material --
+        and then max(R(0), 0)/B_safe is R(0)*1e12, a bracket 12 orders of
+        magnitude too wide for a fixed iteration count to close. It returned
+        an apex stress off the yield surface by O(0.5 MPa), silently. That was
+        unreachable while every law overrode this method with a closed form;
+        the first law to use this generic path (VoceHardening) hit it
+        immediately, caught by test_materialmodels_drucker_prager's check 14.
+
+        With B = 0 the residual is A - sigma_y(alpha_prev + dlam), so a root
+        exists only if sigma_y can still rise to A, i.e. A <= sigma_y_max.
+        Where it cannot, the doubling below exhausts and dlam comes back at
+        the bracket's end -- which is the same combination (no dilatancy, a
+        capped sigma_y, a tensile trial pressure) that DruckerPrager._unreachable
+        already detects and NaNs out, so such a state never reaches a caller
+        as a plausible-looking number.
+        """
         def residual(dlam):
             return A - B * dlam - self.sigma_y(alpha_prev + dlam)
 
         r0 = A - self.sigma_y(alpha_prev)
-        hi = jnp.maximum(r0, 0.0) / B_safe
+        # Linearized first step: the tangent at dlam = 0 of the whole
+        # residual, so the seed is right to first order for any law and needs
+        # no doubling at all in the common well-conditioned case.
+        seed_slope = jnp.maximum(B + self.dsigma_y(alpha_prev), _EPS_TINY)
+        hi = jnp.maximum(jnp.maximum(r0, 0.0) / seed_slope, _EPS_TINY)
+        for _ in range(_BRACKET_DOUBLINGS):
+            hi = jnp.where(residual(hi) > 0.0, 2.0 * hi, hi)
+        # An elastic state has r0 <= 0, hence hi at its _EPS_TINY floor and
+        # residual(hi) < 0, so no doubling fires and the loop below stays at
+        # ~0 -- preserving the elastic identity the old bracket got from
+        # hi = 0 exactly.
+        hi = jnp.where(r0 > 0.0, hi, jnp.zeros_like(hi))
         lo = jnp.zeros_like(hi)
         dlam = 0.5 * (lo + hi)
 
