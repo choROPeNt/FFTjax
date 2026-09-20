@@ -240,6 +240,9 @@ def main():
             # otherwise: the linear path ignores them.
             toler_nr     = float(fcfg.get("toler_nr", 1e-8)),
             maxiter_nr   = int(fcfg.get("maxiter_nr", 50)),
+            # Backtracking line search in Newton (max step halvings); 0 =
+            # full steps. See problems.fracture.solve_fracture's line_search.
+            line_search  = int(fcfg.get("newton_line_search", 0)),
             write_plastic_strain_tensor = write_eps_p,
             dt_step      = scfg.get("dt_step"),
             dt_init      = float(scfg.get("dt_init", 0.1)),

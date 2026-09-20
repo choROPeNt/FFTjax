@@ -115,6 +115,7 @@ def solve_fracture(
     toler_nr:     float = 1e-8,
     maxiter_nr:   int = 50,
     eps_init:     jnp.ndarray | None = None,
+    line_search:  int = 0,
 ) -> FractureSolution:
     """
     Solve one staggered mechanics<->phase-field increment under a
@@ -201,6 +202,17 @@ def solve_fracture(
                   increment converges in 5 sweeps of 4-6 Newton iterations
                   each, 51 s. On the linear path it is the frozen-tangent
                   evaluation point of the first sweep (see _staggered_loop).
+    line_search : newton path only -- max step halvings of the backtracking
+                  line search in problems.mechanics.
+                  solve_displacement_based_nonlinear. 0 (default) takes full
+                  Newton steps. In a cracked RVE the tangent is indefinite in
+                  partly damaged compressed matrix voxels and CG stops at its
+                  cap with relres 0.1-1, so full steps overshoot: measured on
+                  the 60^3 bi cell (sim/sim/12_mini_eta, eps_22 2.05 ->
+                  2.25%), the residual zigzagged (6.6e-4 -> 3.6e-3 -> 3.3e-4
+                  -> ...) and Newton missed 1e-6 in 30 iterations in every
+                  sweep from the second on. With 4 halvings it fell
+                  monotonically and converged in all three sweeps tested.
 
     Returns
     -------
@@ -278,6 +290,7 @@ def solve_fracture(
         nl_driving_force=nl_driving_force, state_init=state_init,
         toler_nr=toler_nr, maxiter_nr=maxiter_nr, C0=C0,
         eps_init=eps_init,
+        line_search=line_search,
     )
 
 
@@ -291,6 +304,7 @@ def _staggered_loop(
     nl_local_update=None, nl_driving_force=None, state_init=None,
     toler_nr: float = 1e-8, maxiter_nr: int = 50, C0=None,
     eps_init=None,
+    line_search: int = 0,
 ) -> FractureSolution:
     """
     The mechanics<->damage staggered fixed-point loop shared by solve_fracture
@@ -399,13 +413,14 @@ def _staggered_loop(
             def _nl(e, st, _d=d_st):
                 return nl_local_update(e, _d, st)
 
-            eps, sigma, state_new, converged_mech, iter_nr = (
+            eps, sigma, state_new, converged_mech, iter_nr, res_nr = (
                 solve_displacement_based_nonlinear(
                     n, xi_flat, eps_bar, _nl, state_init,
                     toler_lin=toler_lin, maxiter_lin=maxiter_cg,
                     toler_nr=toler_nr, maxiter_nr=maxiter_nr, C0=C0,
                     delta_init=delta_st, eps_bar_free_init=eps_bar_free_st,
                     control=control, stress_goal=stress_goal_arr,
+                    line_search=line_search, return_residual=True,
                 )
             )
             # A FAILED Newton returns the increment-START plastic state (its
@@ -722,6 +737,7 @@ def solve_fracture_incremental(
     maxiter_st:   int = 200,
     toler_nr:     float = 1e-8,
     maxiter_nr:   int = 50,
+    line_search:  int = 0,
     write_plastic_strain_tensor: bool = False,
     dt_step:      float | None = None,
     dt_init:      float = 0.1,
@@ -799,6 +815,7 @@ def solve_fracture_incremental(
             eta=eta, dt=dt_actual, d_thres=d_thres, k_res=k_res,
             toler_st_abs=toler_st_abs, toler_st_rel=toler_st_rel, maxiter_st=maxiter_st,
             state_init=_state["plastic"], toler_nr=toler_nr, maxiter_nr=maxiter_nr,
+            line_search=line_search,
             eps_init=_state["eps"],
         )
 

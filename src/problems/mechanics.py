@@ -297,6 +297,8 @@ def solve_displacement_based_nonlinear(
     control:           Tuple[Tuple[int, ...], ...] | None = None,
     stress_goal:       jnp.ndarray | None = None,
     eps_bar_free_init: jnp.ndarray | None = None,
+    line_search:       int = 0,
+    return_residual:   bool = False,
 ):
     """
     Newton-outer / CG-inner solve for a nonlinear local constitutive law:
@@ -380,6 +382,12 @@ def solve_displacement_based_nonlinear(
                    analogue of ``delta_init`` (e.g. the previous, smaller
                    load level's converged lateral contraction is a much
                    better starting guess than 0 for the next level).
+    line_search  : int -- max step halvings of a backtracking line search on
+                   the residual norm; 0 (default) takes every full Newton
+                   step, i.e. this function's original behavior exactly.
+    return_residual : bool -- also return the relative residual of the
+                   returned strain as a sixth value (default False keeps the
+                   five-value return every existing caller unpacks).
 
     Returns
     -------
@@ -570,8 +578,33 @@ def solve_displacement_based_nonlinear(
         # gradient, same as A_op's own eps_trial above; the sv block is the
         # macroscopic-strain correction, accumulated separately from delta.
         du_sol, sv_sol = unpack(x_flat)
-        delta = delta + strain_from_correction(du_sol)
-        eps_bar_free = eps_bar_free + sv2sm(sv_sol)
+        d_delta = strain_from_correction(du_sol)
+        d_ebf = sv2sm(sv_sol)
+        step = 1.0
+        if line_search:
+            # Backtracking on the residual norm. The full step is tried first
+            # and kept whenever it reduces the residual at all, so a Newton
+            # iteration that already converges is untouched; otherwise the
+            # step is halved up to ``line_search`` times and the trial with
+            # the smallest residual is taken (never a larger residual than
+            # the full step's). Each trial costs one local update and one
+            # divergence, against up to maxiter_lin CG matvecs for the step.
+            best = (float("inf"), 1.0)
+            for _ in range(int(line_search) + 1):
+                eps_try = (eps0 + jnp.ones((3, 3, Nv)) * (eps_bar_free + step * d_ebf)[:, :, None]
+                           + delta + step * d_delta)
+                sig_try, _, _ = local_update(eps_try, state)
+                r_try = float(jnp.sqrt(
+                    jnp.sum(div_of(sig_try) ** 2)
+                    + jnp.sum((sm2sv(jnp.real(fft_(sig_try)[:, :, 0])) - Nv * sm2sv(stress_goal)) ** 2)))
+                if r_try < best[0]:
+                    best = (r_try, step)
+                if r_try < resid_norm:
+                    break
+                step *= 0.5
+            step = best[1]
+        delta = delta + step * d_delta
+        eps_bar_free = eps_bar_free + step * d_ebf
         # ``state`` is deliberately NOT advanced here. It is the state at the
         # last CONVERGED load increment, and a return mapping is defined
         # relative to exactly that -- it must stay frozen for every Newton
@@ -601,4 +634,12 @@ def solve_displacement_based_nonlinear(
     eps_bar_free_bcast = jnp.ones((3, 3, Nv)) * eps_bar_free[:, :, None]
     eps_final = eps0 + eps_bar_free_bcast + delta
     sigma_final, _, _ = local_update(eps_final, state)
+    if return_residual:
+        # Relative residual of the RETURNED strain, same measure as the
+        # convergence test above -- for a failed solve, how far it got.
+        r_final = float(jnp.sqrt(
+            jnp.sum(div_of(sigma_final) ** 2)
+            + jnp.sum((sm2sv(jnp.real(fft_(sigma_final)[:, :, 0])) - Nv * sm2sv(stress_goal)) ** 2))
+            / (float(jnp.linalg.norm(sigma_final)) + 1e-30))
+        return eps_final, sigma_final, state, converged, n_iter, r_final
     return eps_final, sigma_final, state, converged, n_iter
