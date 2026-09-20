@@ -9,14 +9,16 @@ from materialmodels.elastic.transverse_isotropic import TransverseIsotropic
 from materialmodels.inelastic.hardening import build_hardening
 from materialmodels.inelastic.plasticity_drucker_prager import DruckerPrager
 from materialmodels.inelastic.plasticity_j2 import J2Plasticity
+from materialmodels.phasefield.drucker_prager import PhaseFieldDruckerPrager
 from materialmodels.phasefield.isotropic import PhaseFieldIsotropic
 
 _MODELS = {
-    "isotropic_elastic":    LinearElasticIsotropic,
-    "transverse_isotropic": TransverseIsotropic,
-    "phasefield_isotropic": PhaseFieldIsotropic,
-    "j2_plasticity":        J2Plasticity,
-    "drucker_prager":       DruckerPrager,
+    "isotropic_elastic":          LinearElasticIsotropic,
+    "transverse_isotropic":       TransverseIsotropic,
+    "phasefield_isotropic":       PhaseFieldIsotropic,
+    "j2_plasticity":              J2Plasticity,
+    "drucker_prager":             DruckerPrager,
+    "phasefield_drucker_prager":  PhaseFieldDruckerPrager,
 }
 
 
@@ -36,6 +38,17 @@ def build_material(cfg: dict, orientations=None) -> ConstitutiveModel:
     itself has no default for it), so a config that omits it fails
     immediately with a missing-argument error naming this material, not
     later inside a fracture solve.
+
+    ``phasefield_drucker_prager`` (PhaseFieldDruckerPrager -- Drucker-Prager
+    plasticity coupled to AT2 damage through the effective stress, see
+    materialmodels.phasefield.drucker_prager) needs no special-casing either:
+    ``Gc``, ``a_f``, ``a_g``, ``a_tip`` and ``beta_p`` are all scalars the
+    blanket float-cast forwards, and ``hardening`` is already handled below.
+    ``Gc`` and ``a_f`` are both REQUIRED by the class, so a config omitting
+    either fails immediately, naming this material. Note that choosing this
+    model makes ``problems.fracture`` switch its mechanical sub-solve to the
+    Newton driver automatically, which in turn requires
+    ``formulation: displacement``.
 
     ``hardening`` (the plasticity models only -- see
     materialmodels.inelastic.hardening) is handled specially for the same
