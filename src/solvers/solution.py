@@ -39,7 +39,11 @@ class FractureSolution(NamedTuple):
 
     eps:                 jnp.ndarray  # (3, 3, Nv)  local strain (degraded solve)
     sigma:               jnp.ndarray  # (3, 3, Nv)  local stress (degraded solve)
-    delta:               jnp.ndarray  # (3, 3, Nv)  strain correction from the last CG solve
+    delta:               jnp.ndarray  # (3, 3, Nv)  strain correction from the last CG
+                                       # solve -- on the nonlinear (Newton) mechanical
+                                       # path this is instead the zero-mean strain
+                                       # FLUCTUATION eps - mean(eps), which is what
+                                       # warm-starts the next solve there
     d:                   jnp.ndarray  # (Nv,)       updated damage field
     H:                   jnp.ndarray  # (Nv,)       updated history variable
     psi_pos:             jnp.ndarray  # (Nv,)       tensile driving force (undegraded Amor split)
@@ -59,6 +63,16 @@ class FractureSolution(NamedTuple):
                                                      # any stress-controlled entries
                                                      # filled in -- None unless
                                                      # formulation="displacement"
+    # ── plastic state, only when the mechanical sub-solve was the nonlinear
+    # (Newton) one -- i.e. a stateful phase-field material is present (see
+    # problems.fracture._staggered_loop's "newton" branch). All None on the
+    # linear path, so every pre-existing caller is unaffected.
+    eps_p:               jnp.ndarray | None = None  # (3, 3, Nv) plastic strain
+    alpha:               jnp.ndarray | None = None  # (Nv,) accumulated plastic strain
+    W_p:                 jnp.ndarray | None = None  # (Nv,) accumulated plastic work
+    iter_nr:             int | None = None          # Newton iterations in the LAST
+                                                     # staggered iteration's mechanical
+                                                     # solve (not a total)
 
     @property
     def converged(self) -> bool | jnp.ndarray:
