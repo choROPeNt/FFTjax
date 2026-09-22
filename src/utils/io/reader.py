@@ -163,6 +163,80 @@ def read_xdmf(
 
 # ── VTU ──────────────────────────────────────────────────────────────────────
 
+# VTK DataArray type= string -> numpy dtype code (byte-order prefix added by
+# the caller, from the file's own <VTKFile byte_order=...>).
+_VTK_DTYPE = {
+    "Int8": "i1", "UInt8": "u1",
+    "Int16": "i2", "UInt16": "u2",
+    "Int32": "i4", "UInt32": "u4",
+    "Int64": "i8", "UInt64": "u8",
+    "Float32": "f4", "Float64": "f8",
+}
+
+
+def _appended_data_start(raw: bytes) -> int:
+    """Byte offset (into ``raw``) of the first byte of actual appended
+    binary data -- the VTK XML appended-data convention marks the start of
+    the raw blob with a single ``_`` byte immediately after
+    ``<AppendedData ...>``'s closing ``>``; every DataArray's own
+    ``offset=`` attribute is relative to THIS point, not the start of the
+    file."""
+    tag_end = raw.index(b"<AppendedData")
+    marker = raw.index(b"_", raw.index(b">", tag_end))
+    return marker + 1
+
+
+def _read_appended_array(
+    raw: bytes, data_start: int, offset: int, vtk_type: str,
+    header_dtype: str, byte_order: str,
+) -> np.ndarray:
+    """One DataArray's raw appended-binary payload.
+
+    Per the VTK XML format, ``raw[data_start + offset:]`` is
+    ``[header][payload]``: a ``header_dtype``-sized unsigned length prefix
+    (its size set by ``<VTKFile header_type=...>``, e.g. 8 bytes for
+    "UInt64"), giving the payload's byte length, immediately followed by
+    that many bytes of raw ``byte_order``-endian ``vtk_type`` values.
+    Verified against a real appended-binary TexGen export: each DataArray's
+    own ``offset`` equals the previous one's ``offset + header_size +
+    payload_size`` exactly, chaining Points -> connectivity -> offsets ->
+    types -> YarnIndex -> Orientation -> VolumeFraction with no gaps.
+    """
+    bo = "<" if byte_order == "LittleEndian" else ">"
+    header_size = np.dtype(bo + header_dtype).itemsize
+    pos = data_start + offset
+    n_bytes = int(np.frombuffer(raw, dtype=bo + header_dtype, count=1, offset=pos)[0])
+    payload_start = pos + header_size
+    return np.frombuffer(raw, dtype=bo + _VTK_DTYPE[vtk_type], count=n_bytes // np.dtype(bo + _VTK_DTYPE[vtk_type]).itemsize, offset=payload_start)
+
+
+# TexGen exports vary the fiber-direction CellData array's name by version;
+# both are the same per-voxel unit tangent, so either is accepted.
+_ORIENTATION_FIELD_NAMES = ('YarnTangent', 'Orientation')
+
+
+def _da_array(
+    da: ET.Element, raw: bytes | None, data_start: int | None,
+    header_dtype: str, byte_order: str,
+) -> np.ndarray:
+    """Decode one DataArray's values, whether stored inline as ``ascii`` text
+    or out-of-line in the file's ``<AppendedData>`` binary blob."""
+    fmt = da.attrib.get('format', 'ascii')
+    if fmt == 'ascii':
+        return np.fromstring(da.text or "", sep=' ')
+    if fmt == 'appended':
+        assert raw is not None and data_start is not None, \
+            "appended-format DataArray but no <AppendedData> block found"
+        return _read_appended_array(
+            raw, data_start, int(da.attrib['offset']), da.attrib['type'],
+            _VTK_DTYPE[header_dtype], byte_order,
+        )
+    raise NotImplementedError(
+        f"VTU DataArray {da.attrib.get('Name')!r} uses format={fmt!r} -- only "
+        "'ascii' and 'appended' are supported (binary/base64 is not)."
+    )
+
+
 def _read_texgen_vtu(
     path: str | Path,
 ) -> tuple[
@@ -178,6 +252,12 @@ def _read_texgen_vtu(
 
     Also accepts VTU files produced by ``generate_weave.py``; those
     contain a ``VolumeFraction`` field with smooth SDF-based phi values.
+    Both inline-``ascii`` and out-of-line ``appended`` (raw binary)
+    DataArrays are supported -- the latter is not valid XML on its own
+    (the raw bytes can contain tokens ElementTree rejects), so only the
+    header up to ``<AppendedData>`` is parsed as XML; each DataArray's own
+    ``offset=`` is then used to decode its payload directly out of the
+    file's raw bytes.
 
     Parameters
     ----------
@@ -188,12 +268,22 @@ def _read_texgen_vtu(
     n              : (nx, ny, nz)
     L              : (Lx, Ly, Lz)  mm
     phase          : (Nv,) int      0=matrix, 1=yarn  (C-order)
-    orientations   : (3, Nv) float  YarnTangent per voxel
+    orientations   : (3, Nv) float  YarnTangent/Orientation per voxel
     yarn_index     : (Nv,) int      raw YarnIndex (-1=matrix, >=0=yarn number)
     volume_fraction: (Nv,) float    smooth phi if present, binary fallback otherwise
     """
-    tree  = ET.parse(str(path))
-    piece = tree.getroot().find('UnstructuredGrid/Piece')
+    raw = Path(path).read_bytes()
+    appended_tag = raw.find(b"<AppendedData")
+    if appended_tag == -1:
+        root = ET.fromstring(raw)
+        data_start = None
+    else:
+        root = ET.fromstring(raw[:appended_tag] + b"</VTKFile>")
+        data_start = _appended_data_start(raw)
+    header_dtype = root.attrib.get('header_type', 'UInt32')
+    byte_order   = root.attrib.get('byte_order', 'LittleEndian')
+
+    piece = root.find('UnstructuredGrid/Piece')
     assert piece is not None, f"No <UnstructuredGrid/Piece> found in {path}"
 
     pts_node  = piece.find('Points/DataArray')
@@ -201,8 +291,8 @@ def _read_texgen_vtu(
     assert pts_node  is not None, "No Points/DataArray in VTU"
     assert conn_node is not None, "No connectivity DataArray in VTU"
 
-    pts  = np.fromstring(pts_node.text  or "", sep=' ').reshape(-1, 3)
-    conn = np.fromstring(conn_node.text or "", sep=' ').astype(int).reshape(-1, 8)
+    pts  = _da_array(pts_node, raw, data_start, header_dtype, byte_order).reshape(-1, 3)
+    conn = _da_array(conn_node, raw, data_start, header_dtype, byte_order).astype(int).reshape(-1, 8)
 
     centroids = pts[conn].mean(axis=1)
 
@@ -224,8 +314,12 @@ def _read_texgen_vtu(
     assert cd is not None, f"No <CellData> block found in {path}"
     arrays = {a.attrib['Name']: a for a in cd.findall('DataArray')}
 
-    yarn_vtk = np.fromstring(arrays['YarnIndex'].text   or "", sep=' ').astype(int)
-    tang_vtk = np.fromstring(arrays['YarnTangent'].text or "", sep=' ').reshape(-1, 3)
+    orient_name = next((n for n in _ORIENTATION_FIELD_NAMES if n in arrays), None)
+    assert orient_name is not None, \
+        f"No {'/'.join(_ORIENTATION_FIELD_NAMES)} CellData array found in {path}"
+
+    yarn_vtk = _da_array(arrays['YarnIndex'], raw, data_start, header_dtype, byte_order).astype(int)
+    tang_vtk = _da_array(arrays[orient_name], raw, data_start, header_dtype, byte_order).reshape(-1, 3)
 
     Nv           = nx * ny * nz
     phase_flat   = np.empty(Nv, dtype=int)
@@ -236,7 +330,7 @@ def _read_texgen_vtu(
     tangent_flat[fft_idx] = tang_vtk
 
     if 'VolumeFraction' in arrays:
-        vf_raw = np.fromstring(arrays['VolumeFraction'].text or "", sep=' ')
+        vf_raw = _da_array(arrays['VolumeFraction'], raw, data_start, header_dtype, byte_order)
         vf_flat[fft_idx] = vf_raw
     else:
         vf_flat = np.where(phase_flat >= 0, 1.0, 0.0)
