@@ -84,8 +84,8 @@ OUT_DIR = "output/benchmark/benchmark_3"
 # Phase 0 = matrix, phase 1 = yarn -- matches read_vtu's own convention, so
 # this list's order must not change without checking that.
 MATERIALS_CFG = [
-    {"model": "isotropic_elastic", "E": 3.5e3, "nu": 0.35, "name": "epoxy matrix"},
-    {"model": "transverse_isotropic", "E_L": 170.905e3, "E_T": 10.814e3, "G_LT": 6.9e3,
+    {"model": "isotropic_elastic", "E": 3.354e3, "nu": 0.38, "name": "epoxy matrix"},
+    {"model": "transverse_isotropic", "E_L": 176.905e3, "E_T": 10.814e3, "G_LT": 6.9e3,
      "nu_LT": 0.245, "G_TT": 4.245e3, "fiber_dir": "from_input", "name": "carbon fiber yarn fvc75"},
 ]
 
