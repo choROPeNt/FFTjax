@@ -134,6 +134,82 @@ def rotate_tensor4(R: jnp.ndarray, C4: jnp.ndarray) -> jnp.ndarray:
     return jnp.einsum('ia,jb,kc,ld,abcd->ijkl', R, R, R, R, C4)
 
 
+def rotation_field_from_directions(d_field: jnp.ndarray) -> jnp.ndarray:
+    """
+    Per-voxel rotation matrices -- the field-valued counterpart of
+    ``rotation_from_direction``, with the voxel axis threaded through every
+    operation as a TRAILING dimension from the start, rather than via
+    ``vmap`` over the single-direction version.
+
+    Why this exists as its own function instead of ``jax.vmap(rotation_from_
+    direction)``: ``vmap``'s batching rules compute with the batch dimension
+    leading internally regardless of the ``out_axes`` requested, so producing
+    a ``(3,3,Nv)``-shaped result that way still forces a genuine
+    ``(Nv,3,3) -> (3,3,Nv)`` transpose at the very end (confirmed empirically
+    -- changing only ``out_axes`` left the same transpose in the traceback,
+    just moved). At Nv in the tens of millions, that transpose's input and
+    output are each a multi-GiB buffer, and needing both alive at once is
+    what exhausts GPU memory on the largest realizations of
+    ``stiffness_field_oriented`` (this function's caller), well before the
+    solve itself starts. Writing the whole computation with Nv trailing from
+    the start avoids that transpose entirely: every intermediate here already
+    has the shape it needs to have, so ``rotate_tensor4_field`` never needs
+    to reorder anything either.
+
+    Same degenerate-direction fallback as ``rotation_from_direction`` (see
+    its docstring for why: a zero direction must still produce a finite,
+    discardable rotation, not NaN).
+
+    Parameters
+    ----------
+    d_field : (3, Nv)  target direction per voxel (not required to be
+              pre-normalized)
+
+    Returns
+    -------
+    R_field : (3, 3, Nv)  R_field[:, :, v] is rotation_from_direction's (3,3)
+              R for voxel v
+    """
+    norm = jnp.linalg.norm(d_field, axis=0)                                # (Nv,)
+    degenerate = norm < 1e-12                                              # (Nv,)
+    z_hat = jnp.array([0.0, 0.0, 1.0])[:, None]                            # (3, 1)
+    safe_norm = jnp.where(degenerate, 1.0, norm)                           # (Nv,)
+    d = jnp.where(degenerate[None, :], z_hat, d_field / safe_norm[None, :])  # (3, Nv)
+
+    x_hat = jnp.array([1.0, 0.0, 0.0])[:, None]                            # (3, 1)
+    y_hat = jnp.array([0.0, 1.0, 0.0])[:, None]                            # (3, 1)
+    ref = jnp.where(jnp.abs(d[0:1, :]) < 0.9, x_hat, y_hat)                # (3, Nv)
+
+    e1 = ref - jnp.sum(ref * d, axis=0, keepdims=True) * d                # (3, Nv)
+    e1 = e1 / jnp.linalg.norm(e1, axis=0, keepdims=True)                  # (3, Nv)
+    e2 = jnp.cross(d, e1, axis=0)                                         # (3, Nv)
+    return jnp.stack([e1, e2, d], axis=1)                                 # (3, 3, Nv)
+
+
+def rotate_tensor4_field(R_field: jnp.ndarray, C4: jnp.ndarray) -> jnp.ndarray:
+    """
+    Per-voxel counterpart of ``rotate_tensor4``: rotates the same reference
+    ``C4`` by a different rotation at every voxel, producing the
+    ``(3,3,3,3,Nv)`` result directly -- Nv threaded through the einsum as a
+    trailing batch index from the start, rather than via ``vmap`` + a
+    trailing transpose (see ``rotation_field_from_directions`` for why that
+    costs an extra full-size buffer at large Nv).
+
+    Parameters
+    ----------
+    R_field : (3, 3, Nv)  rotation matrix per voxel, e.g. from
+              ``rotation_field_from_directions``
+    C4      : (3, 3, 3, 3)  stiffness tensor in the local frame, shared
+              across every voxel
+
+    Returns
+    -------
+    C4_field : (3, 3, 3, 3, Nv)
+    """
+    return jnp.einsum('iav,jbv,kcv,ldv,abcd->ijklv',
+                       R_field, R_field, R_field, R_field, C4)
+
+
 def isotropic_equivalent_lame(C4: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
     """
     Voigt-average isotropic Lame parameters (lam0, mu0) of a general (3,3,3,3)

@@ -9,12 +9,13 @@ hand-rolled its own private Voigt-conversion/rotation helpers; this version call
 the shared, general versions of those same operations instead.
 """
 
-import jax
 import jax.numpy as jnp
 
 from materialmodels.base import ConstitutiveModel
 from materialmodels.tensors import (
     rotate_tensor4,
+    rotate_tensor4_field,
+    rotation_field_from_directions,
     rotation_from_direction,
     tensor4_to_voigt,
     voigt_to_tensor4,
@@ -72,8 +73,8 @@ class TransverseIsotropic(ConstitutiveModel):
                 utils.io.reader.read_vtu's orientations output), not just
                 this material's own phase -- in which case stiffness_tensor()
                 returns the (3,3,3,3,Nv) rotated FIELD instead of a single
-                (3,3,3,3) tensor (vmapped internally, same machinery as
-                stiffness_field_oriented). materialmodels.assembly.
+                (3,3,3,3) tensor (same machinery as stiffness_field_oriented,
+                see its docstring). materialmodels.assembly.
                 assemble_C_field detects this automatically and mixes it
                 correctly with other, constant-tensor materials in the same
                 materials: list -- see its own docstring.
@@ -209,17 +210,27 @@ class TransverseIsotropic(ConstitutiveModel):
 
     def stiffness_field_oriented(self, orientations: jnp.ndarray) -> jnp.ndarray:
         """
-        Per-voxel rotated stiffness field, vmapped over a fibre orientation
-        field -- the field-valued counterpart of ``stiffness_tensor_rotated``
-        (one direction) for a spatially varying orientation (e.g. from
-        ``utils.io.reader.read_vtu``'s ``orientations`` output). Like
-        ``stiffness_tensor_rotated``, this overrides this material's own
-        stored ``fiber_dir`` rather than composing with it.
+        Per-voxel rotated stiffness field -- the field-valued counterpart of
+        ``stiffness_tensor_rotated`` (one direction) for a spatially varying
+        orientation (e.g. from ``utils.io.reader.read_vtu``'s
+        ``orientations`` output). Like ``stiffness_tensor_rotated``, this
+        overrides this material's own stored ``fiber_dir`` rather than
+        composing with it.
 
         The reference-frame tensor is computed once and shared across every
-        voxel; only the rotation itself (``rotation_from_direction`` +
-        ``rotate_tensor4``, both already written to be vmap-safe) runs
-        per-voxel.
+        voxel; the rotation itself uses ``rotation_field_from_directions`` +
+        ``rotate_tensor4_field``, NOT ``jax.vmap`` over the single-direction
+        ``rotation_from_direction``/``rotate_tensor4`` -- vmap's batching
+        rules keep the batch dimension leading internally regardless of
+        ``out_axes``, so building the ``(3,3,3,3,Nv)`` result that way still
+        needs a genuine ``(Nv,3,3,3,3) -> (3,3,3,3,Nv)`` transpose at the
+        end. At Nv in the tens of millions each side of that transpose is a
+        many-GiB float64 buffer, and needing both alive at once is what
+        actually exhausts GPU memory on the largest realizations, before the
+        solve itself ever starts (confirmed: even retargeting only
+        ``out_axes`` left the same transpose in the trace, just moved). The
+        field-valued helpers below thread Nv through as a trailing einsum
+        index from the start, so no such transpose ever exists.
 
         Parameters
         ----------
@@ -230,13 +241,8 @@ class TransverseIsotropic(ConstitutiveModel):
         C_field : (3, 3, 3, 3, Nv)
         """
         C_ref = self._stiffness_tensor_reference()
-
-        def _one(d):
-            R = rotation_from_direction(d)
-            return rotate_tensor4(R, C_ref)
-
-        C_vox = jax.vmap(_one, in_axes=1)(orientations)   # (Nv, 3, 3, 3, 3)
-        return jnp.moveaxis(C_vox, 0, -1)                  # (3, 3, 3, 3, Nv)
+        R_field = rotation_field_from_directions(orientations)  # (3, 3, Nv)
+        return rotate_tensor4_field(R_field, C_ref)              # (3, 3, 3, 3, Nv)
 
     def stiffness_voigt(self, engineering: bool = False) -> jnp.ndarray:
         """
