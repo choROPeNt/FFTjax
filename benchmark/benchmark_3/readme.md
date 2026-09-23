@@ -2,8 +2,9 @@
 
 `elastic_solve_vtu.py` runs `problems.mechanics.solve_mechanics` on every `*.vtu` file in a given
 directory -- TexGen exports of the same geometry family (e.g. different fabric weights or export
-resolutions), each carrying its own per-voxel fiber orientation field (`YarnTangent`) read via
-`utils.io.reader.SimulationReader`. The yarn phase is `TransverseIsotropic` with
+resolutions), each carrying its own per-voxel fiber orientation field (`YarnTangent` or
+`Orientation`, depending on TexGen export version) read via `utils.io.reader.SimulationReader`.
+The yarn phase is `TransverseIsotropic` with
 `fiber_dir="from_input"`, so the orientation field drives the material automatically -- no
 per-file material config needed.
 
@@ -13,7 +14,6 @@ export directory.
 
 ```bash
 python benchmark/benchmark_3/elastic_solve_vtu.py --data-dir /path/to/texgen/exports
-python benchmark/benchmark_3/elastic_solve_vtu.py --data-dir /path/to/texgen/exports --isolate
 ```
 
 Tracks wall-clock read/jit/solve/write time, peak memory (host RSS via `resource`, plus JAX device
@@ -39,9 +39,10 @@ Each file's solved fields -- `phase`, `yarn_index`, `orientation`, `strain`/`str
 `output/benchmark/benchmark_3/<stem>.h5`/`.xdmf`, openable in ParaView with the `Xdmf3ReaderT`
 reader.
 
-`--isolate` re-runs the script once per file, each its own subprocess, for a true per-file
-peak-memory reading -- without it, `host_peak_rss_mb` is the process's peak-so-far and only ever
-grows across files, so later files' numbers include earlier ones' already-freed peaks.
+Every `(file, solver)` pair runs in its own subprocess, so `host_peak_rss_mb` is always a true
+per-run peak (via `resource`) rather than a cumulative process-wide one, and JAX's GPU allocator
+arena starts clean for every run instead of getting fragmented by earlier, differently-shaped
+solves.
 
 Edit `MATERIALS_CFG`/`EPS_BAR` at the top of `elastic_solve_vtu.py` for your actual fiber/matrix
 constants and load case -- the defaults are illustrative E-glass/epoxy values.
