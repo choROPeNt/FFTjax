@@ -107,8 +107,9 @@ OUT_DIR = "output/benchmark/benchmark_3"
 # this list's order must not change without checking that.
 MATERIALS_CFG = [
     {"model": "isotropic_elastic", "E": 3.354e3, "nu": 0.38, "name": "epoxy matrix"},
-    {"model": "transverse_isotropic", "E_L": 176.905e3, "E_T": 10.814e3, "G_LT": 6.9e3,
-     "nu_LT": 0.245, "G_TT": 4.245e3, "fiber_dir": "from_input", "name": "carbon fiber yarn fvc75"},
+    {"model": "isotropic_elastic", "E": 176.905e3, "nu": 0.38, "name": "fiber isolated (isotropic)"},
+    # {"model": "transverse_isotropic", "E_L": 176.905e3, "E_T": 10.814e3, "G_LT": 6.9e3,
+    #  "nu_LT": 0.245, "G_TT": 4.245e3, "fiber_dir": "from_input", "name": "carbon fiber yarn fvc75"},
 ]
 
 EPS_BAR = jnp.array([
