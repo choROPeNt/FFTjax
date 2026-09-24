@@ -129,16 +129,14 @@ LOADING_CASES = {
     "tension": dict(
         eps_goal=jnp.array([[0.0, 0.0, 0.0], [0.0, 1.11e-3, 0.0], [0.0, 0.0, 0.0]]),
         jobname="benchmark_pff_tension", ref_csv="ref_tension.csv",
-        i=1, j=1, comp_symbol=r"$$\bar{\varepsilon}_{xx}$$", 
-        stress_symbol=r"$$\bar{\sigma}_{xx}$$",
+        i=1, j=1, comp_label="eps_xx", stress_label="sig_xx",
         xlabel=r"$\bar{\varepsilon}_{xx}$", ylabel=r"$\bar{\sigma}_{xx}$ [MPa]",
         title="Mode-I tension — single edge notch plate",
     ),
     "shear": dict(
         eps_goal=jnp.array([[0.0, 1e-3, 0.0], [1e-3, 0.0, 0.0], [0.0, 0.0, 0.0]]),
         jobname="benchmark_pff_shear", ref_csv="ref_shear.csv",
-        i=0, j=1, comp_symbol=r"$$\bar{\varepsilon}_{xy}$$", 
-        stress_symbol=r"$$\bar{\sigma}_{xy}$$",
+        i=0, j=1, comp_label="eps_xy", stress_label="sig_xy",
         xlabel=r"$\bar{\varepsilon}_{xy}$", ylabel=r"$\bar{\sigma}_{xy}$ [MPa]",
         title="Mode-II shear — single edge notch plate",
     ),
@@ -157,6 +155,12 @@ SOLVER_CONFIGS: list[tuple[str, str, str]] = [
     ("galerkin",     "fourier_galerkin",   "rotated"),
 ]
 
+# (i, j) tensor index -> the "xyz" letter pair _report's history dict rows
+# actually key their eps_{..}/sig_{..} entries by (eps_xx, eps_yy, ..., eps_xy,
+# ...) -- NOT "eps_11"/"eps_22"/etc. LOADING_CASES' own i/j are already given
+# in i<=j order, so this always lands on a key the dict actually has.
+_AXIS = "xyz"
+
 
 def run_case(name: str, case: dict, solver_label: str, formulation: str, scheme: str) -> list[dict]:
     print(f"\n=== {name}  [{solver_label}: formulation={formulation}, scheme={scheme}] ===")
@@ -167,10 +171,15 @@ def run_case(name: str, case: dict, solver_label: str, formulation: str, scheme:
     print(f"Viscosity: η = {eta:.1e}  →  η/Δt = {eta/dt_step:.1e} MPa")
 
     i, j = int(case["i"]), int(case["j"])
+    comp_label, stress_label = case["comp_label"], case["stress_label"]
     jobname = f"{case['jobname']}__{solver_label}"
     d_init = jnp.zeros((Nv,))
     H_init = jnp.zeros((Nv,))
     history: list[dict] = []
+
+    print(f"{'step':>4} {'t':>6} {comp_label:>10} {stress_label + ' [MPa]':>13} "
+          f"{'max(d)':>7} {'st':>3} {'err_abs':>9} {'err_rel':>9} "
+          f"{'mech':>4} {'helm':>4} {'time [s]':>8}")
 
     def _report(r, write_time):
         sol = r.solution
@@ -178,13 +187,11 @@ def run_case(name: str, case: dict, solver_label: str, formulation: str, scheme:
         conv_mech = bool(sol.converged_mech)
         conv_helm = bool(sol.converged_helm)
         print(
-            f"  step {r.step:3d}  t={r.t:.3f}  "
-            f"{case['comp_symbol']}={float(eps_bar[i, j]):.2e}  "
-            f"{case['stress_symbol']}={float(sigma_bar[i, j]):.2f} MPa  "
-            f"max(d)={float(jnp.max(sol.d)):.4f}  "
-            f"st={sol.iter_staggered}  err_abs={sol.err_abs:.1e}  err_rel={sol.err_rel:.1e}  "
-            f"mech={'ok' if conv_mech else 'FAIL'}  helm={'ok' if conv_helm else 'FAIL'}  "
-            f"time={r.wall_time + write_time:.1f}s"
+            f"{r.step:>4} {r.t:>6.3f} {float(eps_bar[i, j]):>10.2e} "
+            f"{float(sigma_bar[i, j]):>13.2f} {float(jnp.max(sol.d)):>7.4f} "
+            f"{sol.iter_staggered:>3} {sol.err_abs:>9.1e} {sol.err_rel:>9.1e} "
+            f"{'ok' if conv_mech else 'FAIL':>4} {'ok' if conv_helm else 'FAIL':>4} "
+            f"{r.wall_time + write_time:>8.1f}"
         )
         history.append({
             "step": r.step, "time": float(r.t), "dt": float(r.dt),
@@ -253,8 +260,8 @@ def plot_combined(name: str, case: dict, results: dict[str, list[dict]]) -> None
     compared directly against each other and against Schneider & Kästner
     (2025)."""
     i, j = int(case["i"]), int(case["j"])
-    eps_key = f"eps_{i+1}{j+1}"
-    sig_key = f"sig_{i+1}{j+1}"
+    eps_key = f"eps_{_AXIS[i]}{_AXIS[j]}"
+    sig_key = f"sig_{_AXIS[i]}{_AXIS[j]}"
 
     ref = np.loadtxt(os.path.join(here, case["ref_csv"]), delimiter=",", skiprows=1)
 
@@ -328,8 +335,8 @@ def main():
             results[solver_label] = history
 
             i, j = int(case["i"]), int(case["j"])
-            sig_key = f"sig_{i+1}{j+1}"
-            eps_key = f"eps_{i+1}{j+1}"
+            sig_key = f"sig_{_AXIS[i]}{_AXIS[j]}"
+            eps_key = f"eps_{_AXIS[i]}{_AXIS[j]}"
             peak = max(history, key=lambda h: h[sig_key])
             summary_rows.append({
                 "loading": loading_name, "solver_label": solver_label,
