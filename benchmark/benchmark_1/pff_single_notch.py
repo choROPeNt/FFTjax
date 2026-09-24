@@ -13,8 +13,8 @@ Material    : steel  E = 210 GPa,  ν = 0.3
 PFF params  : l₀ = 1.0 mm,  Gc = 2.7 MPa·mm
 Pre-crack   : x ∈ [5, 15) mm  (i=[25,75) at 250² grid),  y = 125 (centre)
 Load        : 100 equal increments, ramped to
-    tension -- ε₂₂ → 1.11e-3   (pure-strain BC, ε₁₁ = ε₃₃ = 0)
-    shear   -- ε₁₂ = ε₂₁ → 1.0e-3
+    tension -- εxx → 1.11e-3   (pure-strain BC, ε₁₁ = ε₃₃ = 0)
+    shear   -- εxy = εyx → 1.0e-3
 
 Staggered scheme per increment -- see problems.fracture.solve_fracture's
 docstring. Load-stepping is problems.fracture.solve_fracture_incremental
@@ -100,7 +100,7 @@ materials = [
     # benchmark is this material's validation against the published
     # reference curve, see materialmodels/phasefield/isotropic.py.
     PhaseFieldIsotropic(E=210e3, nu=0.3, Gc=2.7, name="steel"),
-    LinearElasticIsotropic(E=1e-6*210e3,  nu=0.3, name="void"),
+    PhaseFieldIsotropic(E=1e-6*210e3,  nu=0.3, Gc=2.7,name="void"),
 ]
 
 x_crack = (5.0, 15.0)   # mm: [start, end)
@@ -121,22 +121,25 @@ dt_step                   = 0.01   # 100 equal steps — see module docstring
 toler_st_abs, toler_st_rel, maxiter_st = 1e-2, 1e-3, 200
 eta = 1e-6   # damage-equation viscous regularisation (Fig. 3b, Schneider & Kästner 2025)
 
-output = "output/benchmark/single_notch_plate"
+out_root_path = "output_"
+output = f"{out_root_path}/benchmark/single_notch_plate"
 here   = os.path.dirname(os.path.abspath(__file__))
 
 LOADING_CASES = {
     "tension": dict(
         eps_goal=jnp.array([[0.0, 0.0, 0.0], [0.0, 1.11e-3, 0.0], [0.0, 0.0, 0.0]]),
         jobname="benchmark_pff_tension", ref_csv="ref_tension.csv",
-        i=1, j=1, comp_symbol="ε₂₂", stress_symbol="σ₂₂",
-        xlabel=r"$\bar{\varepsilon}_{22}$", ylabel=r"$\bar{\sigma}_{22}$ [MPa]",
+        i=1, j=1, comp_symbol=r"$$\bar{\varepsilon}_{xx}$$", 
+        stress_symbol=r"$$\bar{\sigma}_{xx}$$",
+        xlabel=r"$\bar{\varepsilon}_{xx}$", ylabel=r"$\bar{\sigma}_{xx}$ [MPa]",
         title="Mode-I tension — single edge notch plate",
     ),
     "shear": dict(
         eps_goal=jnp.array([[0.0, 1e-3, 0.0], [1e-3, 0.0, 0.0], [0.0, 0.0, 0.0]]),
         jobname="benchmark_pff_shear", ref_csv="ref_shear.csv",
-        i=0, j=1, comp_symbol="ε₁₂", stress_symbol="σ₁₂",
-        xlabel=r"$\bar{\varepsilon}_{12}$", ylabel=r"$\bar{\sigma}_{12}$ [MPa]",
+        i=0, j=1, comp_symbol=r"$$\bar{\varepsilon}_{xy}$$", 
+        stress_symbol=r"$$\bar{\sigma}_{xy}$$",
+        xlabel=r"$\bar{\varepsilon}_{xy}$", ylabel=r"$\bar{\sigma}_{xy}$ [MPa]",
         title="Mode-II shear — single edge notch plate",
     ),
 }
@@ -185,12 +188,12 @@ def run_case(name: str, case: dict, solver_label: str, formulation: str, scheme:
         )
         history.append({
             "step": r.step, "time": float(r.t), "dt": float(r.dt),
-            "eps_11": float(eps_bar[0, 0]), "eps_22": float(eps_bar[1, 1]),
-            "eps_33": float(eps_bar[2, 2]), "eps_12": float(eps_bar[0, 1]),
-            "eps_13": float(eps_bar[0, 2]), "eps_23": float(eps_bar[1, 2]),
-            "sig_11": float(sigma_bar[0, 0]), "sig_22": float(sigma_bar[1, 1]),
-            "sig_33": float(sigma_bar[2, 2]), "sig_12": float(sigma_bar[0, 1]),
-            "sig_13": float(sigma_bar[0, 2]), "sig_23": float(sigma_bar[1, 2]),
+            "eps_xx": float(eps_bar[0, 0]), "eps_yy": float(eps_bar[1, 1]),
+            "eps_zz": float(eps_bar[2, 2]), "eps_xy": float(eps_bar[0, 1]),
+            "eps_xz": float(eps_bar[0, 2]), "eps_yz": float(eps_bar[1, 2]),
+            "sig_xx": float(sigma_bar[0, 0]), "sig_yy": float(sigma_bar[1, 1]),
+            "sig_zz": float(sigma_bar[2, 2]), "sig_xy": float(sigma_bar[0, 1]),
+            "sig_xz": float(sigma_bar[0, 2]), "sig_yz": float(sigma_bar[1, 2]),
             "max_d": float(jnp.max(sol.d)), "iter_st": sol.iter_staggered,
             "err_abs": sol.err_abs, "err_rel": sol.err_rel,
             "converged_mech": conv_mech, "converged_helm": conv_helm,
@@ -276,12 +279,13 @@ def plot_combined(name: str, case: dict, results: dict[str, list[dict]]) -> None
 
 def print_summary(rows: list[dict]) -> None:
     print(f"\n{'loading':<8} {'solver':<13} {'formulation':<19} {'scheme':<9} "
-          f"{'steps':>6} {'total time [s]':>15} {'final max(d)':>13} {'final stress [MPa]':>19} "
-          f"{'mech fails':>10} {'helm fails':>10}")
+          f"{'steps':>6} {'total time [s]':>15} {'final max(d)':>13} "
+          f"{'peak stress [MPa]':>18} {'eps at peak':>12} {'mech fails':>10} {'helm fails':>10}")
     for r in rows:
         print(f"{r['loading']:<8} {r['solver_label']:<13} {r['formulation']:<19} {r['scheme']:<9} "
               f"{r['n_steps']:>6} {r['total_time_s']:>15.1f} {r['final_max_d']:>13.4f} "
-              f"{r['final_stress_MPa']:>19.2f} {r['n_mech_fail']:>10} {r['n_helm_fail']:>10}")
+              f"{r['peak_stress_MPa']:>18.2f} {r['eps_at_peak_stress']:>12.2e} "
+              f"{r['n_mech_fail']:>10} {r['n_helm_fail']:>10}")
 
     summary_path = f"{output}/solver_comparison_summary.csv"
     with open(summary_path, "w", newline="") as fh:
@@ -324,12 +328,16 @@ def main():
             results[solver_label] = history
 
             i, j = int(case["i"]), int(case["j"])
+            sig_key = f"sig_{i+1}{j+1}"
+            eps_key = f"eps_{i+1}{j+1}"
+            peak = max(history, key=lambda h: h[sig_key])
             summary_rows.append({
                 "loading": loading_name, "solver_label": solver_label,
                 "formulation": formulation, "scheme": scheme,
                 "n_steps": len(history), "total_time_s": total_time_s,
                 "final_max_d": history[-1]["max_d"],
-                "final_stress_MPa": history[-1][f"sig_{i+1}{j+1}"],
+                "peak_stress_MPa": peak[sig_key],
+                "eps_at_peak_stress": peak[eps_key],
                 "n_mech_fail": sum(not h["converged_mech"] for h in history),
                 "n_helm_fail": sum(not h["converged_helm"] for h in history),
             })
