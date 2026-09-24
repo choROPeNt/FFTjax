@@ -167,7 +167,7 @@ def solve_mechanics(
     ----------
     n, L        : grid shape and physical domain size
     phase       : (Nv,) int      phase index per voxel (0-based)
-    materials   : list           each implements .stiffness_tensor(), .lam, .mu
+    materials   : list           each implements .elastic_stiffness_tensor(), .lam, .mu
                   (see materialmodels.elastic.isotropic.LinearElasticIsotropic)
     eps_bar     : (3, 3)         macroscopic strain at t=1 (the full load);
                   entries where ``control == 1`` are ignored (solved for

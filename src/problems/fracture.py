@@ -107,7 +107,7 @@ def solve_fracture(
     ----------
     n, L        : grid shape and physical domain size
     phase       : (Nv,) int      phase index per voxel (0-based)
-    materials   : list           each implements .stiffness_tensor(), .lam, .mu
+    materials   : list           each implements .elastic_stiffness_tensor(), .lam, .mu
                   (see materialmodels.elastic.isotropic.LinearElasticIsotropic)
     eps_bar     : (3, 3)         prescribed macroscopic strain for this increment;
                   entries where ``control == 1`` are ignored (solved for instead)

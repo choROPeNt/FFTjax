@@ -22,8 +22,8 @@ def assemble_C_field(
 
     Each voxel gets exactly one material's stiffness tensor, selected by its
     phase index -- no interpolation/blending at interfaces. Most materials'
-    ``stiffness_tensor()`` returns one constant ``(3,3,3,3)`` tensor, in
-    which case this just broadcasts it to every voxel of that material's
+    ``elastic_stiffness_tensor()`` returns one constant ``(3,3,3,3)`` tensor,
+    in which case this just broadcasts it to every voxel of that material's
     phase (the fast path below -- stack + gather, no per-voxel work at all).
     A material with a per-voxel-varying stiffness (e.g.
     ``TransverseIsotropic`` constructed with a per-voxel ``fiber_dir`` --
@@ -33,6 +33,9 @@ def assemble_C_field(
     entries (voxels belonging to a different phase) to hold anything.
     Mixing both kinds of material in one ``materials:`` list works
     transparently -- callers never need to know or care which case applies.
+    Uses the constant elastic tensor even for a nonlinear (plastic/
+    phase-field) material -- see assemble_local_update/
+    assemble_pff_local_update for the state-dependent tangent instead.
 
     Parameters
     ----------
@@ -44,7 +47,7 @@ def assemble_C_field(
     -------
     C_field : (3, 3, 3, 3, Nv)
     """
-    C_per_material = [m.stiffness_tensor() for m in materials]
+    C_per_material = [m.elastic_stiffness_tensor() for m in materials]
 
     if all(C.ndim == 4 for C in C_per_material):
         # fast path: every material is one constant tensor.
@@ -175,7 +178,7 @@ def assemble_local_update(materials: Sequence[ConstitutiveModel], phase: jnp.nda
                 eps_p_out = jnp.where(mask, eps_p_i, eps_p_out)
                 alpha_out = jnp.where(mask, alpha_i, alpha_out)
             else:
-                C_i = m.stiffness_tensor()
+                C_i = m.elastic_stiffness_tensor()
                 sigma_i = jnp.einsum("ijkl,klm->ijm", C_i, eps_field)
                 C_i = jnp.broadcast_to(C_i[..., None], (3, 3, 3, 3, Nv))
             sigma = jnp.where(mask, sigma_i, sigma)
@@ -204,7 +207,7 @@ def assemble_pff_local_update(materials: Sequence[ConstitutiveModel], phase: jnp
     in ``test/test_materialmodels_phasefield_isotropic.py``), so it isn't
     needed here. A material without ``psi_split`` (plain
     ``LinearElasticIsotropic``, no Amor split) falls back to
-    ``degradation_at2(d) * stiffness_tensor()``, reproducing
+    ``degradation_at2(d) * elastic_stiffness_tensor()``, reproducing
     ``materialmodels.phasefield.degradation.degrade_stiffness_field``'s
     per-phase behavior exactly -- so a ``materials`` list can freely mix
     old-style and new-style materials.
@@ -213,7 +216,7 @@ def assemble_pff_local_update(materials: Sequence[ConstitutiveModel], phase: jnp
     ----------
     materials : list of ConstitutiveModel, indexed by phase (0-based) -- any
                 mix of PhaseFieldIsotropic (psi_split) and plain elastic
-                (stiffness_tensor + k_res) materials
+                (elastic_stiffness_tensor + k_res) materials
     phase     : (Nv,) int   phase index per voxel
 
     Returns
@@ -233,7 +236,7 @@ def assemble_pff_local_update(materials: Sequence[ConstitutiveModel], phase: jnp
                 sigma_i, C_i, _psi_pos_i = m.stress_and_tangent_field(eps_field, d_field)
             else:
                 g = degradation_at2(d_field, k=m.k_res)
-                C_elastic = m.stiffness_tensor()
+                C_elastic = m.elastic_stiffness_tensor()
                 C_i = g[None, None, None, None, :] * C_elastic[..., None]
                 sigma_i = jnp.einsum("ijklm,klm->ijm", C_i, eps_field)
             sigma = jnp.where(mask, sigma_i, sigma)

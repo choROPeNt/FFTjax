@@ -15,11 +15,21 @@ class ConstitutiveModel(ABC):
     sigma = C : eps. Deliberately thin -- symmetry class, parametrization,
     and any derived quantities (moduli, Voigt form, ...) are up to each
     concrete model.
+
+    ``elastic_stiffness_tensor()`` is the one every model must provide: a
+    constant, state-independent reference tensor -- for a linear model
+    (``LinearElasticIsotropic``, ``TransverseIsotropic``) this *is* the
+    tangent; for a nonlinear one (``J2Plasticity``, ``DruckerPrager``,
+    ``PhaseFieldIsotropic``) it's the undamaged/virgin elastic tensor used
+    e.g. as the FFT solver's reference medium (``operators.green.
+    build_reference_green_operator``), never the true state-dependent
+    tangent -- see each such model's own ``stiffness_tensor(eps, ...)``
+    for that.
     """
 
     @abstractmethod
-    def stiffness_tensor(self) -> jnp.ndarray:
-        """(3, 3, 3, 3) stiffness tensor C_ijkl."""
+    def elastic_stiffness_tensor(self) -> jnp.ndarray:
+        """(3, 3, 3, 3) constant elastic stiffness tensor C_ijkl."""
         ...
 
 
@@ -57,4 +67,4 @@ class PhaseFieldMaterial(Protocol):
     k_res: float
     Gc:    float | None
 
-    def stiffness_tensor(self) -> jnp.ndarray: ...
+    def elastic_stiffness_tensor(self) -> jnp.ndarray: ...

@@ -258,7 +258,7 @@ def build_reference_green_operator(
     no .lam/.mu) since it works from stiffness_tensor() rather than
     assuming those attributes exist.
 
-    A material whose stiffness_tensor() is itself a per-voxel field --
+    A material whose elastic_stiffness_tensor() is itself a per-voxel field --
     (3,3,3,3,Nv), e.g. TransverseIsotropic with fiber_dir given as a
     per-voxel orientation field rather than one fixed direction -- is
     averaged over voxels first, so every entry going into the cross-material
@@ -270,7 +270,7 @@ def build_reference_green_operator(
     Parameters
     ----------
     n, L       : grid shape and physical domain size
-    materials  : list, each exposing .stiffness_tensor()
+    materials  : list, each exposing .elastic_stiffness_tensor()
     scheme     : 'standard' (GreenOperatorBasic) or 'rotated' (GreenOperatorWillot)
 
     Returns
@@ -278,7 +278,7 @@ def build_reference_green_operator(
     green_op : GreenOperatorBasic or GreenOperatorWillot
     """
     def _mean_stiffness(m) -> jnp.ndarray:
-        C = m.stiffness_tensor()
+        C = m.elastic_stiffness_tensor()
         return jnp.mean(C, axis=-1) if C.ndim == 5 else C
 
     C_mean = jnp.mean(jnp.stack([_mean_stiffness(m) for m in materials]), axis=0)

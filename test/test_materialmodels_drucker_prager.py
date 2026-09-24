@@ -153,7 +153,7 @@ print("[3] PASSED")
 # is singular -- it must give the plain elastic tangent, not NaN.
 s_v, C_v, _ = dp.stress_and_tangent(jnp.zeros((3, 3)), jnp.zeros((3, 3)), jnp.array(0.0))
 assert bool(jnp.all(s_v == 0.0)) and bool(jnp.all(jnp.isfinite(C_v)))
-assert float(jnp.max(jnp.abs(C_v - dp.stiffness_tensor()))) == 0.0, \
+assert float(jnp.max(jnp.abs(C_v - dp.elastic_stiffness_tensor()))) == 0.0, \
     "virgin-state tangent is not the elastic stiffness"
 
 eps_hyd = jnp.eye(3) * 0.05  # far past the cone vertex in hydrostatic tension

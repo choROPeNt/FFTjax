@@ -107,7 +107,7 @@ print("[1] PASSED")
 # ── 2/3. two-phase RVE with a plastic matrix ────────────────────────────────
 
 matrix_pl = J2Plasticity(E=3.76e3, nu=0.39, sigma_y0=50.0, H=1.0e3, name="epoxy-plastic")
-C_fiber   = fiber_el.stiffness_tensor()
+C_fiber   = fiber_el.elastic_stiffness_tensor()
 
 
 def plastic_local_update(eps_field, state):

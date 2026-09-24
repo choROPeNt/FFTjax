@@ -16,7 +16,7 @@ Five checks
 4. Rotational invariance about its own axis: a genuinely transversely
    isotropic material (E_L != E_T) rotated so the fibre direction stays
    [0, 0, 1] (the reference axis) but through a different in-plane frame
-   must reproduce the unrotated stiffness_tensor() exactly -- that
+   must reproduce the unrotated elastic_stiffness_tensor() exactly -- that
    invariance is the defining property of transverse isotropy.
 5. Degenerate (zero) direction: rotation_from_direction([0,0,0]) must return
    the identity rotation, not NaN -- regression check for a real bug where
@@ -59,8 +59,8 @@ from materialmodels.tensors import (
 iso = LinearElasticIsotropic(E=210e3, nu=0.3)
 trans = TransverseIsotropic(E_L=140e3, E_T=10e3, G_LT=5e3, nu_LT=0.3, nu_TT=0.4)
 
-for C4, tag in [(np.asarray(iso.stiffness_tensor()), "isotropic"),
-                (np.asarray(trans.stiffness_tensor()), "transversely isotropic")]:
+for C4, tag in [(np.asarray(iso.elastic_stiffness_tensor()), "isotropic"),
+                (np.asarray(trans.elastic_stiffness_tensor()), "transversely isotropic")]:
     for engineering in (False, True):
         C_voigt = tensor4_to_voigt(C4, engineering=engineering)
         C4_back = voigt_to_tensor4(C_voigt, engineering=engineering)
@@ -71,12 +71,12 @@ print("[1] Voigt round-trip: PASSED (both tensors, both conventions)")
 
 # ── 2. symmetry checks ────────────────────────────────────────────────────────
 
-for C4, tag in [(np.asarray(iso.stiffness_tensor()), "isotropic"),
-                (np.asarray(trans.stiffness_tensor()), "transversely isotropic")]:
+for C4, tag in [(np.asarray(iso.elastic_stiffness_tensor()), "isotropic"),
+                (np.asarray(trans.elastic_stiffness_tensor()), "transversely isotropic")]:
     assert is_major_symmetric(C4), f"{tag}: expected major symmetric"
     assert is_minor_symmetric(C4), f"{tag}: expected minor symmetric"
 
-C4_broken = np.asarray(trans.stiffness_tensor()).copy()
+C4_broken = np.asarray(trans.elastic_stiffness_tensor()).copy()
 C4_broken[0, 0, 1, 2] += 1.0   # break minor symmetry only at one entry
 assert not is_minor_symmetric(C4_broken), "expected broken tensor to fail minor-symmetry check"
 
@@ -89,14 +89,14 @@ G = E / (2.0 * (1.0 + nu))
 degenerate = TransverseIsotropic(E_L=E, E_T=E, G_LT=G, nu_LT=nu, nu_TT=nu)
 iso_ref = LinearElasticIsotropic(E=E, nu=nu)
 
-err = float(jnp.max(jnp.abs(degenerate.stiffness_tensor() - iso_ref.stiffness_tensor())))
+err = float(jnp.max(jnp.abs(degenerate.elastic_stiffness_tensor() - iso_ref.elastic_stiffness_tensor())))
 print(f"[3] isotropic degeneracy: max|C_trans - C_iso| = {err:.3e}")
 assert err < 1e-6, f"isotropic-limit mismatch: {err:.3e}"
 print("[3] isotropic degeneracy: PASSED")
 
 # ── 4. rotational invariance about own axis ───────────────────────────────────
 
-C_ref = trans.stiffness_tensor()
+C_ref = trans.elastic_stiffness_tensor()
 C_rot = trans.stiffness_tensor_rotated(jnp.array([0.0, 0.0, 1.0]))
 err = float(jnp.max(jnp.abs(C_rot - C_ref)))
 print(f"[4] rotation about own axis: max|C_rotated - C_ref| = {err:.3e}")

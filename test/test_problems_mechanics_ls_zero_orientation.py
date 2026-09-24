@@ -11,12 +11,12 @@ The bug this guards against
 ----------------------------
 materialmodels.tensors.rotation_from_direction used to do `d / norm(d)`
 unconditionally -- 0/0 = NaN for a zero direction. TransverseIsotropic.
-stiffness_tensor() (per-voxel field mode) is NaN at every such voxel.
-materialmodels.assembly.assemble_C_field masks those out correctly by
-phase (jnp.where), so formulation="displacement" -- which only ever touches
-the assembled C_field -- was never affected. But
+elastic_stiffness_tensor() (per-voxel field mode) is NaN at every such
+voxel. materialmodels.assembly.assemble_C_field masks those out correctly
+by phase (jnp.where), so formulation="displacement" -- which only ever
+touches the assembled C_field -- was never affected. But
 operators.green.build_reference_green_operator spatially averages each
-material's OWN stiffness_tensor() (to build the Lippmann-Schwinger
+material's OWN elastic_stiffness_tensor() (to build the Lippmann-Schwinger
 reference medium) BEFORE any phase masking happens, over the WHOLE grid --
 so the NaN at the oriented material's own "not really this phase" voxels
 poisoned lam0/mu0, then the Green's operator, then the polarization

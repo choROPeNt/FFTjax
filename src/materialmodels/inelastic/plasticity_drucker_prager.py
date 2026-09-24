@@ -15,9 +15,10 @@ coefficients a_f (friction) and a_g (dilatancy) on top of J2's
 below collapses to plasticity_j2's, verified in
 test/test_materialmodels_drucker_prager.py.
 
-stiffness_tensor() still returns the elastic-only stiffness (for a caller
-that just wants an elastic reference, e.g. a fixed preconditioner); it is
-not the elastoplastic tangent -- see stress_and_tangent, same as J2.
+elastic_stiffness_tensor() still returns the elastic-only stiffness (for a
+caller that just wants an elastic reference, e.g. a fixed preconditioner);
+it is not the elastoplastic tangent -- see stiffness_tensor(eps, ...)/
+stress_and_tangent, same as J2.
 
 See notes/AUTODIFF_CONSTITUTIVE.md (Proposal A) for why the tangent is
 derived by autodiff rather than hand-coded, and the two gotchas both
@@ -177,12 +178,30 @@ class DruckerPrager(ConstitutiveModel):
                 "strength. Typical values are a few percent of sigma_y0."
             )
 
-    def stiffness_tensor(self) -> jnp.ndarray:
+    def elastic_stiffness_tensor(self) -> jnp.ndarray:
         """(3, 3, 3, 3) elastic stiffness -- NOT the elastoplastic tangent."""
         d = jnp.eye(3)
         return (self.lam * jnp.einsum('ij,kl->ijkl', d, d)
                 + self.mu * (jnp.einsum('ik,jl->ijkl', d, d)
                              + jnp.einsum('il,jk->ijkl', d, d)))
+
+    def stiffness_tensor(
+        self,
+        eps: jnp.ndarray,
+        eps_p_prev: jnp.ndarray,
+        alpha_prev: jnp.ndarray,
+    ) -> jnp.ndarray:
+        """
+        (3, 3, 3, 3) elastoplastic tangent at the given (eps, state) -- the
+        state-dependent counterpart of elastic_stiffness_tensor(). No major
+        symmetry whenever a_g != a_f (non-associated flow) -- see
+        stress_and_tangent's own docstring, this is exactly its C_tan.
+        Thin wrapper over stress_and_tangent (same single jacfwd pass),
+        discarding sigma/updated state -- call stress_and_tangent directly
+        when both are needed, to avoid a redundant autodiff pass.
+        """
+        _, C_tan, _ = self.stress_and_tangent(eps, eps_p_prev, alpha_prev)
+        return C_tan
 
     def stress(
         self,

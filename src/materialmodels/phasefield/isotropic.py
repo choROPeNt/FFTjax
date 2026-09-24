@@ -96,6 +96,25 @@ class PhaseFieldIsotropic(LinearElasticIsotropic):
         C_tan, (sigma, psi_pos) = jax.jacfwd(_stress_fn, has_aux=True)(eps)
         return sigma, C_tan, psi_pos
 
+    def stress(self, eps: jnp.ndarray, d: jnp.ndarray) -> jnp.ndarray:
+        """sigma = d(psi)/d(eps), one voxel. Thin wrapper over
+        stress_and_tangent, discarding C_tan/psi_pos -- call
+        stress_and_tangent directly when more than sigma is needed, to
+        avoid a redundant autodiff pass."""
+        sigma, _, _ = self.stress_and_tangent(eps, d)
+        return sigma
+
+    def stiffness_tensor(self, eps: jnp.ndarray, d: jnp.ndarray) -> jnp.ndarray:
+        """(3, 3, 3, 3) degraded tangent C_tan = d(sigma)/d(eps) = d^2(psi)/d(eps)^2,
+        one voxel -- the state-dependent counterpart of
+        elastic_stiffness_tensor() (inherited from LinearElasticIsotropic,
+        the undegraded d=0 reference). Thin wrapper over stress_and_tangent
+        (same single jacfwd pass), discarding sigma/psi_pos -- call
+        stress_and_tangent directly when more than C_tan is needed, to
+        avoid a redundant autodiff pass."""
+        _, C_tan, _ = self.stress_and_tangent(eps, d)
+        return C_tan
+
     def stress_and_tangent_field(
         self, eps_field: jnp.ndarray, d_field: jnp.ndarray,
     ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:

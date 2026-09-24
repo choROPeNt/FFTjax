@@ -60,9 +60,12 @@ class LinearElasticIsotropic(ConstitutiveModel):
     # Stiffness representations
     # ------------------------------------------------------------------
 
-    def stiffness_tensor(self) -> jnp.ndarray:
+    def elastic_stiffness_tensor(self) -> jnp.ndarray:
         """
-        Full 4th-order stiffness tensor C_ijkl, shape (3, 3, 3, 3).
+        Full 4th-order stiffness tensor C_ijkl, shape (3, 3, 3, 3). Linear
+        model, so this *is* the tangent too -- no separate state-dependent
+        ``stiffness_tensor(eps, ...)`` exists here (see ConstitutiveModel's
+        own docstring for the distinction).
 
         Used directly by the FFT solver::
 
@@ -100,7 +103,7 @@ class LinearElasticIsotropic(ConstitutiveModel):
 
     def stress_field(self, eps: jnp.ndarray) -> jnp.ndarray:
         """Compute stress from full-tensor strain field (3,3,Nv) → (3,3,Nv)."""
-        return jnp.einsum('ijkl,klm->ijm', self.stiffness_tensor(), eps)
+        return jnp.einsum('ijkl,klm->ijm', self.elastic_stiffness_tensor(), eps)
 
     @property
     def bulk_modulus(self) -> float:

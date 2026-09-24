@@ -67,7 +67,7 @@ def sm2sv(sm: jnp.ndarray, pairs: Tuple[Tuple[int, int], ...]) -> jnp.ndarray:
 
 def _isotropic_stiffness(lam, mu) -> jnp.ndarray:
     """(3,3,3,3) isotropic stiffness tensor from Lame parameters -- same formula
-    as materialmodels.elastic.isotropic.LinearElasticIsotropic.stiffness_tensor,
+    as materialmodels.elastic.isotropic.LinearElasticIsotropic.elastic_stiffness_tensor,
     duplicated here (rather than imported) to keep solvers/ free of a
     materialmodels/ dependency; used only to build the small reference-stiffness
     system for the Lippmann-Schwinger outer mixed-BC correction."""

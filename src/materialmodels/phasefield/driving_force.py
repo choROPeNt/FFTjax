@@ -31,9 +31,9 @@ def lame_field(materials: Sequence[ConstitutiveModel], phase: jnp.ndarray) -> tu
     (λ, μ) pair the split needs instead of the full C tensor.
 
     Each material's (λ, μ) comes from ``isotropic_equivalent_lame`` on its
-    own ``stiffness_tensor()`` -- exact for an isotropic material (recovers
-    its own λ, μ bit-for-bit, verified in materialmodels.tensors), an
-    isotropization for an anisotropic one (e.g. TransverseIsotropic).
+    own ``elastic_stiffness_tensor()`` -- exact for an isotropic material
+    (recovers its own λ, μ bit-for-bit, verified in materialmodels.tensors),
+    an isotropization for an anisotropic one (e.g. TransverseIsotropic).
     The Amor split itself is only defined for an isotropic elastic law, so
     an anisotropic phase's driving force is inherently approximate here --
     this is the same approximation problems.mechanics.solve_mechanics's
@@ -42,14 +42,14 @@ def lame_field(materials: Sequence[ConstitutiveModel], phase: jnp.ndarray) -> tu
 
     Parameters
     ----------
-    materials : list of ConstitutiveModel (any -- only needs .stiffness_tensor())
+    materials : list of ConstitutiveModel (any -- only needs .elastic_stiffness_tensor())
     phase     : (Nv,) int   phase index per voxel
 
     Returns
     -------
     lam_vox, mu_vox : (Nv,), (Nv,)
     """
-    lam_mu = [isotropic_equivalent_lame(m.stiffness_tensor()) for m in materials]
+    lam_mu = [isotropic_equivalent_lame(m.elastic_stiffness_tensor()) for m in materials]
     lam_stack = jnp.array([lm[0] for lm in lam_mu])
     mu_stack = jnp.array([lm[1] for lm in lam_mu])
     return lam_stack[phase], mu_stack[phase]

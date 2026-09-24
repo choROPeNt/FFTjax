@@ -18,8 +18,8 @@ class VoxelAveraging(ABC):
     Follows this project's per-voxel field convention (tensor indices first,
     voxel index trailing -- see materialmodels/assembly.py::assemble_C_field,
     operators/general_functions.py::ddot42): C_a/C_b are either a single bulk
-    ``(3, 3, 3, 3)`` tensor (a material's ``stiffness_tensor()``, constant
-    over all voxels) or already per-voxel ``(3, 3, 3, 3, Nv)``.
+    ``(3, 3, 3, 3)`` tensor (a material's ``elastic_stiffness_tensor()``,
+    constant over all voxels) or already per-voxel ``(3, 3, 3, 3, Nv)``.
     """
 
     @abstractmethod

@@ -5,7 +5,7 @@ given as a (3, Nv) orientation field, e.g. straight from a TexGen VTU's own
 YarnTangent field via utils.io.reader.read_vtu) -- previously crashed with a
 jnp.stack shape mismatch: (3,3,3,3) from a plain material next to
 (3,3,3,3,Nv) from a field-valued one. Fixed by spatially-averaging any
-per-voxel stiffness_tensor() before the cross-material mean.
+per-voxel elastic_stiffness_tensor() before the cross-material mean.
 
 Three checks
 ------------
@@ -48,7 +48,7 @@ fiber_scalar = TransverseIsotropic(E_L=80.0e3, E_T=8.0e3, G_LT=4.0e3, nu_LT=0.25
                                     fiber_dir=[0.0, 0.0, 1.0], name="glass fiber")
 green_scalar = build_reference_green_operator(n, L, [matrix, fiber_scalar], scheme="rotated")
 
-C_mean_expected = jnp.mean(jnp.stack([matrix.stiffness_tensor(), fiber_scalar.stiffness_tensor()]), axis=0)
+C_mean_expected = jnp.mean(jnp.stack([matrix.elastic_stiffness_tensor(), fiber_scalar.elastic_stiffness_tensor()]), axis=0)
 lam0_expected, mu0_expected = isotropic_equivalent_lame(C_mean_expected)
 assert jnp.allclose(green_scalar.lam0, lam0_expected) and jnp.allclose(green_scalar.mu0, mu0_expected)
 print(f"[1] constant-tensor materials: lam0={float(green_scalar.lam0):.4f}  mu0={float(green_scalar.mu0):.4f}")
@@ -60,8 +60,8 @@ Nv = int(np.prod(n))
 uniform_field = jnp.tile(jnp.array([0.0, 0.0, 1.0])[:, None], (1, Nv))  # same direction, every voxel
 fiber_field_uniform = TransverseIsotropic(E_L=80.0e3, E_T=8.0e3, G_LT=4.0e3, nu_LT=0.25, G_TT=3.0e3,
                                            fiber_dir=uniform_field, name="glass fiber (field)")
-assert fiber_field_uniform.stiffness_tensor().shape == (3, 3, 3, 3, Nv), \
-    "sanity: fiber_dir as a (3, Nv) field should make stiffness_tensor() per-voxel"
+assert fiber_field_uniform.elastic_stiffness_tensor().shape == (3, 3, 3, 3, Nv), \
+    "sanity: fiber_dir as a (3, Nv) field should make elastic_stiffness_tensor() per-voxel"
 
 green_field_uniform = build_reference_green_operator(n, L, [matrix, fiber_field_uniform], scheme="rotated")
 assert jnp.allclose(green_field_uniform.lam0, green_scalar.lam0, atol=1e-8)
@@ -81,8 +81,8 @@ fiber_field_varying = TransverseIsotropic(E_L=80.0e3, E_T=8.0e3, G_LT=4.0e3, nu_
 
 green_field_varying = build_reference_green_operator(n, L, [matrix, fiber_field_varying], scheme="rotated")
 
-fiber_C_spatial_mean = jnp.mean(fiber_field_varying.stiffness_tensor(), axis=-1)
-C_mean_ref = jnp.mean(jnp.stack([matrix.stiffness_tensor(), fiber_C_spatial_mean]), axis=0)
+fiber_C_spatial_mean = jnp.mean(fiber_field_varying.elastic_stiffness_tensor(), axis=-1)
+C_mean_ref = jnp.mean(jnp.stack([matrix.elastic_stiffness_tensor(), fiber_C_spatial_mean]), axis=0)
 lam0_ref, mu0_ref = isotropic_equivalent_lame(C_mean_ref)
 
 assert jnp.allclose(green_field_varying.lam0, lam0_ref, atol=1e-8)

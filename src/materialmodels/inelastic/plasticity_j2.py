@@ -6,10 +6,11 @@ stateless -- elastoplastic stress/tangent need (eps, eps_p, alpha), not just
 eps. State (eps_p, alpha) is per-voxel and threaded by the CALLER across load
 increments, never stored on this instance -- same convention as
 materialmodels.phasefield's d/H damage state relative to a plain elastic
-model. stiffness_tensor() still returns the elastic-only stiffness (for a
-caller that just wants an elastic reference, e.g. a fixed preconditioner);
-it is not the elastoplastic tangent, which depends on state and is never
-constant -- see stress_and_tangent for that.
+model. elastic_stiffness_tensor() still returns the elastic-only stiffness
+(for a caller that just wants an elastic reference, e.g. a fixed
+preconditioner or the FFT solver's reference medium); it is not the
+elastoplastic tangent, which depends on state and is never constant --
+see stiffness_tensor(eps, ...)/stress_and_tangent for that.
 
 See notes/AUTODIFF_CONSTITUTIVE.md (Proposal A) for why the tangent is
 derived by autodiff here rather than a hand-coded consistent tangent, and
@@ -55,12 +56,29 @@ class J2Plasticity(ConstitutiveModel):
         self.lam = self.E * self.nu / ((1.0 + self.nu) * (1.0 - 2.0 * self.nu))
         self.mu = self.E / (2.0 * (1.0 + self.nu))
 
-    def stiffness_tensor(self) -> jnp.ndarray:
+    def elastic_stiffness_tensor(self) -> jnp.ndarray:
         """(3, 3, 3, 3) elastic stiffness -- NOT the elastoplastic tangent."""
         d = jnp.eye(3)
         return (self.lam * jnp.einsum('ij,kl->ijkl', d, d)
                 + self.mu * (jnp.einsum('ik,jl->ijkl', d, d)
                              + jnp.einsum('il,jk->ijkl', d, d)))
+
+    def stiffness_tensor(
+        self,
+        eps: jnp.ndarray,
+        eps_p_prev: jnp.ndarray,
+        alpha_prev: jnp.ndarray,
+    ) -> jnp.ndarray:
+        """
+        (3, 3, 3, 3) elastoplastic tangent at the given (eps, state) -- the
+        state-dependent counterpart of elastic_stiffness_tensor(), state-
+        dependent so never constant. Thin wrapper over stress_and_tangent
+        (same single jacfwd pass), discarding sigma/updated state -- call
+        stress_and_tangent directly when both are needed, to avoid a
+        redundant autodiff pass.
+        """
+        _, C_tan, _ = self.stress_and_tangent(eps, eps_p_prev, alpha_prev)
+        return C_tan
 
     def stress(
         self,

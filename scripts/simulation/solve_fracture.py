@@ -13,9 +13,9 @@ src/materialmodels/, src/problems/fracture.py, src/problems/incremental.py.
 Anisotropic materials (e.g. transverse_isotropic, like
 scripts/simulation/solve_mechanics.py's example) are usable here too -- the
 Amor-split driving force uses an isotropized (lambda, mu) proxy of each
-material's stiffness_tensor() (materialmodels.phasefield.driving_force.
-lame_field), exact for an isotropic material, an approximation for an
-anisotropic one.
+material's elastic_stiffness_tensor() (materialmodels.phasefield.
+driving_force.lame_field), exact for an isotropic material, an
+approximation for an anisotropic one.
 
 ``stepping.mode`` selects how the target strain is reached -- see
 solve_mechanics.py's docstring, same three modes. ``stepping.dt_step`` is
