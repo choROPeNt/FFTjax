@@ -6,10 +6,11 @@ All functions accept the solver's native layout — fields with shape
 ``(*grid_n, ...)`` suitable for ParaView export via ``utils.io.xdmf_writer``.
 """
 
-from typing import Sequence
+from typing import Mapping, Sequence
 
 import numpy as np
 import jax.numpy as jnp
+from jax.typing import ArrayLike
 
 from operators.green import build_freq_grid
 
@@ -164,8 +165,8 @@ def macroscopic_response(
     eps_bar: jnp.ndarray,
     sigma_bar: jnp.ndarray,
     *,
-    scalars: dict[str, np.ndarray] | None = None,
-    tensors: dict[str, jnp.ndarray] | None = None,
+    scalars: Mapping[str, ArrayLike] | None = None,
+    tensors: Mapping[str, ArrayLike] | None = None,
 ) -> dict[str, np.ndarray]:
     """
     Package one increment's macroscopic response into the flat, named dict
