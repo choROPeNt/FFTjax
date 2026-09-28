@@ -31,7 +31,7 @@ class Gamma0Operator(LinearOperator):
     transparently, no separate class or call needed. On a single-device
     machine (the common case, and every existing caller's test environment)
     this takes exactly the original single-device jnp.fft.fftn/ifftn path,
-    unchanged. ``max_devices`` caps the auto-detected count -- mainly for
+    unchanged. ``n_devices`` caps the auto-detected count -- mainly for
     forcing the single-device path on a multi-device machine (e.g. in tests);
     production callers leave it at ``None``.
 
@@ -47,10 +47,10 @@ class Gamma0Operator(LinearOperator):
     is self-adjoint on real fields too.
     """
 
-    def __init__(self, n: tuple[int, ...], green_op: LinearOperator, max_devices: int | None = None):
+    def __init__(self, n: tuple[int, ...], green_op: LinearOperator, n_devices: int | None = None):
         self.n = n
         self.green_op = green_op
-        self.n_devices = choose_device_count(n, max_devices)
+        self.n_devices = choose_device_count(n, n_devices)
         if self.n_devices > 1:
             self._n_local = (n[0] // self.n_devices, n[1], n[2])
             self._G_sharded = split_x_slabs(green_op.G, self.n_devices)

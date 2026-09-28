@@ -45,7 +45,7 @@ import jax.numpy as jnp
 from jax import lax
 
 
-def choose_device_count(n: tuple[int, ...], max_devices: int | None = None) -> int:
+def choose_device_count(n: tuple[int, ...], n_devices: int | None = None) -> int:
     """
     Real device count to use for domain-decomposing a grid of shape ``n``,
     auto-detected from ``jax.local_device_count()`` -- the actual GPU/CPU
@@ -57,7 +57,7 @@ def choose_device_count(n: tuple[int, ...], max_devices: int | None = None) -> i
 
     The slab decomposition needs ``n[0] % d == 0`` and ``n[1] % d == 0`` (see
     module docstring), so this returns the largest ``d`` in
-    ``[1, min(available, max_devices or available)]`` satisfying both --
+    ``[1, min(available, n_devices or available)]`` satisfying both --
     degrading toward fewer devices (never erroring) if the grid doesn't
     divide evenly by the full device count, and toward exactly 1 (no
     decomposition at all) if only one device is available or none divide
@@ -65,7 +65,7 @@ def choose_device_count(n: tuple[int, ...], max_devices: int | None = None) -> i
     means "use the existing single-device path unchanged."
     """
     available = jax.local_device_count()
-    cap = available if max_devices is None else min(available, max_devices)
+    cap = available if n_devices is None else min(available, n_devices)
     for d in range(cap, 0, -1):
         if n[0] % d == 0 and n[1] % d == 0:
             return d
@@ -159,7 +159,7 @@ def pifft3d_flat(xhat_local_flat: jnp.ndarray, n_local: tuple[int, ...], axis_na
     return x.real.reshape(s)
 
 
-def distributed_fft_flat(x_full: jnp.ndarray, n: tuple[int, ...], max_devices: int | None = None) -> jnp.ndarray:
+def distributed_fft_flat(x_full: jnp.ndarray, n: tuple[int, ...], n_devices: int | None = None) -> jnp.ndarray:
     """
     Auto-decomposed drop-in replacement for the ``fft_`` closure every
     single-device solver in this project defines inline (``displacement_based.py``,
@@ -179,7 +179,7 @@ def distributed_fft_flat(x_full: jnp.ndarray, n: tuple[int, ...], max_devices: i
     (not (yet) a memory-scaling win -- the full array still has to exist
     between FFT calls for that downstream logic to run on).
     """
-    n_devices = choose_device_count(n, max_devices)
+    n_devices = choose_device_count(n, n_devices)
     if n_devices == 1:
         s = x_full.shape
         return jnp.fft.fftn(x_full.reshape(s[:-1] + n), axes=(-3, -2, -1)).reshape(s)
@@ -190,10 +190,10 @@ def distributed_fft_flat(x_full: jnp.ndarray, n: tuple[int, ...], max_devices: i
     return gather_x_slabs(out_sharded)
 
 
-def distributed_ifft_flat(xhat_full: jnp.ndarray, n: tuple[int, ...], max_devices: int | None = None) -> jnp.ndarray:
+def distributed_ifft_flat(xhat_full: jnp.ndarray, n: tuple[int, ...], n_devices: int | None = None) -> jnp.ndarray:
     """Inverse of ``distributed_fft_flat`` -- real result, matching
     ``jnp.fft.ifftn(...).real``, same auto-decompose/fallback behavior."""
-    n_devices = choose_device_count(n, max_devices)
+    n_devices = choose_device_count(n, n_devices)
     if n_devices == 1:
         s = xhat_full.shape
         return jnp.fft.ifftn(xhat_full.reshape(s[:-1] + n), axes=(-3, -2, -1)).real.reshape(s)

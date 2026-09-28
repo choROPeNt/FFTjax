@@ -21,26 +21,26 @@ There is only ONE class here now (no separate "distributed" variant) --
 ``choose_device_count``) and takes the original single-device code path at
 one device, no configuration needed on real hardware. Two things are
 checked, both against the SAME class, constructed two ways: (1) on this
-real single-device machine, ``max_devices=1`` forces the fallback branch
+real single-device machine, ``n_devices=1`` forces the fallback branch
 (proving the dispatch itself, without needing multiple devices at all --
 this is the path a laptop with one GPU actually takes), and (2) under
-simulated multi-device (this file run standalone with FAKE_DEVICES set),
+simulated multi-device (this file run standalone with DEVICES set),
 the auto-detected distributed path matches the same construction with
-``max_devices=1`` as its oracle.
+``n_devices=1`` as its oracle.
 
 Same isolation caveat as ``test_operators_fft_distributed.py`` for check
 (2): run standalone, not inside the full ``pytest test/`` sweep. Fake
-device count is controlled by the ``FAKE_DEVICES`` env var (default 4) --
+device count is controlled by the ``DEVICES`` env var (default 4) --
 run as separate processes/jobs to compare device counts, e.g.:
 
-    FAKE_DEVICES=2 python -m pytest test/test_operators_projection_distributed.py -v
-    FAKE_DEVICES=4 python -m pytest test/test_operators_projection_distributed.py -v
-    FAKE_DEVICES=8 python -m pytest test/test_operators_projection_distributed.py -v
+    DEVICES=2 python -m pytest test/test_operators_projection_distributed.py -v
+    DEVICES=4 python -m pytest test/test_operators_projection_distributed.py -v
+    DEVICES=8 python -m pytest test/test_operators_projection_distributed.py -v
 """
 
 import os
 
-N_DEVICES = int(os.environ.get("FAKE_DEVICES", "4"))
+N_DEVICES = int(os.environ.get("DEVICES", "4"))
 os.environ.setdefault("XLA_FLAGS", f"--xla_force_host_platform_device_count={N_DEVICES}")
 
 import sys
@@ -61,7 +61,7 @@ from operators.green import build_reference_green_operator
 from operators.projection import Gamma0Operator
 
 # N[0] and N[1] must both be divisible by N_DEVICES -- scale the grid with
-# it so any FAKE_DEVICES value stays valid.
+# it so any DEVICES value stays valid.
 N = (2 * N_DEVICES, 2 * N_DEVICES, 8)
 L = (1.0, 1.0, 1.0)
 
@@ -98,15 +98,15 @@ def _direct_gamma0(green_op, sigma0: jnp.ndarray, n) -> jnp.ndarray:
     return jnp.fft.ifftn(out_hat.reshape(s[:-1] + n), axes=(-3, -2, -1)).real.reshape(s)
 
 
-def test_max_devices_1_matches_direct_computation():
-    """max_devices=1 forces the single-device fallback branch, regardless
+def test_n_devices_1_matches_direct_computation():
+    """n_devices=1 forces the single-device fallback branch, regardless
     of how many real/fake devices this process actually sees -- proving the
     dispatch itself is correct against an oracle computed independently of
     Gamma0Operator, without needing multiple devices at all. This is the
-    path a laptop with one GPU actually takes at the default (max_devices=None)."""
+    path a laptop with one GPU actually takes at the default (n_devices=None)."""
     green_op, sigma0 = _build_case()
 
-    gamma0 = Gamma0Operator(N, green_op, max_devices=1)
+    gamma0 = Gamma0Operator(N, green_op, n_devices=1)
     assert gamma0.n_devices == 1
 
     expected = _direct_gamma0(green_op, sigma0, N)
@@ -114,9 +114,9 @@ def test_max_devices_1_matches_direct_computation():
 
 
 def test_distributed_gamma0_matches_single_device():
-    """Real (or simulated, via FAKE_DEVICES) multi-device path -- same
+    """Real (or simulated, via DEVICES) multi-device path -- same
     class, auto-detecting jax.local_device_count(), checked against the
-    same class with max_devices=1 forced as the oracle."""
+    same class with n_devices=1 forced as the oracle."""
     if jax.local_device_count() < N_DEVICES:
         pytest.skip(
             f"need {N_DEVICES} local devices (got {jax.local_device_count()}) -- "
@@ -125,7 +125,7 @@ def test_distributed_gamma0_matches_single_device():
         )
     green_op, sigma0 = _build_case()
 
-    gamma0_single = Gamma0Operator(N, green_op, max_devices=1)
+    gamma0_single = Gamma0Operator(N, green_op, n_devices=1)
     expected = gamma0_single(sigma0)
 
     gamma0_dist = Gamma0Operator(N, green_op)
@@ -136,7 +136,7 @@ def test_distributed_gamma0_matches_single_device():
 
 
 if __name__ == "__main__":
-    test_max_devices_1_matches_direct_computation()
+    test_n_devices_1_matches_direct_computation()
     if jax.local_device_count() >= N_DEVICES:
         test_distributed_gamma0_matches_single_device()
     print(f"ok -- backend={jax.default_backend()}  local_device_count={jax.local_device_count()}")

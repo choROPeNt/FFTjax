@@ -11,16 +11,16 @@ as drop-in replacements for their own ``fft_``/``ifft_`` closures -- see
 the vector (elasticity) solvers.
 
 Same isolation caveat as the other ``dev_pmap`` tests: run standalone, not
-inside the full ``pytest test/`` sweep. Fake device count via ``FAKE_DEVICES``
+inside the full ``pytest test/`` sweep. Fake device count via ``DEVICES``
 (default 4):
 
-    FAKE_DEVICES=2 python -m pytest test/test_solvers_elliptic_scalar_distributed.py -v
-    FAKE_DEVICES=8 python -m pytest test/test_solvers_elliptic_scalar_distributed.py -v
+    DEVICES=2 python -m pytest test/test_solvers_elliptic_scalar_distributed.py -v
+    DEVICES=8 python -m pytest test/test_solvers_elliptic_scalar_distributed.py -v
 """
 
 import os
 
-N_DEVICES = int(os.environ.get("FAKE_DEVICES", "4"))
+N_DEVICES = int(os.environ.get("DEVICES", "4"))
 os.environ.setdefault("XLA_FLAGS", f"--xla_force_host_platform_device_count={N_DEVICES}")
 
 import sys
@@ -57,12 +57,12 @@ def _require_multi_device():
 
 
 def _compare(fn, *args, tol_1=1e-10, tol_n=1e-6, **kwargs):
-    """Run fn at max_devices=1 (single-device oracle) and max_devices=None
+    """Run fn at n_devices=1 (single-device oracle) and n_devices=None
     (auto-detected) -- both must agree, at tol_1 if this process actually
     has only 1 device (byte-identical fallback), at the looser tol_n once
     real cross-device pmap arithmetic is exercised."""
-    out_1 = fn(*args, max_devices=1, **kwargs)
-    out_n = fn(*args, max_devices=None, **kwargs)
+    out_1 = fn(*args, n_devices=1, **kwargs)
+    out_n = fn(*args, n_devices=None, **kwargs)
     tol = tol_1 if jax.local_device_count() == 1 else tol_n
     for a, b in zip(jax.tree_util.tree_leaves(out_1), jax.tree_util.tree_leaves(out_n)):
         np.testing.assert_allclose(np.asarray(b), np.asarray(a), atol=tol, rtol=tol)

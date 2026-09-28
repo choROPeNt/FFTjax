@@ -34,7 +34,7 @@ from solvers.krylov.cg import cg_solve
 from solvers.solution import ElasticitySolution
 
 
-@partial(jit, static_argnames=("n", "control", "maxiter", "max_devices"))
+@partial(jit, static_argnames=("n", "control", "maxiter", "n_devices"))
 def solve_displacement_based(
     n:           Tuple,
     C_field:     jnp.ndarray,
@@ -45,7 +45,7 @@ def solve_displacement_based(
     toler_lin:   float = 1e-4,
     maxiter:     int = 1000,
     C0:          jnp.ndarray | None = None,
-    max_devices: int | None = None,
+    n_devices: int | None = None,
 ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
     Parameters
@@ -65,7 +65,7 @@ def solve_displacement_based(
                   preconditioner CG needs O(10²-10³) iterations for realistic
                   (high-contrast) composites; default is the voxel-average of
                   ``C_field``.
-    max_devices : caps the device count every FFT call in this solve
+    n_devices : caps the device count every FFT call in this solve
                   auto-detects for domain decomposition (see
                   operators.fft_distributed.distributed_fft_flat) -- static
                   for JIT, since it's a Python int driving shape decisions,
@@ -100,10 +100,10 @@ def solve_displacement_based(
 
     # ── FFT helpers ───────────────────────────────────────────────────────────
     def fft_(x):
-        return distributed_fft_flat(x, n, max_devices=max_devices)
+        return distributed_fft_flat(x, n, n_devices=n_devices)
 
     def ifft_(x):
-        return distributed_ifft_flat(x, n, max_devices=max_devices)
+        return distributed_ifft_flat(x, n, n_devices=n_devices)
 
     def unpack(x_flat):
         du = x_flat[: 3 * Nv].reshape(3, Nv)
@@ -205,7 +205,7 @@ class DisplacementBasedSolver(ElasticitySolver):
         toler_lin:   float = 1e-4,
         maxiter:     int = 1000,
         C0:          jnp.ndarray | None = None,
-        max_devices: int | None = None,
+        n_devices: int | None = None,
     ):
         self.n = n
         self.xi_flat = xi_flat
@@ -213,7 +213,7 @@ class DisplacementBasedSolver(ElasticitySolver):
         self.toler_lin = toler_lin
         self.maxiter = maxiter
         self.C0 = C0
-        self.max_devices = max_devices
+        self.n_devices = n_devices
 
     def solve(
         self,
@@ -225,6 +225,6 @@ class DisplacementBasedSolver(ElasticitySolver):
         eps, sigma, delta, eps_bar_out, converged = solve_displacement_based(
             self.n, C_field, self.xi_flat, eps_bar, self.control, sg,
             toler_lin=self.toler_lin, maxiter=self.maxiter, C0=self.C0,
-            max_devices=self.max_devices,
+            n_devices=self.n_devices,
         )
         return ElasticitySolution(eps, sigma, delta, converged, eps_bar=eps_bar_out)

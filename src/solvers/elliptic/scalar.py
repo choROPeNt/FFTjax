@@ -22,12 +22,15 @@ from math import prod
 import jax
 import jax.numpy as jnp
 
-from operators.fft_distributed import distributed_fft_flat, distributed_ifft_flat
+from operators.fft_distributed import (
+    choose_device_count, distributed_fft_flat, distributed_ifft_flat,
+    gather_x_slabs, pfft3d_flat, pifft3d_flat, split_x_slabs,
+)
 from operators.green import nyquist_safe_xi
-from solvers.krylov.cg import cg_solve
+from solvers.krylov.cg import cg_solve, cg_solve_pmap
 
 
-@partial(jax.jit, static_argnames=("n", "maxiter", "max_devices"))
+@partial(jax.jit, static_argnames=("n", "maxiter", "n_devices"))
 def solve_damage_helmholtz_cg(
     H_field: jnp.ndarray,
     xi_flat: jnp.ndarray,
@@ -40,7 +43,7 @@ def solve_damage_helmholtz_cg(
     eta: float = 0.0,
     dt: float = 1.0,
     k: float | jnp.ndarray = 0.0,
-    max_devices: int | None = None,
+    n_devices: int | None = None,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """
     Preconditioned CG solve of the AT2 Helmholtz damage equation with
@@ -96,29 +99,42 @@ def solve_damage_helmholtz_cg(
                            sync with the true variational stationarity
                            condition -- negligibly for k~1e-6, not
                            negligibly as k approaches 1)
-    max_devices : caps the device count every FFT call in this solve
-                           auto-detects for domain decomposition (see
-                           operators.fft_distributed.distributed_fft_flat)
-                           -- None (default) uses whatever
+    n_devices : caps the device count this solve auto-detects for domain
+                           decomposition -- None (default) uses whatever
                            jax.local_device_count() reports; on a
                            single-device machine this is a no-op, the exact
-                           original single-device solve.
+                           original single-device solve. At more than one
+                           device, dispatches to a genuinely memory-scaling
+                           implementation (H_field/d_prev/xi_sq and every CG
+                           state vector stay sharded for the whole iterative
+                           solve, never gathered until the final answer --
+                           see ``_solve_damage_helmholtz_cg_sharded`` and
+                           ``solvers.elliptic.vector.lippmann_schwinger.
+                           _solve_lippmann_schwinger_sharded``, the same
+                           pattern applied here) rather than
+                           ``distributed_fft_flat``'s default per-call
+                           split/pmap/gather.
 
     Returns
     -------
     d          : (Nv,)        updated damage field in [0, 1]
     converged  : bool array   True if residual tolerance met
     """
-    Nv = prod(n)
+    resolved_n_devices = choose_device_count(n, n_devices)
+    if resolved_n_devices > 1:
+        return _solve_damage_helmholtz_cg_sharded(
+            H_field, xi_flat, n, l0, Gc, d_prev, toler_cg, maxiter, eta, dt, k, resolved_n_devices,
+        )
+
     xi_sq = jnp.sum(xi_flat ** 2, axis=0)   # |ξ|²  (Nv,) -- even power, no Nyquist issue
     eta_dt = eta / dt
     driving = 2.0 * (1.0 - k) * H_field   # -g'(d)·ψ⁺, affine-in-d term folded into the mass coefficient below
 
     def fft_(v):
-        return distributed_fft_flat(v, n, max_devices=max_devices)
+        return distributed_fft_flat(v, n, n_devices=1)
 
     def ifft_(v_hat):
-        return distributed_ifft_flat(v_hat, n, max_devices=max_devices)
+        return distributed_ifft_flat(v_hat, n, n_devices=1)
 
     def A_op(v_flat):
         lap_v = ifft_(-xi_sq * fft_(v_flat))
@@ -139,7 +155,61 @@ def solve_damage_helmholtz_cg(
     return jnp.clip(d, 0.0, 1.0), converged
 
 
-@partial(jax.jit, static_argnames=("n", "maxiter", "max_devices"))
+def _solve_damage_helmholtz_cg_sharded(H_field, xi_flat, n, l0, Gc, d_prev, toler_cg, maxiter, eta, dt, k, n_devices):
+    """
+    Fully domain-decomposed counterpart of ``solve_damage_helmholtz_cg``'s CG
+    solve, for ``n_devices > 1``. No DC-bin macroscopic-correction trick is
+    involved in this equation at all (unlike the elasticity/thermal
+    solvers), so this is the simplest possible case: ``driving``/``xi_sq``/
+    ``P_denom``/``d_prev`` are split ONCE, the whole CG solve runs under one
+    ``jax.pmap`` using ``cg_solve_pmap`` (``jax.lax.psum``-based reductions,
+    no vector ever gathered mid-solve), and only the final answer is
+    reassembled. ``driving_avg`` (needed by the preconditioner) is a cheap,
+    one-off reduction computed on the full array before splitting -- unlike
+    a per-iteration quantity, it doesn't need to live sharded.
+
+    Not a public entry point -- called only from ``solve_damage_helmholtz_cg``
+    when ``choose_device_count`` resolves to more than 1.
+    """
+    n_local = (n[0] // n_devices, n[1], n[2])
+    eta_dt = eta / dt
+    xi_sq = jnp.sum(xi_flat ** 2, axis=0)
+    driving = 2.0 * (1.0 - k) * H_field
+    driving_avg = jnp.mean(driving)
+    P_denom = Gc / l0 + eta_dt + driving_avg + Gc * l0 * xi_sq
+
+    driving_sharded = split_x_slabs(driving, n_devices)
+    xi_sq_sharded = split_x_slabs(xi_sq, n_devices)
+    d_prev_sharded = split_x_slabs(d_prev, n_devices)
+    P_denom_sharded = split_x_slabs(P_denom, n_devices)
+
+    def solve_local(driving_local, xi_sq_local, d_prev_local, P_denom_local):
+        def fft_(v):
+            return pfft3d_flat(v, n_local, "i")
+
+        def ifft_(v_hat):
+            return pifft3d_flat(v_hat, n_local, "i")
+
+        def A_op(v_flat):
+            lap_v = ifft_(-xi_sq_local * fft_(v_flat))
+            mass_v = (Gc / l0 + eta_dt + driving_local) * v_flat
+            return mass_v - Gc * l0 * lap_v
+
+        def P_op(v_flat):
+            return ifft_(fft_(v_flat) / P_denom_local)
+
+        bb = driving_local + eta_dt * d_prev_local
+        d_cg, converged = cg_solve_pmap(A_op, bb, d_prev_local, toler_cg, maxiter, axis_name="i", M=P_op)
+        d_local = jnp.maximum(d_prev_local, d_cg)
+        return jnp.clip(d_local, 0.0, 1.0), converged
+
+    d_sharded, converged_sharded = jax.pmap(solve_local, axis_name="i")(
+        driving_sharded, xi_sq_sharded, d_prev_sharded, P_denom_sharded,
+    )
+    return gather_x_slabs(d_sharded), converged_sharded[0]
+
+
+@partial(jax.jit, static_argnames=("n", "maxiter", "n_devices"))
 def solve_damage_helmholtz_cg_het(
     H_field: jnp.ndarray,
     xi_flat: jnp.ndarray,
@@ -152,7 +222,7 @@ def solve_damage_helmholtz_cg_het(
     eta: float = 0.0,
     dt: float = 1.0,
     k: float | jnp.ndarray = 0.0,
-    max_devices: int | None = None,
+    n_devices: int | None = None,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """
     Preconditioned CG solve of the AT2 Helmholtz damage equation for a
@@ -206,32 +276,38 @@ def solve_damage_helmholtz_cg_het(
     dt       : float       time-step size Δt (only used when η > 0)
     k        : float or (Nv,)  AT2 residual stiffness k_res -- see
                            ``solve_damage_helmholtz_cg``'s docstring
-    max_devices : caps the device count every FFT call in this solve
-                           auto-detects for domain decomposition -- see
-                           ``solve_damage_helmholtz_cg``'s docstring.
+    n_devices : caps the device count this solve auto-detects for domain
+                           decomposition -- see ``solve_damage_helmholtz_cg``'s
+                           docstring; at more than one device, dispatches to
+                           ``_solve_damage_helmholtz_cg_het_sharded`` (same
+                           genuinely memory-scaling pattern).
 
     Returns
     -------
     d          : (Nv,)        updated damage field in [0, 1]
     converged  : bool array   True if residual tolerance met
     """
-    Nv = prod(n)
-    ndim = xi_flat.shape[0]
+    resolved_n_devices = choose_device_count(n, n_devices)
+    if resolved_n_devices > 1:
+        return _solve_damage_helmholtz_cg_het_sharded(
+            H_field, xi_flat, n, l0, Gc, d_prev, toler_cg, maxiter, eta, dt, k, resolved_n_devices,
+        )
+
     iq = 1j * nyquist_safe_xi(xi_flat, n)   # (ndim, Nv) -- odd-power ξ, needs Nyquist zeroing
     eta_dt = eta / dt
     driving = 2.0 * (1.0 - k) * H_field
 
     def fft_(v):
-        return distributed_fft_flat(v, n, max_devices=max_devices)
+        return distributed_fft_flat(v, n, n_devices=1)
 
     def ifft_(v_hat):
-        return distributed_ifft_flat(v_hat, n, max_devices=max_devices)
+        return distributed_ifft_flat(v_hat, n, n_devices=1)
 
     def fft_vec(v):
-        return distributed_fft_flat(v, n, max_devices=max_devices)
+        return distributed_fft_flat(v, n, n_devices=1)
 
     def ifft_vec(v_hat):
-        return distributed_ifft_flat(v_hat, n, max_devices=max_devices)
+        return distributed_ifft_flat(v_hat, n, n_devices=1)
 
     def div_Gc_grad(v_flat):
         """div(Gc(x) * grad(v_flat)) via gradient -> real-space Gc multiply -> divergence."""
@@ -259,10 +335,72 @@ def solve_damage_helmholtz_cg_het(
     return jnp.clip(d, 0.0, 1.0), converged
 
 
+def _solve_damage_helmholtz_cg_het_sharded(H_field, xi_flat, n, l0, Gc, d_prev, toler_cg, maxiter, eta, dt, k, n_devices):
+    """
+    Fully domain-decomposed counterpart of ``solve_damage_helmholtz_cg_het``'s
+    CG solve, for ``n_devices > 1`` -- same pattern as
+    ``_solve_damage_helmholtz_cg_sharded``, extended to this equation's
+    distributed gradient/divergence (``div_Gc_grad``, 3 FFT round-trips per
+    matvec instead of 1): ``iq``, ``Gc``, ``driving``, ``d_prev``, and
+    ``P_denom`` are split ONCE, the whole CG solve runs under one
+    ``jax.pmap`` using ``cg_solve_pmap``, and only the final answer is
+    reassembled. ``Gc0``/``driving_avg`` (the preconditioner's reference
+    values) are cheap, one-off reductions on the full arrays before
+    splitting, same reasoning as the homogeneous solver's ``driving_avg``.
+
+    Not a public entry point -- called only from
+    ``solve_damage_helmholtz_cg_het`` when ``choose_device_count`` resolves
+    to more than 1.
+    """
+    n_local = (n[0] // n_devices, n[1], n[2])
+    iq = 1j * nyquist_safe_xi(xi_flat, n)
+    eta_dt = eta / dt
+    driving = 2.0 * (1.0 - k) * H_field
+    Gc0 = jnp.mean(Gc)
+    xi_sq = jnp.sum(xi_flat ** 2, axis=0)
+    driving_avg = jnp.mean(driving)
+    P_denom = Gc0 / l0 + eta_dt + driving_avg + Gc0 * l0 * xi_sq
+
+    iq_sharded = split_x_slabs(iq, n_devices)
+    Gc_sharded = split_x_slabs(Gc, n_devices)
+    driving_sharded = split_x_slabs(driving, n_devices)
+    d_prev_sharded = split_x_slabs(d_prev, n_devices)
+    P_denom_sharded = split_x_slabs(P_denom, n_devices)
+
+    def solve_local(iq_local, Gc_local, driving_local, d_prev_local, P_denom_local):
+        def fft_(v):
+            return pfft3d_flat(v, n_local, "i")
+
+        def ifft_(v_hat):
+            return pifft3d_flat(v_hat, n_local, "i")
+
+        def div_Gc_grad(v_flat):
+            grad = ifft_(iq_local * fft_(v_flat)[None, :])   # (ndim, Nv_local) real
+            q_hat = fft_(Gc_local[None, :] * grad)
+            return ifft_(jnp.sum(iq_local * q_hat, axis=0))
+
+        def A_op(v_flat):
+            mass_v = (Gc_local / l0 + eta_dt + driving_local) * v_flat
+            return mass_v - l0 * div_Gc_grad(v_flat)
+
+        def P_op(v_flat):
+            return ifft_(fft_(v_flat) / P_denom_local)
+
+        bb = driving_local + eta_dt * d_prev_local
+        d_cg, converged = cg_solve_pmap(A_op, bb, d_prev_local, toler_cg, maxiter, axis_name="i", M=P_op)
+        d_local = jnp.maximum(d_prev_local, d_cg)
+        return jnp.clip(d_local, 0.0, 1.0), converged
+
+    d_sharded, converged_sharded = jax.pmap(solve_local, axis_name="i")(
+        iq_sharded, Gc_sharded, driving_sharded, d_prev_sharded, P_denom_sharded,
+    )
+    return gather_x_slabs(d_sharded), converged_sharded[0]
+
+
 _ZERO_CONTROL_1D = (0, 0, 0)
 
 
-@partial(jax.jit, static_argnames=("n", "control", "maxiter", "max_devices"))
+@partial(jax.jit, static_argnames=("n", "control", "maxiter", "n_devices"))
 def solve_thermal_conduction(
     n:          tuple[int, ...],
     K_field:    jnp.ndarray,
@@ -273,7 +411,7 @@ def solve_thermal_conduction(
     toler_lin:  float = 1e-6,
     maxiter:    int = 1000,
     K0:         jnp.ndarray | None = None,
-    max_devices: int | None = None,
+    n_devices: int | None = None,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
     Steady-state heat conduction on a periodic voxel grid, true heterogeneous
@@ -328,7 +466,7 @@ def solve_thermal_conduction(
                  unknown here is scalar, unlike the displacement case's
                  3-component acoustic tensor). Default is the voxel-average
                  of K_field.
-    max_devices : caps the device count every FFT call in this solve
+    n_devices : caps the device count every FFT call in this solve
                  auto-detects for domain decomposition (see
                  operators.fft_distributed.distributed_fft_flat, same
                  mechanism solve_displacement_based uses) -- None (default)
@@ -355,16 +493,16 @@ def solve_thermal_conduction(
     iq = 1j * nyquist_safe_xi(xi_flat, n)  # (3, Nv) -- gradient/divergence are odd powers of ξ
 
     def fft_(v):
-        return distributed_fft_flat(v, n, max_devices=max_devices)
+        return distributed_fft_flat(v, n, n_devices=n_devices)
 
     def ifft_(v_hat):
-        return distributed_ifft_flat(v_hat, n, max_devices=max_devices)
+        return distributed_ifft_flat(v_hat, n, n_devices=n_devices)
 
     def fft_vec(v):
-        return distributed_fft_flat(v, n, max_devices=max_devices)
+        return distributed_fft_flat(v, n, n_devices=n_devices)
 
     def ifft_vec(v_hat):
-        return distributed_ifft_flat(v_hat, n, max_devices=max_devices)
+        return distributed_ifft_flat(v_hat, n, n_devices=n_devices)
 
     # ── pack/unpack the macroscopic-gradient correction (flux-controlled only) ──
     def sv2full(sv):

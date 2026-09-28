@@ -151,3 +151,91 @@ def cg_solve_scan(A, b, x0, tol, maxiter, M=None):
     init = (x0, r0, p0, rz0, conv0)
     (x_f, r_f, _, _, converged), _ = jax.lax.scan(step, init, xs=None, length=maxiter)
     return x_f, converged
+
+
+def cg_solve_pmap(A, b, x0, tol, maxiter, axis_name, M=None):
+    """
+    Preconditioned CG (``jax.lax.while_loop``, early-exit like ``cg_solve``)
+    for use *inside* a ``jax.pmap`` call, where ``A``/``b``/``x0``/``M`` all
+    operate on this device's local shard of a domain-decomposed field.
+
+    Every reduction (the two dot products, the residual norm) is an
+    all-reduce (``jax.lax.psum`` across ``axis_name``) instead of a plain
+    ``jnp.dot``/``jnp.linalg.norm`` -- so every device computes the exact
+    same scalar ``alpha``/``beta``/residual each step, and every device's
+    local ``x``/``r``/``p`` stays numerically consistent, without ever
+    gathering the full vector to one device. This is what makes a domain
+    decomposition an actual memory-scaling win rather than just FFT-compute
+    offload (see ``operators.projection.Gamma0Operator``, which instead
+    gathers back to a full array after every operator apply): the full
+    vector never has to exist anywhere.
+
+    Algorithm mirrors ``cg_solve_scan`` (same preconditioned-CG step order,
+    verified against this project's real FFT-based operators there) rather
+    than being re-derived, but with ``while_loop``'s early exit instead of
+    ``scan``'s fixed length -- safe here because the loop condition is
+    itself an all-reduced (thus bitwise-identical-across-devices) residual
+    norm, so every device's local ``while_loop`` runs the identical number
+    of iterations in lockstep, each doing the same collective communication.
+
+    ``converged`` is recomputed from a fresh residual after the loop
+    (``norm(b - A(x)) <= tol * norm(b)``), matching ``cg_solve``'s own
+    post-hoc convergence definition exactly, rather than trusting the loop's
+    own internally-tracked residual (which can drift slightly from the true
+    one through the iterative update ``r = r - alpha*Ap``).
+
+    Parameters
+    ----------
+    A, b, x0, M : as ``cg_solve``, but every array is this device's local
+                  shard, not the full field.
+    axis_name   : the ``pmap`` axis name to reduce over (``jax.lax.psum``).
+
+    Returns
+    -------
+    x         : local shard of the solution
+    converged : bool -- identical on every device (an all-reduce result)
+    """
+    def dot(u, v):
+        return jax.lax.psum(jnp.sum(u * v), axis_name)
+
+    def norm(u):
+        return jnp.sqrt(dot(u, u))
+
+    M_op = (lambda x: x) if M is None else M
+    b_norm = norm(b)
+    atol = tol * b_norm
+
+    r0 = b - A(x0)
+    z0 = M_op(r0)
+    p0 = z0
+    rz0 = dot(r0, z0)
+
+    # State carries the residual VECTOR r (needed by body_fun's own update,
+    # r_new = r - alpha*Ap), not just its norm -- cond_fun recomputes
+    # norm(r) fresh each call (one extra dot/psum per iteration, negligible
+    # next to the operator apply) rather than trying to smuggle a scalar
+    # through the same state slot, which silently corrupts r_new (a vector
+    # minus a scalar-broadcast term) if the two functions disagree on what
+    # that slot holds.
+    def cond_fun(state):
+        _, r, _, _, i = state
+        return (norm(r) > atol) & (i < maxiter)
+
+    def body_fun(state):
+        x, r, p, rz, i = state
+        Ap = A(p)
+        pAp = dot(p, Ap)
+        alpha = rz / jnp.where(pAp != 0.0, pAp, 1.0)
+        x_new = x + alpha * p
+        r_new = r - alpha * Ap
+        z_new = M_op(r_new)
+        rz_new = dot(r_new, z_new)
+        beta = rz_new / jnp.where(rz != 0.0, rz, 1.0)
+        p_new = z_new + beta * p
+        return (x_new, r_new, p_new, rz_new, i + 1)
+
+    init = (x0, r0, p0, rz0, 0)
+    x_f, _, _, _, _ = jax.lax.while_loop(cond_fun, body_fun, init)
+
+    converged = norm(b - A(x_f)) <= atol
+    return x_f, converged

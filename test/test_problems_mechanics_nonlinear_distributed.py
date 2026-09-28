@@ -14,16 +14,16 @@ Newton iteration -- a linear-only check wouldn't exercise ``local_update``
 being called with a genuinely evolving ``state`` across iterations.
 
 Same isolation caveat as the other ``dev_pmap`` tests: run standalone, not
-inside the full ``pytest test/`` sweep. Fake device count via ``FAKE_DEVICES``
+inside the full ``pytest test/`` sweep. Fake device count via ``DEVICES``
 (default 4):
 
-    FAKE_DEVICES=2 python -m pytest test/test_problems_mechanics_nonlinear_distributed.py -v
-    FAKE_DEVICES=8 python -m pytest test/test_problems_mechanics_nonlinear_distributed.py -v
+    DEVICES=2 python -m pytest test/test_problems_mechanics_nonlinear_distributed.py -v
+    DEVICES=8 python -m pytest test/test_problems_mechanics_nonlinear_distributed.py -v
 """
 
 import os
 
-N_DEVICES = int(os.environ.get("FAKE_DEVICES", "4"))
+N_DEVICES = int(os.environ.get("DEVICES", "4"))
 os.environ.setdefault("XLA_FLAGS", f"--xla_force_host_platform_device_count={N_DEVICES}")
 
 import sys
@@ -64,8 +64,8 @@ def _build_case():
 
     fiber_el = LinearElasticIsotropic(E=70.0e3, nu=0.20, name="fiber")
     # Low sigma_y0 so yielding is robust across every grid size this file
-    # runs at (N scales with N_DEVICES/FAKE_DEVICES -- see N's definition
-    # above), not just the default FAKE_DEVICES=4 shape/phase pattern.
+    # runs at (N scales with N_DEVICES/DEVICES -- see N's definition
+    # above), not just the default DEVICES=4 shape/phase pattern.
     matrix_pl = J2Plasticity(E=3.76e3, nu=0.39, sigma_y0=5.0, H=1.0e3, name="matrix-plastic")
     C_fiber = fiber_el.elastic_stiffness_tensor()
 
@@ -88,24 +88,24 @@ def _build_case():
     return xi_flat, local_update, state_init
 
 
-def _solve(xi_flat, local_update, state_init, max_devices):
+def _solve(xi_flat, local_update, state_init, n_devices):
     eps, sigma, (_, alpha), converged, n_iter = solve_displacement_based_nonlinear(
         N, xi_flat, EPS_BAR, local_update, state_init,
         toler_lin=TOLER_LIN, maxiter_lin=MAXITER_LIN,
         toler_nr=TOLER_NR, maxiter_nr=MAXITER_NR,
-        max_devices=max_devices,
+        n_devices=n_devices,
     )
     return eps, sigma, alpha, converged, n_iter
 
 
-def test_max_devices_1_matches_unset():
-    """max_devices=1 forces the single-device fallback branch, regardless
+def test_n_devices_1_matches_unset():
+    """n_devices=1 forces the single-device fallback branch, regardless
     of how many real/fake devices this process actually sees -- the path a
-    single-GPU machine takes at the default (max_devices=None)."""
+    single-GPU machine takes at the default (n_devices=None)."""
     xi_flat, local_update, state_init = _build_case()
 
-    eps_d, sigma_d, alpha_d, conv_d, n_iter_d = _solve(xi_flat, local_update, state_init, max_devices=None)
-    eps_f, sigma_f, alpha_f, conv_f, n_iter_f = _solve(xi_flat, local_update, state_init, max_devices=1)
+    eps_d, sigma_d, alpha_d, conv_d, n_iter_d = _solve(xi_flat, local_update, state_init, n_devices=None)
+    eps_f, sigma_f, alpha_f, conv_f, n_iter_f = _solve(xi_flat, local_update, state_init, n_devices=1)
 
     assert bool(conv_d) and bool(conv_f)
     # Whether any voxel actually yields depends on grid size/phase pattern
@@ -122,8 +122,8 @@ def test_max_devices_1_matches_unset():
 
 
 def test_distributed_solve_matches_single_device():
-    """Real (or FAKE_DEVICES-simulated) multi-device path through the full
-    Newton/CG solve, checked against max_devices=1 as the oracle."""
+    """Real (or DEVICES-simulated) multi-device path through the full
+    Newton/CG solve, checked against n_devices=1 as the oracle."""
     if jax.local_device_count() < N_DEVICES:
         pytest.skip(
             f"need {N_DEVICES} local devices (got {jax.local_device_count()}) -- "
@@ -132,8 +132,8 @@ def test_distributed_solve_matches_single_device():
         )
     xi_flat, local_update, state_init = _build_case()
 
-    eps_s, sigma_s, alpha_s, conv_s, n_iter_s = _solve(xi_flat, local_update, state_init, max_devices=1)
-    eps_d, sigma_d, alpha_d, conv_d, n_iter_d = _solve(xi_flat, local_update, state_init, max_devices=None)
+    eps_s, sigma_s, alpha_s, conv_s, n_iter_s = _solve(xi_flat, local_update, state_init, n_devices=1)
+    eps_d, sigma_d, alpha_d, conv_d, n_iter_d = _solve(xi_flat, local_update, state_init, n_devices=None)
 
     assert bool(conv_s) and bool(conv_d)
     assert int(jnp.sum(alpha_s > 1e-12)) > 0, "expected plastic yielding at this load level"
@@ -144,7 +144,7 @@ def test_distributed_solve_matches_single_device():
 
 
 if __name__ == "__main__":
-    test_max_devices_1_matches_unset()
+    test_n_devices_1_matches_unset()
     if jax.local_device_count() >= N_DEVICES:
         test_distributed_solve_matches_single_device()
     print(f"ok -- backend={jax.default_backend()}  local_device_count={jax.local_device_count()}")

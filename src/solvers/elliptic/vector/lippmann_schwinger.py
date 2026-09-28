@@ -3,9 +3,13 @@ import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on 
 from typing import Tuple
 from math import prod
 
+import jax
 import jax.numpy as jnp
 
 from operators.base import LinearOperator
+from operators.fft_distributed import (
+    choose_device_count, gather_x_slabs, pfft3d_flat, pifft3d_flat, split_x_slabs,
+)
 from operators.general_functions import ddot42
 from operators.green import GreenOperatorBasic
 from operators.projection import Gamma0Operator
@@ -13,7 +17,7 @@ from solvers.elliptic.vector.base import ElasticitySolver
 from solvers.elliptic.vector.mixed_bc import (
     _HasG, _ZERO_CONTROL, _active_pairs, sm2sv, solve_mixed_bc_dc_identity, sv2sm,
 )
-from solvers.krylov.cg import cg_solve
+from solvers.krylov.cg import cg_solve, cg_solve_pmap
 from solvers.solution import ElasticitySolution
 
 
@@ -25,7 +29,7 @@ def solve_lippmann_schwinger(
     stress_goal: jnp.ndarray | None = None,
     toler_lin:   float = 1e-4,
     maxiter:     int = 1000,
-    max_devices: int | None = None,
+    n_devices: int | None = None,
 ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
     Inner CG solve for one Newton step of the variational FFT elastic solver
@@ -53,7 +57,7 @@ def solve_lippmann_schwinger(
     stress_goal : (3, 3, Nv) or None target stress field (None = zero, strain BC)
     toler_lin   : relative CG residual tolerance
     maxiter     : maximum CG iterations
-    max_devices : caps the device count Gamma0Operator auto-detects for its
+    n_devices : caps the device count Gamma0Operator auto-detects for its
                   domain decomposition (see operators.projection.Gamma0Operator)
                   -- None (default) uses whatever jax.local_device_count()
                   reports; on a single-device machine this is a no-op, the
@@ -73,9 +77,25 @@ def solve_lippmann_schwinger(
     instance) or registering LinearOperator subclasses as pytrees -- left as
     a follow-up, since ddot42 and cg_solve's internal while_loop are already
     individually JIT-compiled.
+
+    At more than one auto-detected device, dispatches to
+    ``_solve_lippmann_schwinger_sharded`` instead of the single-device body
+    below -- a genuinely memory-scaling implementation (``C_field``/``G``
+    and every CG state vector stay sharded for the whole iterative solve,
+    never gathered until the final answer) rather than ``Gamma0Operator``'s
+    default per-call split/pmap/gather. Both paths solve the identical
+    system; this function's public signature/behavior is otherwise
+    unchanged, so every caller (``LippmannSchwingerSolver``,
+    ``solve_mechanics``) gets this for free.
     """
     Nv = prod(n)
-    gamma0 = Gamma0Operator(n, green_op, max_devices=max_devices)
+    resolved_n_devices = choose_device_count(n, n_devices)
+    if resolved_n_devices > 1:
+        return _solve_lippmann_schwinger_sharded(
+            n, C_field, green_op, eps_bar, stress_goal, toler_lin, maxiter, resolved_n_devices,
+        )
+
+    gamma0 = Gamma0Operator(n, green_op, n_devices=1)
 
     # ── Linear operator  A(v) = Gamma0(C:v) ─────────────────────────────────
     def A_op(v_flat):
@@ -100,6 +120,81 @@ def solve_lippmann_schwinger(
     return eps, sigma, delta, converged
 
 
+def _solve_lippmann_schwinger_sharded(
+    n:           Tuple[int, ...],
+    C_field:     jnp.ndarray,
+    green_op:    LinearOperator,
+    eps_bar:     jnp.ndarray,
+    stress_goal: jnp.ndarray | None,
+    toler_lin:   float,
+    maxiter:     int,
+    n_devices:   int,
+) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """
+    Fully domain-decomposed counterpart of ``solve_lippmann_schwinger``'s CG
+    solve, for ``n_devices > 1``. Solves the identical system (``A(v) =
+    Gamma0(C:v)``, ``b = -Gamma0(C:eps0 - sigma_goal)``) but ``C_field``,
+    ``green_op.G``, and every CG state vector (``x``, ``r``, ``p``, ``Ap``)
+    stay sharded across ``n_devices`` (``n[0] % n_devices == 0`` and
+    ``n[1] % n_devices == 0``, guaranteed by ``choose_device_count``) for
+    the ENTIRE iterative solve -- split once, up front, never gathered until
+    the final answer. ``cg_solve_pmap`` (``solvers.krylov.cg``) supplies the
+    ``jax.lax.psum``-based dot products/norms that make this correct:
+    every device computes the same scalar step size each iteration without
+    ever assembling a full vector.
+
+    Not a public entry point -- called only from ``solve_lippmann_schwinger``
+    when ``choose_device_count`` resolves to more than 1; use that function
+    (or ``LippmannSchwingerSolver``/``solve_mechanics``) instead.
+    """
+    n_local = (n[0] // n_devices, n[1], n[2])
+
+    C_sharded = split_x_slabs(C_field, n_devices)     # (n_devices, 3,3,3,3,Nv_local)
+    G_sharded = split_x_slabs(green_op.G, n_devices)  # (n_devices, 3,3,3,3,Nv_local)
+    sg = jnp.zeros_like(C_field[0, 0]) if stress_goal is None else stress_goal
+    sg_sharded = split_x_slabs(sg, n_devices)         # (n_devices, 3,3,Nv_local)
+
+    def solve_local(C_local, G_local, sg_local):
+        Nv_local = C_local.shape[-1]
+
+        def fft_(x):
+            return pfft3d_flat(x, n_local, "i")
+
+        def ifft_(x):
+            return pifft3d_flat(x, n_local, "i")
+
+        def gamma0_local(x_local):
+            return ifft_(ddot42(G_local, fft_(x_local)))
+
+        def A_op(v_flat):
+            v = v_flat.reshape(3, 3, Nv_local)
+            Cv = ddot42(C_local, v)
+            return gamma0_local(Cv).reshape(-1)
+
+        eps0_local = jnp.ones((3, 3, Nv_local)) * eps_bar[:, :, None]
+        sigma0_local = ddot42(C_local, eps0_local)
+        bb = -gamma0_local(sigma0_local - sg_local).reshape(-1)
+
+        x0 = jnp.zeros_like(bb)
+        delta_flat, converged = cg_solve_pmap(A_op, bb, x0, toler_lin, maxiter, axis_name="i")
+
+        delta_local = delta_flat.reshape(3, 3, Nv_local)
+        eps_local = eps0_local + delta_local
+        sigma_local = ddot42(C_local, eps_local)
+        return eps_local, sigma_local, delta_local, converged
+
+    eps_sharded, sigma_sharded, delta_sharded, converged_sharded = jax.pmap(
+        solve_local, axis_name="i",
+    )(C_sharded, G_sharded, sg_sharded)
+
+    eps = gather_x_slabs(eps_sharded)
+    sigma = gather_x_slabs(sigma_sharded)
+    delta = gather_x_slabs(delta_sharded)
+    converged = converged_sharded[0]  # identical on every device (psum'd)
+
+    return eps, sigma, delta, converged
+
+
 class LippmannSchwingerSolver(ElasticitySolver):
     """
     ElasticitySolver wrapping solve_lippmann_schwinger: strain-based,
@@ -110,7 +205,7 @@ class LippmannSchwingerSolver(ElasticitySolver):
     Automatically domain-decomposes across jax.local_device_count() devices
     when more than one is available (see operators.projection.Gamma0Operator)
     -- no separate solver class or formulation needed; on a single-device
-    machine this is exactly the original single-device solve. ``max_devices``
+    machine this is exactly the original single-device solve. ``n_devices``
     caps the auto-detected count (mainly for tests forcing the single-device
     fallback on a multi-device machine).
     """
@@ -121,13 +216,13 @@ class LippmannSchwingerSolver(ElasticitySolver):
         green_op:    LinearOperator,
         toler_lin:   float = 1e-4,
         maxiter:     int = 1000,
-        max_devices: int | None = None,
+        n_devices: int | None = None,
     ):
         self.n = n
         self.green_op = green_op
         self.toler_lin = toler_lin
         self.maxiter = maxiter
-        self.max_devices = max_devices
+        self.n_devices = n_devices
 
     def solve(
         self,
@@ -137,7 +232,7 @@ class LippmannSchwingerSolver(ElasticitySolver):
     ) -> ElasticitySolution:
         eps, sigma, delta, converged = solve_lippmann_schwinger(
             self.n, C_field, self.green_op, eps_bar, stress_goal, self.toler_lin, self.maxiter,
-            max_devices=self.max_devices,
+            n_devices=self.n_devices,
         )
         return ElasticitySolution(eps, sigma, delta, converged)
 
@@ -151,7 +246,7 @@ def solve_lippmann_schwinger_dc(
     macro_stress_goal: jnp.ndarray | None = None,
     toler_lin:         float = 1e-4,
     maxiter:           int = 1000,
-    max_devices:       int | None = None,
+    n_devices:       int | None = None,
 ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
     Kabel et al (2016) single-CG-solve mixed strain/stress macroscopic-BC
@@ -172,7 +267,7 @@ def solve_lippmann_schwinger_dc(
     macro_stress_goal = jnp.zeros((3, 3)) if macro_stress_goal is None else macro_stress_goal
     return solve_mixed_bc_dc_identity(
         n, C_field, green_op, control, eps_bar, macro_stress_goal, toler_lin, maxiter,
-        max_devices=max_devices,
+        n_devices=n_devices,
     )
 
 
@@ -188,7 +283,7 @@ def solve_lippmann_schwinger_mixed_bc(
     toler_outer:       float = 1e-6,
     maxiter_outer:     int = 50,
     C0:                jnp.ndarray | None = None,
-    max_devices:       int | None = None,
+    n_devices:       int | None = None,
 ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, int]:
     """
     Michel et al (1999) outer iterative correction for mixed strain/stress
@@ -259,7 +354,7 @@ def solve_lippmann_schwinger_mixed_bc(
     if not pairs:
         eps, sigma, delta, converged = solve_lippmann_schwinger(
             n, C_field, green_op, eps_bar_guess, toler_lin=toler_lin, maxiter=maxiter,
-            max_devices=max_devices,
+            n_devices=n_devices,
         )
         return eps, sigma, delta, eps_bar_guess, converged, 1
 
@@ -288,7 +383,7 @@ def solve_lippmann_schwinger_mixed_bc(
     for it in range(1, maxiter_outer + 1):
         eps, sigma, delta, converged = solve_lippmann_schwinger(
             n, C_field, green_op, eps_bar, toler_lin=toler_lin, maxiter=maxiter,
-            max_devices=max_devices,
+            n_devices=n_devices,
         )
         sigma_mean = jnp.mean(sigma, axis=-1)
         resid = sm2sv(macro_stress_goal - sigma_mean, pairs)
@@ -333,7 +428,7 @@ class LippmannSchwingerMixedBCSolver(ElasticitySolver):
         toler_outer:   float = 1e-6,
         maxiter_outer: int = 50,
         C0:            jnp.ndarray | None = None,
-        max_devices:   int | None = None,
+        n_devices:   int | None = None,
     ):
         self.n = n
         self.green_op = green_op
@@ -343,7 +438,7 @@ class LippmannSchwingerMixedBCSolver(ElasticitySolver):
         self.toler_outer = toler_outer
         self.maxiter_outer = maxiter_outer
         self.C0 = C0
-        self.max_devices = max_devices
+        self.n_devices = n_devices
 
     def solve(
         self,
@@ -356,6 +451,6 @@ class LippmannSchwingerMixedBCSolver(ElasticitySolver):
             self.n, C_field, self.green_op, self.control, eps_bar, sg,
             toler_lin=self.toler_lin, maxiter=self.maxiter,
             toler_outer=self.toler_outer, maxiter_outer=self.maxiter_outer, C0=self.C0,
-            max_devices=self.max_devices,
+            n_devices=self.n_devices,
         )
         return ElasticitySolution(eps, sigma, delta, converged, eps_bar=eps_bar_out)

@@ -87,7 +87,7 @@ def _solve_mechanics_step(
     stress_goal: jnp.ndarray | None = None,
     toler_lin:   float = 1e-6,
     maxiter:     int = 1000,
-    max_devices: int | None = None,
+    n_devices: int | None = None,
 ) -> ElasticitySolution:
     """
     One mechanical equilibrium solve at a fixed macroscopic strain (no
@@ -106,13 +106,13 @@ def _solve_mechanics_step(
 
         # Every branch here ultimately calls operators.projection.Gamma0Operator
         # for its FFT-heavy inner apply, which auto-decomposes across
-        # jax.local_device_count() devices on its own -- max_devices only
+        # jax.local_device_count() devices on its own -- n_devices only
         # caps that auto-detection, it doesn't opt in/out of a separate
-        # formulation; on a single-device machine (max_devices=None, the
+        # formulation; on a single-device machine (n_devices=None, the
         # default) this is the exact original single-device solve.
         if control_nonzero:
             solver = LippmannSchwingerMixedBCSolver(
-                n, green_op, control, toler_lin, maxiter, max_devices=max_devices,
+                n, green_op, control, toler_lin, maxiter, n_devices=n_devices,
             )
             return solver.solve(C_field, eps_bar, stress_goal)
         else:
@@ -124,16 +124,16 @@ def _solve_mechanics_step(
             # stress-controlled direction there's nothing for it to apply to
             # anyway, so it's correctly ignored here, matching
             # problems.fracture._staggered_loop's equivalent dispatch.
-            solver = LippmannSchwingerSolver(n, green_op, toler_lin, maxiter, max_devices=max_devices)
+            solver = LippmannSchwingerSolver(n, green_op, toler_lin, maxiter, n_devices=n_devices)
             return solver.solve(C_field, eps_bar)
     elif formulation == "displacement":
         xi_flat = build_freq_grid(n, L)
-        solver = DisplacementBasedSolver(n, xi_flat, control, toler_lin, maxiter, max_devices=max_devices)
+        solver = DisplacementBasedSolver(n, xi_flat, control, toler_lin, maxiter, n_devices=n_devices)
         return solver.solve(C_field, eps_bar, stress_goal)
     elif formulation == "fourier_galerkin":
         galerkin_op = build_galerkin_projector(n, L, scheme=scheme)
 
-        solver = FourierGalerkinSolver(n, galerkin_op, control, toler_lin, maxiter, max_devices=max_devices)
+        solver = FourierGalerkinSolver(n, galerkin_op, control, toler_lin, maxiter, n_devices=n_devices)
         return solver.solve(C_field, eps_bar, stress_goal)
     else:
         raise ValueError(
@@ -155,7 +155,7 @@ def solve_mechanics(
     stress_goal: jnp.ndarray | None = None,
     toler_lin:   float = 1e-6,
     maxiter:     int = 1000,
-    max_devices: int | None = None,
+    n_devices: int | None = None,
     dt:          float | None = None,
     dt_init:     float = 0.1,
     dt_min:      float = 1e-4,
@@ -215,7 +215,7 @@ def solve_mechanics(
                   displacement, fourier_galerkin): (3, 3) macroscopic target
                   stress, used only on ``control``-marked entries.
     toler_lin, maxiter : CG tolerance / iteration cap
-    max_devices : caps the device count every formulation auto-detects for
+    n_devices : caps the device count every formulation auto-detects for
                   domain-decomposing its FFT calls -- "lippmann_schwinger"
                   (any control) and "fourier_galerkin" via
                   operators.projection.Gamma0Operator, "displacement" via
@@ -269,7 +269,7 @@ def solve_mechanics(
             n, L, phase, materials, t * eps_bar,
             formulation=formulation, scheme=scheme, control=control,
             stress_goal=stress_goal, toler_lin=toler_lin, maxiter=maxiter,
-            max_devices=max_devices,
+            n_devices=n_devices,
         )
 
     def _on_increment(result: IncrementResult) -> None:
@@ -343,7 +343,7 @@ def solve_displacement_based_nonlinear(
     control:           Tuple[Tuple[int, ...], ...] | None = None,
     stress_goal:       jnp.ndarray | None = None,
     eps_bar_free_init: jnp.ndarray | None = None,
-    max_devices:       int | None = None,
+    n_devices:       int | None = None,
 ):
     """
     Newton-outer / CG-inner solve for a nonlinear local constitutive law:
@@ -427,7 +427,7 @@ def solve_displacement_based_nonlinear(
                    analogue of ``delta_init`` (e.g. the previous, smaller
                    load level's converged lateral contraction is a much
                    better starting guess than 0 for the next level).
-    max_devices  : caps the device count every FFT call in this driver
+    n_devices  : caps the device count every FFT call in this driver
                    auto-detects for domain decomposition (see
                    operators.fft_distributed.distributed_fft_flat, same
                    mechanism solve_displacement_based uses) -- None
@@ -459,10 +459,10 @@ def solve_displacement_based_nonlinear(
     stress_goal = jnp.zeros((3, 3), dtype=eps_bar.dtype) if stress_goal is None else stress_goal
 
     def fft_(x):
-        return distributed_fft_flat(x, n, max_devices=max_devices)
+        return distributed_fft_flat(x, n, n_devices=n_devices)
 
     def ifft_(x):
-        return distributed_ifft_flat(x, n, max_devices=max_devices)
+        return distributed_ifft_flat(x, n, n_devices=n_devices)
 
     def div_of(sigma_field):
         """div(sigma), (3,3,Nv) -> (3,Nv)."""

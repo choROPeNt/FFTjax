@@ -9,15 +9,20 @@ doesn't apply there, see solve_mechanics's own docstring), and the
 reference-medium-free Fourier-Galerkin formulation (Vondrejc et al 2014;
 see notes/FOURIER_GALERKIN.md).
 
-"lippmann_schwinger" solve_mechanics calls (pure strain BC, i.e. ``control``
-all-zero) automatically domain-decompose their FFT-heavy Gamma0 apply across
-jax.local_device_count() devices (see operators.projection.Gamma0Operator)
--- no separate solver config or formulation label needed for that, it's
-always on; on a single-device machine (the common case) it's exactly the
-original single-device solve (see test/test_problems_mechanics_distributed.py).
-Each "ls_*" result row's ``n_devices_pmap`` field reports how many devices it
-actually used, so this is directly visible once run on a real multi-device
-node.
+"lippmann_schwinger" and "fourier_galerkin" solve_mechanics calls both
+automatically domain-decompose their FFT-heavy CG solve across
+jax.local_device_count() devices -- genuinely memory-scaling (C_field and
+every CG state vector stay sharded for the whole iterative solve, never
+gathered mid-solve; see operators.projection.Gamma0Operator and
+solvers.elliptic.vector.mixed_bc.solve_mixed_bc_dc_identity) -- no separate
+solver config or formulation label needed for that, it's always on; on a
+single-device machine (the common case) it's exactly the original
+single-device solve (see test/test_problems_mechanics_distributed.py). Each
+"ls_*"/"galerkin" result row's ``n_devices_pmap`` field reports how many
+devices it actually used, so this is directly visible once run on a real
+multi-device node. "displacement" doesn't (yet) get this -- its own
+separate FFT/DC-bin machinery isn't on the sharded-CG path, so its
+``n_devices_pmap`` stays None.
 
 Tracks wall-clock read/jit/solve time and peak memory (host RSS, plus JAX
 device memory on GPU/TPU) per (file, solver) pair. jit_time_s is
@@ -180,11 +185,13 @@ def bench_one(path: str, label: str, formulation: str, scheme: str) -> dict:
     # plus that first solve. Second call: identical inputs, so the same
     # shape/dtype signature hits the now-warm compilation cache -- steady-
     # state solve time, with jit overhead no longer in it.
-    # "lippmann_schwinger" (pure strain BC) auto-decomposes across
-    # jax.local_device_count() devices on its own -- see module docstring
-    # and operators.projection.Gamma0Operator; n_devices_pmap just reports
-    # how many it actually picked.
-    n_devices_pmap = choose_device_count(n) if formulation == "lippmann_schwinger" else None
+    # "lippmann_schwinger" and "fourier_galerkin" both auto-decompose across
+    # jax.local_device_count() devices on their own (Gamma0Operator /
+    # solvers.elliptic.vector.mixed_bc.solve_mixed_bc_dc_identity) --
+    # n_devices_pmap just reports how many each actually picked.
+    # "displacement" doesn't (yet) -- its own separate FFT/DC-bin machinery,
+    # not on the sharded-CG path -- so it stays None.
+    n_devices_pmap = choose_device_count(n) if formulation in ("lippmann_schwinger", "fourier_galerkin") else None
 
     def _solve():
         results = solve_mechanics(n, L, phase, materials, EPS_BAR, formulation=formulation,
@@ -246,7 +253,7 @@ def bench_one(path: str, label: str, formulation: str, scheme: str) -> dict:
         "scheme": scheme,
         "n": list(n),
         "Nv": int(phase.shape[0]),
-        "n_devices_pmap": n_devices_pmap,  # None unless formulation="lippmann_schwinger"
+        "n_devices_pmap": n_devices_pmap,  # None unless formulation in (lippmann_schwinger, fourier_galerkin)
         "converged": bool(sol.converged),
         "E_eff_MPa": E_eff_MPa,
         "eps_bar_loaded": float(eps_bar_h[i, j]),

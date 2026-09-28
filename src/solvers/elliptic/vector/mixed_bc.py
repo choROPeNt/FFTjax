@@ -14,12 +14,16 @@ import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on 
 from math import prod
 from typing import Protocol, Tuple, runtime_checkable
 
+import jax
 import jax.numpy as jnp
 
 from operators.base import LinearOperator
+from operators.fft_distributed import (
+    choose_device_count, gather_x_slabs, pfft3d_flat, pifft3d_flat, split_x_slabs,
+)
 from operators.general_functions import ddot42
 from operators.projection import Gamma0Operator
-from solvers.krylov.cg import cg_solve
+from solvers.krylov.cg import cg_solve, cg_solve_pmap
 
 _ZERO_CONTROL = ((0, 0, 0), (0, 0, 0), (0, 0, 0))
 
@@ -150,7 +154,7 @@ def solve_mixed_bc_dc_identity(
     macro_stress_goal: jnp.ndarray,
     toler_lin:        float = 1e-4,
     maxiter:          int = 1000,
-    max_devices:      int | None = None,
+    n_devices:      int | None = None,
 ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
     Single-CG-solve mixed strain/stress macroscopic BC via the DC-bin identity
@@ -184,10 +188,18 @@ def solve_mixed_bc_dc_identity(
     macro_stress_goal : (3, 3)  target macroscopic stress; only entries where
                   ``control == 1`` are used
     toler_lin, maxiter : CG tolerance / iteration cap
-    max_devices : caps the device count Gamma0Operator auto-detects for its
-                  domain decomposition (see operators.projection.Gamma0Operator)
-                  -- None (default) uses whatever jax.local_device_count()
-                  reports; on a single-device machine this is a no-op.
+    n_devices : caps the device count this solve auto-detects for domain
+                  decomposition -- None (default) uses whatever
+                  jax.local_device_count() reports; on a single-device
+                  machine this is a no-op, the exact original single-device
+                  solve. At more than one device, dispatches to a genuinely
+                  memory-scaling implementation
+                  (``_solve_mixed_bc_dc_identity_sharded``) rather than
+                  ``Gamma0Operator``'s default per-call split/pmap/gather --
+                  the DC-bin identity patch (``patch_dc_identity``) is baked
+                  into ``G`` ONCE, up front, not live inside the CG loop
+                  (unlike the displacement-based solver's macroscopic-strain
+                  trick), so this needs no device-0-conditional handling.
 
     Returns
     -------
@@ -197,11 +209,18 @@ def solve_mixed_bc_dc_identity(
     eps_bar_out: (3, 3)       macroscopic strain, stress-controlled entries filled in
     converged  : bool array
     """
+    resolved_n_devices = choose_device_count(n, n_devices)
+    if resolved_n_devices > 1:
+        return _solve_mixed_bc_dc_identity_sharded(
+            n, C_field, elastic_op, control, eps_bar, macro_stress_goal,
+            toler_lin, maxiter, resolved_n_devices,
+        )
+
     Nv = prod(n)
     control_arr = jnp.asarray(control, dtype=eps_bar.dtype)
 
     patched_op = _PatchedOperator(patch_dc_identity(elastic_op.G, control))
-    gamma0 = Gamma0Operator(n, patched_op, max_devices=max_devices)
+    gamma0 = Gamma0Operator(n, patched_op, n_devices=1)
 
     def A_op(v_flat):
         v = v_flat.reshape(3, 3, Nv)
@@ -220,5 +239,88 @@ def solve_mixed_bc_dc_identity(
     eps = eps0 + delta
     sigma = ddot42(C_field, eps)
     eps_bar_out = jnp.mean(eps, axis=-1)
+
+    return eps, sigma, delta, eps_bar_out, converged
+
+
+def _solve_mixed_bc_dc_identity_sharded(
+    n:                 Tuple[int, ...],
+    C_field:           jnp.ndarray,
+    elastic_op:        _HasG,
+    control:           Tuple[Tuple[int, ...], ...],
+    eps_bar:           jnp.ndarray,
+    macro_stress_goal: jnp.ndarray,
+    toler_lin:         float,
+    maxiter:           int,
+    n_devices:         int,
+) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """
+    Fully domain-decomposed counterpart of ``solve_mixed_bc_dc_identity``'s
+    CG solve, for ``n_devices > 1`` -- same "split once, whole CG under one
+    ``jax.pmap``, gather once" pattern as
+    ``solvers.elliptic.vector.lippmann_schwinger._solve_lippmann_schwinger_sharded``.
+    The DC-bin identity patch is computed once on the full ``G`` (exactly
+    like the single-device path above) before splitting, so -- unlike the
+    displacement-based solver's live per-iteration DC-bin injection -- no
+    device-0-conditional masking is needed anywhere here.
+
+    One genuinely new piece versus the plain Lippmann-Schwinger case:
+    ``eps_bar_out = jnp.mean(eps, axis=-1)`` is a reduction over every
+    voxel, which now spans all devices -- computed as
+    ``jax.lax.psum(sum_local, axis_name) / Nv`` instead of a plain
+    ``jnp.mean`` on a full array.
+
+    Not a public entry point -- called only from
+    ``solve_mixed_bc_dc_identity`` when ``choose_device_count`` resolves to
+    more than 1.
+    """
+    Nv = prod(n)
+    n_local = (n[0] // n_devices, n[1], n[2])
+    control_arr = jnp.asarray(control, dtype=eps_bar.dtype)
+
+    patched_G = patch_dc_identity(elastic_op.G, control)  # DC patch baked in once, on the full G
+    C_sharded = split_x_slabs(C_field, n_devices)
+    G_sharded = split_x_slabs(patched_G, n_devices)
+
+    def solve_local(C_local, G_local):
+        Nv_local = C_local.shape[-1]
+
+        def fft_(x):
+            return pfft3d_flat(x, n_local, "i")
+
+        def ifft_(x):
+            return pifft3d_flat(x, n_local, "i")
+
+        def gamma0_local(x_local):
+            return ifft_(ddot42(G_local, fft_(x_local)))
+
+        def A_op(v_flat):
+            v = v_flat.reshape(3, 3, Nv_local)
+            Cv = ddot42(C_local, v)
+            return gamma0_local(Cv).reshape(-1)
+
+        eps0_local = jnp.ones((3, 3, Nv_local)) * (eps_bar * (1.0 - control_arr))[:, :, None]
+        sg_local = jnp.ones((3, 3, Nv_local)) * macro_stress_goal[:, :, None]
+        sigma0_local = ddot42(C_local, eps0_local)
+        bb = -gamma0_local(sigma0_local - sg_local).reshape(-1)
+
+        x0 = jnp.zeros_like(bb)
+        delta_flat, converged = cg_solve_pmap(A_op, bb, x0, toler_lin, maxiter, axis_name="i")
+
+        delta_local = delta_flat.reshape(3, 3, Nv_local)
+        eps_local = eps0_local + delta_local
+        sigma_local = ddot42(C_local, eps_local)
+        eps_bar_out_local = jax.lax.psum(jnp.sum(eps_local, axis=-1), "i") / Nv
+        return eps_local, sigma_local, delta_local, eps_bar_out_local, converged
+
+    eps_sharded, sigma_sharded, delta_sharded, eps_bar_out_sharded, converged_sharded = jax.pmap(
+        solve_local, axis_name="i",
+    )(C_sharded, G_sharded)
+
+    eps = gather_x_slabs(eps_sharded)
+    sigma = gather_x_slabs(sigma_sharded)
+    delta = gather_x_slabs(delta_sharded)
+    eps_bar_out = eps_bar_out_sharded[0]  # identical on every device (psum'd)
+    converged = converged_sharded[0]
 
     return eps, sigma, delta, eps_bar_out, converged

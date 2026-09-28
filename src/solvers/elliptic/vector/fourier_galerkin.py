@@ -18,7 +18,7 @@ def solve_fourier_galerkin(
     macro_stress_goal: jnp.ndarray | None = None,
     toler_lin:         float = 1e-4,
     maxiter:           int = 1000,
-    max_devices:       int | None = None,
+    n_devices:       int | None = None,
 ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
     Fourier-Galerkin elastic scheme (Vondrejc et al 2014; Lucarini, Upadhyay
@@ -55,7 +55,7 @@ def solve_fourier_galerkin(
                   entries where ``control == 1`` are used. None = zeros.
     toler_lin   : relative CG residual tolerance
     maxiter     : maximum CG iterations
-    max_devices : caps the device count Gamma0Operator auto-detects for its
+    n_devices : caps the device count Gamma0Operator auto-detects for its
                   domain decomposition -- None (default) uses whatever
                   jax.local_device_count() reports.
 
@@ -72,7 +72,7 @@ def solve_fourier_galerkin(
     macro_stress_goal = jnp.zeros((3, 3)) if macro_stress_goal is None else macro_stress_goal
     return solve_mixed_bc_dc_identity(
         n, C_field, galerkin_op, control, eps_bar, macro_stress_goal, toler_lin, maxiter,
-        max_devices=max_devices,
+        n_devices=n_devices,
     )
 
 
@@ -92,14 +92,14 @@ class FourierGalerkinSolver(ElasticitySolver):
         control:     Tuple[Tuple[int, ...], ...] | None = None,
         toler_lin:   float = 1e-4,
         maxiter:     int = 1000,
-        max_devices: int | None = None,
+        n_devices: int | None = None,
     ):
         self.n = n
         self.galerkin_op = galerkin_op
         self.control = control if control is not None else _ZERO_CONTROL
         self.toler_lin = toler_lin
         self.maxiter = maxiter
-        self.max_devices = max_devices
+        self.n_devices = n_devices
 
     def solve(
         self,
@@ -110,6 +110,6 @@ class FourierGalerkinSolver(ElasticitySolver):
         eps, sigma, delta, eps_bar_out, converged = solve_fourier_galerkin(
             self.n, C_field, self.galerkin_op, eps_bar,
             self.control, stress_goal, self.toler_lin, self.maxiter,
-            max_devices=self.max_devices,
+            n_devices=self.n_devices,
         )
         return ElasticitySolution(eps, sigma, delta, converged, eps_bar=eps_bar_out)
