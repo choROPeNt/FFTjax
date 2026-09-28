@@ -14,8 +14,10 @@ const sidebars = {
       label: 'Theorie',
       link: {type: 'doc', id: 'theorie/index'},
       items: [
+        'theorie/operators',
         'theorie/mechanical',
         'theorie/damage',
+        'theorie/thermal',
       ],
     },
     {
