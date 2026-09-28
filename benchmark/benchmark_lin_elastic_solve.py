@@ -1,22 +1,10 @@
 """
 Sweeps grid resolution on a fixed quad_rve (square-packed 2-fibre composite,
-generation.rve.make_square_composite_rve) comparing FFTjax's elastic solver
-formulations, both driven through problems.mechanics.solve_mechanics on the
-identical fully strain-controlled BC:
+generation.rve.make_square_composite_rve) comparing FFTjax's two elastic
+solver formulations, both driven through problems.mechanics.solve_mechanics
+on the identical fully strain-controlled BC:
 - lippmann_schwinger -- reference-medium CG correction (Willot 'rotated' scheme)
 - displacement        -- true heterogeneous tangent, no reference medium
-
-"ls" (lippmann_schwinger, pure strain BC) automatically domain-decomposes
-its FFT-heavy Gamma0 apply across jax.local_device_count() devices (see
-operators.projection.Gamma0Operator) -- no separate solver config or
-formulation needed for that, it's always on; on a single-device machine
-(the common case) it's exactly the original single-device solve (see
-test/test_problems_mechanics_distributed.py). Its "ls_n_devices" field in
-the output reports how many it actually used. Only the Gamma0 apply is
-decomposed so far, not C_field itself -- this doesn't (yet) change the
-memory-scaling picture at N=512 the comment below describes; it hits the
-same OOM ceiling until C_field is sharded too (see the dev_pmap branch's
-project memory).
 
 Glass fibre in an epoxy matrix (~23x stiffness contrast, same materials as
 notebooks/mechanics/lin-elastic_strain.ipynb) under a prescribed macroscopic shear
@@ -62,7 +50,6 @@ import numpy as np
 
 from generation.rve import make_square_composite_rve
 from materialmodels.elastic.isotropic import LinearElasticIsotropic
-from operators.fft_distributed import choose_device_count
 from problems.mechanics import solve_mechanics
 from solvers.solution import ElasticitySolution
 
@@ -96,16 +83,6 @@ SOLVER_FORMULATIONS: list[tuple[str, str, str]] = [
 ]
 
 
-def _solve_one(n, L, phase, formulation: str, scheme: str) -> ElasticitySolution:
-    """One solve_mechanics call -- solve_mechanics always wraps its result in
-    list[IncrementResult] (stepping="single" always gives exactly one)."""
-    results = solve_mechanics(
-        n, L, phase, MATERIALS, EPS_BAR, formulation=formulation, scheme=scheme,
-        toler_lin=TOLER_LIN, maxiter=MAXITER,
-    )
-    return cast(ElasticitySolution, results[0].solution)
-
-
 def bench(N, repeats=None):
     repeats = REPEATS if repeats is None else repeats
     phase_np, n, L, phi_act = make_square_composite_rve(
@@ -119,7 +96,11 @@ def bench(N, repeats=None):
     for label, formulation, scheme in SOLVER_FORMULATIONS:
         # first call: trace + compile + run
         t0 = time.perf_counter()
-        sol = _solve_one(n, L, phase, formulation, scheme)
+        results = solve_mechanics(
+            n, L, phase, MATERIALS, EPS_BAR, formulation=formulation, scheme=scheme,
+            toler_lin=TOLER_LIN, maxiter=MAXITER,
+        )
+        sol = cast(ElasticitySolution, results[0].solution)
         sol.eps.block_until_ready()
         compile_ms = (time.perf_counter() - t0) * 1000.0
         converged = bool(sol.converged)
@@ -127,14 +108,16 @@ def bench(N, repeats=None):
         # steady-state: already compiled
         t0 = time.perf_counter()
         for _ in range(repeats):
-            _solve_one(n, L, phase, formulation, scheme).eps.block_until_ready()
+            results = solve_mechanics(
+                n, L, phase, MATERIALS, EPS_BAR, formulation=formulation, scheme=scheme,
+                toler_lin=TOLER_LIN, maxiter=MAXITER,
+            )
+            cast(ElasticitySolution, results[0].solution).eps.block_until_ready()
         run_ms = (time.perf_counter() - t0) * 1000.0 / repeats
 
         out[f"{label}_compile_ms"] = compile_ms
         out[f"{label}_run_ms"] = run_ms
         out[f"{label}_converged"] = converged
-        if formulation == "lippmann_schwinger":
-            out[f"{label}_n_devices"] = choose_device_count(n)
 
     return out
 
@@ -188,12 +171,9 @@ def main(forward_args: list[str]) -> None:
 
         r = json.loads(proc.stdout)
         results.append(r)
-        per_label = "  |  ".join(
-            f"{label}: converged={r[f'{label}_converged']}  "
-            f"compile={r[f'{label}_compile_ms']:8.1f}ms  run={r[f'{label}_run_ms']:8.1f}ms"
-            for label, _, _ in SOLVER_FORMULATIONS
-        )
-        print(f"n={N:>4}  Vf={r['volume_fraction']:.3f}  {per_label}")
+        print(f"n={N:>4}  Vf={r['volume_fraction']:.3f}  "
+              f"ls: converged={r['ls_converged']}  compile={r['ls_compile_ms']:8.1f}ms  run={r['ls_run_ms']:8.1f}ms  |  "
+              f"disp: converged={r['disp_converged']}  compile={r['disp_compile_ms']:8.1f}ms  run={r['disp_run_ms']:8.1f}ms")
 
     if not results:
         print("No grid size completed -- nothing written.")

@@ -1,6 +1,6 @@
 # TexGen VTU Elastic Solve Benchmark
 
-`elastic_solve.py` runs `problems.mechanics.solve_mechanics` on every `*.vtu` file in a given
+`elastic_solve_vtu.py` runs `problems.mechanics.solve_mechanics` on every `*.vtu` file in a given
 directory -- TexGen exports of the same geometry family (e.g. different fabric weights or export
 resolutions), each carrying its own per-voxel fiber orientation field (`YarnTangent` or
 `Orientation`, depending on TexGen export version) read via `utils.io.reader.SimulationReader`.
@@ -13,15 +13,8 @@ externally and is typically too large/site-specific to commit. Point `--data-dir
 export directory.
 
 ```bash
-python benchmark/benchmark_3/elastic_solve.py --data-dir /path/to/texgen/exports
+python benchmark/benchmark_3/elastic_solve_vtu.py --data-dir /path/to/texgen/exports
 ```
-
-`ls_rotated`/`ls_standard` (`formulation="lippmann_schwinger"`, pure strain BC) automatically
-domain-decompose their FFT-heavy Gamma0 apply across `jax.local_device_count()` devices (see
-`operators.projection.Gamma0Operator`) -- no separate solver config needed for that, it's always on.
-On a single-device machine it's exactly the original single-device solve (verified in
-`test/test_problems_mechanics_distributed.py`); each result row's `n_devices_pmap` field in the JSON
-output shows how many devices it actually used.
 
 Tracks wall-clock read/jit/solve/write time, peak memory (host RSS via `resource`, plus JAX device
 memory via `jax.devices()[0].memory_stats()` on GPU/TPU), and the homogenized modulus per file,
@@ -51,5 +44,5 @@ per-run peak (via `resource`) rather than a cumulative process-wide one, and JAX
 arena starts clean for every run instead of getting fragmented by earlier, differently-shaped
 solves.
 
-Edit `MATERIALS_CFG`/`EPS_BAR` at the top of `elastic_solve.py` for your actual fiber/matrix
+Edit `MATERIALS_CFG`/`EPS_BAR` at the top of `elastic_solve_vtu.py` for your actual fiber/matrix
 constants and load case -- the defaults are illustrative E-glass/epoxy values.

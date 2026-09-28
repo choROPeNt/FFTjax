@@ -7,25 +7,14 @@ Schwinger with the rotated (GreenOperatorWillot) and standard
 (GreenOperatorBasic) schemes, the displacement-based formulation (scheme
 doesn't apply there, see solve_mechanics's own docstring), and the
 reference-medium-free Fourier-Galerkin formulation (Vondrejc et al 2014;
-see notes/FOURIER_GALERKIN.md).
-
-"lippmann_schwinger" solve_mechanics calls (pure strain BC, i.e. ``control``
-all-zero) automatically domain-decompose their FFT-heavy Gamma0 apply across
-jax.local_device_count() devices (see operators.projection.Gamma0Operator)
--- no separate solver config or formulation label needed for that, it's
-always on; on a single-device machine (the common case) it's exactly the
-original single-device solve (see test/test_problems_mechanics_distributed.py).
-Each "ls_*" result row's ``n_devices_pmap`` field reports how many devices it
-actually used, so this is directly visible once run on a real multi-device
-node.
-
-Tracks wall-clock read/jit/solve time and peak memory (host RSS, plus JAX
-device memory on GPU/TPU) per (file, solver) pair. jit_time_s is
-solve_mechanics's first call for that pair's grid shape (XLA trace + compile
-+ run -- lax.while_loop inside the CG solve always compiles to XLA on first
-use for a given shape, even with no explicit jax.jit on solve_mechanics
-itself); solve_time_s is a second, identical call, which hits the now-warm
-compilation cache -- steady-state solve time with jit overhead no longer in it.
+see notes/FOURIER_GALERKIN.md). Tracks wall-clock read/jit/solve time and
+peak memory (host RSS, plus JAX device memory on GPU/TPU) per (file, solver)
+pair. jit_time_s is solve_mechanics's first call for that pair's grid shape
+(XLA trace + compile + run -- lax.while_loop inside the CG solve always
+compiles to XLA on first use for a given shape, even with no explicit
+jax.jit on solve_mechanics itself); solve_time_s is a second, identical
+call, which hits the now-warm compilation cache -- steady-state solve time
+with jit overhead no longer in it.
 
 No sample .vtu ships with this repo -- TexGen output is generated
 externally, not committed. Point --data-dir at your own exports (see
@@ -56,7 +45,7 @@ a production field) can be added to the same increment in one call.
 
 Usage
 -----
-    python benchmark/benchmark_3/elastic_solve.py --data-dir data/texgen_exports
+    python benchmark/benchmark_3/elastic_solve_vtu.py --data-dir data/texgen_exports
 
 Prints a summary table (one row per file x solver combination) and writes,
 per combination, <stem>__<solver_label>.h5/.xdmf plus one combined
@@ -82,7 +71,6 @@ import numpy as np
 
 from materialmodels.assembly import assemble_C_field
 from materialmodels.factory import build_material
-from operators.fft_distributed import choose_device_count
 from post.fields import compute_displacement, field_to_grid, homogenize, to_voigt, von_mises
 from problems.mechanics import solve_mechanics
 from solvers.solution import ElasticitySolution
@@ -177,16 +165,12 @@ def bench_one(path: str, label: str, formulation: str, scheme: str) -> dict:
     mem_after_materials = mem_snapshot(path, label, n, "materials")
 
     # First call: XLA trace + compile (lax.while_loop inside the CG solve
-    # always compiles to XLA on first use for a given shape, cached after)
+    # always compiles to XLA on first use for a given shape, cached after --
+    # even with no explicit jax.jit on solve_mechanics itself, same pattern
+    # benchmark_lin_elastic_solve.py's compile_ms/run_ms split relies on)
     # plus that first solve. Second call: identical inputs, so the same
     # shape/dtype signature hits the now-warm compilation cache -- steady-
     # state solve time, with jit overhead no longer in it.
-    # "lippmann_schwinger" (pure strain BC) auto-decomposes across
-    # jax.local_device_count() devices on its own -- see module docstring
-    # and operators.projection.Gamma0Operator; n_devices_pmap just reports
-    # how many it actually picked.
-    n_devices_pmap = choose_device_count(n) if formulation == "lippmann_schwinger" else None
-
     def _solve():
         results = solve_mechanics(n, L, phase, materials, EPS_BAR, formulation=formulation,
                                    scheme=scheme, toler_lin=TOLER_LIN, maxiter=MAXITER)
@@ -247,7 +231,6 @@ def bench_one(path: str, label: str, formulation: str, scheme: str) -> dict:
         "scheme": scheme,
         "n": list(n),
         "Nv": int(phase.shape[0]),
-        "n_devices_pmap": n_devices_pmap,  # None unless formulation="lippmann_schwinger"
         "converged": bool(sol.converged),
         "E_eff_MPa": E_eff_MPa,
         "eps_bar_loaded": float(eps_bar_h[i, j]),

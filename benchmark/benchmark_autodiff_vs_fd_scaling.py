@@ -134,7 +134,7 @@ def build_solve_fn(n, L, phase, xi_flat):
 
 def host_peak_rss_mb() -> float:
     """Peak resident set size so far in this process, in MB. Same as
-    benchmark_3/elastic_solve.py's helper -- but note this script runs
+    benchmark_3/elastic_solve_vtu.py's helper -- but note this script runs
     the whole N_SWEEP in one process (no per-grid subprocess isolation), so
     this is a running peak across all grid sizes tried so far, not a
     per-grid-size peak."""
@@ -243,7 +243,7 @@ def bench_one_grid(n_vox, run_fd=True):
 
     def _finalize(stage_mem: dict) -> dict:
         """Top-level host/device peak mirrors the most recent mem snapshot --
-        same fields benchmark_3/elastic_solve.py reports per result, kept
+        same fields benchmark_3/elastic_solve_vtu.py reports per result, kept
         here too for the same "at a glance, how close to OOM did this grid
         get" read without having to dig into mem_mb."""
         result["host_peak_rss_mb"] = stage_mem["host_peak_rss_mb"]
