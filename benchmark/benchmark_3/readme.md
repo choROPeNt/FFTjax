@@ -32,12 +32,23 @@ Tracks wall-clock read/jit/solve/write time, peak memory (host RSS via `resource
 memory via `jax.devices()[0].memory_stats()` on GPU/TPU), and the homogenized modulus per file,
 prints a summary table, and writes `output/benchmark/benchmark_3/results_<date>.json`.
 
-Two extra columns isolate GPU memory per stage: `C asm [MB]` (`c_assemble_device_mb` in the JSON) is
-`assemble_C_field`'s own incremental device-memory cost, `solve [MB]` (`solve_device_mb`) is XLA
-compile + the first solve's combined incremental cost. Both are *deltas* between consecutive
-cumulative-peak snapshots, not running totals -- `null`/`n/a` on CPU/TPU, same as `device [MB]`
-itself. The full per-stage breakdown (`after_read`/`after_materials`/`after_jit`/`after_solve`/
-`after_write`) is still in each result's `mem_mb` dict in the JSON for a finer look.
+GPU memory columns (`n/a` on CPU/TPU). A small einsum/FFT warm-up runs before any problem data is
+on the device, so the fixed CUDA/cuBLAS/cuFFT runtime cost (~130 MB) lands in `baseline_device_mb`
+instead of being charged to the first stage:
+
+- `C asm [MB]` (`c_assemble_device_mb`) / `solve [MB]` (`solve_device_mb`): each stage's own peak
+  on top of what was already live when it started. `solve` is XLA compile + the first solve. A
+  `<=` prefix (`*_exact: false` in the JSON) means the stage stayed under an earlier peak, so only
+  an upper bound is known -- `peak_bytes_in_use` is a running maximum.
+- `problem[MB]` (`problem_device_mb`): everything the first `solve_mechanics` call needs for this
+  grid, i.e. its peak minus the baseline -- the number to report.
+- `B/voxel` (`bytes_per_voxel`) and `max Nv` (`max_voxels_at_limit`): `problem_device_mb / Nv`,
+  and the linear extrapolation of how many voxels fit under the allocator limit
+  (`device_limit_mb`, i.e. `XLA_PYTHON_CLIENT_MEM_FRACTION` x device total).
+
+On OOM, the printed failure shows the per-stage snapshots plus XLA's own "trying to allocate N
+bytes" line -- in use at the crash plus that request is what the run actually needed. The full
+per-stage breakdown is in each result's `mem_mb` dict in the JSON.
 
 `jit_time_s` vs. `solve_time_s`: `solve_mechanics` is called twice per file with identical inputs
 -- the first call's time includes XLA trace + compile (`lax.while_loop` inside the CG solve always
