@@ -32,6 +32,13 @@ Tracks wall-clock read/jit/solve/write time, peak memory (host RSS via `resource
 memory via `jax.devices()[0].memory_stats()` on GPU/TPU), and the homogenized modulus per file,
 prints a summary table, and writes `output/benchmark/benchmark_3/results_<date>.json`.
 
+Two extra columns isolate GPU memory per stage: `C asm [MB]` (`c_assemble_device_mb` in the JSON) is
+`assemble_C_field`'s own incremental device-memory cost, `solve [MB]` (`solve_device_mb`) is XLA
+compile + the first solve's combined incremental cost. Both are *deltas* between consecutive
+cumulative-peak snapshots, not running totals -- `null`/`n/a` on CPU/TPU, same as `device [MB]`
+itself. The full per-stage breakdown (`after_read`/`after_materials`/`after_jit`/`after_solve`/
+`after_write`) is still in each result's `mem_mb` dict in the JSON for a finer look.
+
 `jit_time_s` vs. `solve_time_s`: `solve_mechanics` is called twice per file with identical inputs
 -- the first call's time includes XLA trace + compile (`lax.while_loop` inside the CG solve always
 compiles to XLA on first use for a given grid shape, even with no explicit `jax.jit` on

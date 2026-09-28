@@ -32,6 +32,19 @@ use for a given shape, even with no explicit jax.jit on solve_mechanics
 itself); solve_time_s is a second, identical call, which hits the now-warm
 compilation cache -- steady-state solve time with jit overhead no longer in it.
 
+``c_assemble_device_mb``/``solve_device_mb`` isolate GPU memory per stage --
+the incremental *device* peak (``jax.devices()[0].memory_stats()``, None on
+CPU/TPU) each stage adds on top of the previous one, not that stage's own
+running total: ``c_assemble_device_mb`` is ``assemble_C_field``'s own cost
+(read -> materials, see that call's own comment in ``bench_one`` for why
+it's called standalone), ``solve_device_mb`` is XLA compile + the first
+solve together (materials -> jit -- JAX's arena allocator rarely returns
+memory, so there's no clean way to isolate compile from that first solve's
+own cost). Both are printed in the summary table and written to the JSON
+per result, alongside the existing per-stage ``mem_mb`` breakdown
+(after_read/after_materials/after_jit/after_solve/after_write) for a finer
+look than just these two deltas.
+
 No sample .vtu ships with this repo -- TexGen output is generated
 externally, not committed. Point --data-dir at your own exports (see
 readme.md in this folder).
@@ -246,6 +259,25 @@ def bench_one(path: str, label: str, formulation: str, scheme: str) -> dict:
     eps_bar_h, sigma_bar_h = homogenize(sol.eps, sol.sigma)
     E_eff_MPa = float(sigma_bar_h[i, j] / eps_bar_h[i, j])
 
+    # Incremental device-memory peak attributable to each stage -- these are
+    # cumulative "peak so far" snapshots (see device_peak_mb's own docstring),
+    # so the delta between consecutive ones isolates what that stage alone
+    # added, not the running total. c_assemble = assemble_C_field's own cost
+    # (read -> materials, see that call's comment above); solve = XLA
+    # compile + the first solve (materials -> jit -- "jit" is the first
+    # _solve() call, so this is compile+solve together, not solve alone; the
+    # peak rarely drops afterward on JAX's arena allocator, so there's no
+    # clean way to isolate compile from the first solve's own memory here).
+    # None on CPU (device_peak_mb() itself is None there) or if either
+    # snapshot is None.
+    def _device_delta_mb(later: dict, earlier: dict) -> float | None:
+        if later["device_peak_mb"] is None or earlier["device_peak_mb"] is None:
+            return None
+        return later["device_peak_mb"] - earlier["device_peak_mb"]
+
+    c_assemble_device_mb = _device_delta_mb(mem_after_materials, mem_after_read)
+    solve_device_mb = _device_delta_mb(mem_after_jit, mem_after_materials)
+
     return {
         "path": path,
         "solver_label": label,
@@ -264,6 +296,8 @@ def bench_one(path: str, label: str, formulation: str, scheme: str) -> dict:
         "write_time_s": write_time_s,
         "host_peak_rss_mb": host_peak_rss_mb(),
         "device_peak_mb": device_peak_mb(),
+        "c_assemble_device_mb": c_assemble_device_mb,
+        "solve_device_mb": solve_device_mb,
         "mem_mb": {
             "after_read": mem_after_read,
             "after_materials": mem_after_materials,
@@ -283,9 +317,12 @@ def find_vtu_files(data_dir: str) -> list[str]:
 
 def print_row(r: dict) -> None:
     dev = f"{r['device_peak_mb']:.1f}" if r["device_peak_mb"] is not None else "n/a"
+    c_asm = f"{r['c_assemble_device_mb']:.1f}" if r["c_assemble_device_mb"] is not None else "n/a"
+    slv = f"{r['solve_device_mb']:.1f}" if r["solve_device_mb"] is not None else "n/a"
     print(f"{os.path.basename(r['path']):<34} {r['solver_label']:<13} {str(r['n']):>14} "
           f"{r['read_time_s']:>9.3f} {r['jit_time_s']:>9.3f} {r['solve_time_s']:>9.3f} "
-          f"{r['host_peak_rss_mb']:>13.1f} {dev:>11} {r['E_eff_MPa']:>12.1f} {str(r['converged']):>10}")
+          f"{r['host_peak_rss_mb']:>13.1f} {dev:>11} {c_asm:>13} {slv:>13} "
+          f"{r['E_eff_MPa']:>12.1f} {str(r['converged']):>10}")
 
 
 def main():
@@ -317,6 +354,7 @@ def main():
           f"{len(SOLVER_CONFIGS)} solver config(s) each (one subprocess per run)")
     print(f"{'file':<34} {'solver':<13} {'grid':>14} {'read [s]':>9} {'jit [s]':>9} "
           f"{'solve [s]':>9} {'host RSS [MB]':>13} {'device [MB]':>11} "
+          f"{'C asm [MB]':>13} {'solve [MB]':>13} "
           f"{'E_eff [MPa]':>12} {'converged':>10}")
 
     results = []
