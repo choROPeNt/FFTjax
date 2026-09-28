@@ -24,6 +24,7 @@ from math import prod
 import jax.numpy as jnp
 from jax import jit
 
+from operators.fft_distributed import distributed_fft_flat, distributed_ifft_flat
 from operators.green import nyquist_safe_xi
 from solvers.elliptic.vector.base import ElasticitySolver
 from solvers.elliptic.vector.mixed_bc import (
@@ -33,7 +34,7 @@ from solvers.krylov.cg import cg_solve
 from solvers.solution import ElasticitySolution
 
 
-@partial(jit, static_argnames=("n", "control", "maxiter"))
+@partial(jit, static_argnames=("n", "control", "maxiter", "max_devices"))
 def solve_displacement_based(
     n:           Tuple,
     C_field:     jnp.ndarray,
@@ -44,6 +45,7 @@ def solve_displacement_based(
     toler_lin:   float = 1e-4,
     maxiter:     int = 1000,
     C0:          jnp.ndarray | None = None,
+    max_devices: int | None = None,
 ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
     Parameters
@@ -63,6 +65,19 @@ def solve_displacement_based(
                   preconditioner CG needs O(10²-10³) iterations for realistic
                   (high-contrast) composites; default is the voxel-average of
                   ``C_field``.
+    max_devices : caps the device count every FFT call in this solve
+                  auto-detects for domain decomposition (see
+                  operators.fft_distributed.distributed_fft_flat) -- static
+                  for JIT, since it's a Python int driving shape decisions,
+                  not a traced value. None (default) uses whatever
+                  jax.local_device_count() reports; on a single-device
+                  machine this is a no-op, the exact original single-device
+                  solve. The DC-bin macroscopic-strain trick and every other
+                  piece of this function's algebra (gradient/divergence via
+                  ``iq``, the preconditioner, CG's own reductions) is
+                  untouched either way -- only the FFT calls themselves are
+                  auto-decomposed and gathered back to a full array, same
+                  scope as operators.projection.Gamma0Operator.
 
     Returns
     -------
@@ -85,12 +100,10 @@ def solve_displacement_based(
 
     # ── FFT helpers ───────────────────────────────────────────────────────────
     def fft_(x):
-        s = x.shape
-        return jnp.fft.fftn(x.reshape(s[:-1] + n), axes=(-3, -2, -1)).reshape(s)
+        return distributed_fft_flat(x, n, max_devices=max_devices)
 
     def ifft_(x):
-        s = x.shape
-        return jnp.fft.ifftn(x.reshape(s[:-1] + n), axes=(-3, -2, -1)).real.reshape(s)
+        return distributed_ifft_flat(x, n, max_devices=max_devices)
 
     def unpack(x_flat):
         du = x_flat[: 3 * Nv].reshape(3, Nv)
@@ -186,12 +199,13 @@ class DisplacementBasedSolver(ElasticitySolver):
 
     def __init__(
         self,
-        n:         Tuple[int, ...],
-        xi_flat:   jnp.ndarray,
-        control:   Tuple[Tuple[int, ...], ...] | None = None,
-        toler_lin: float = 1e-4,
-        maxiter:   int = 1000,
-        C0:        jnp.ndarray | None = None,
+        n:           Tuple[int, ...],
+        xi_flat:     jnp.ndarray,
+        control:     Tuple[Tuple[int, ...], ...] | None = None,
+        toler_lin:   float = 1e-4,
+        maxiter:     int = 1000,
+        C0:          jnp.ndarray | None = None,
+        max_devices: int | None = None,
     ):
         self.n = n
         self.xi_flat = xi_flat
@@ -199,6 +213,7 @@ class DisplacementBasedSolver(ElasticitySolver):
         self.toler_lin = toler_lin
         self.maxiter = maxiter
         self.C0 = C0
+        self.max_devices = max_devices
 
     def solve(
         self,
@@ -210,5 +225,6 @@ class DisplacementBasedSolver(ElasticitySolver):
         eps, sigma, delta, eps_bar_out, converged = solve_displacement_based(
             self.n, C_field, self.xi_flat, eps_bar, self.control, sg,
             toler_lin=self.toler_lin, maxiter=self.maxiter, C0=self.C0,
+            max_devices=self.max_devices,
         )
         return ElasticitySolution(eps, sigma, delta, converged, eps_bar=eps_bar_out)
