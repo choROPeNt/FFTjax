@@ -30,7 +30,7 @@ plain raise-on-first-non-convergence.
 
 ``--solvers`` selects which mechanical-solver configuration(s) of
 SOLVER_CONFIGS below to run for each selected loading case -- same
-(label, formulation, scheme) pattern as benchmark_3/elastic_solve_vtu.py's
+(label, formulation, scheme) pattern as benchmark_3/elastic_solve.py's
 SOLVER_CONFIGS, now exercising problems.fracture.solve_fracture's
 formulation="fourier_galerkin" support alongside lippmann_schwinger (rotated
 and standard) and displacement:
@@ -147,7 +147,7 @@ LOADING_CASES = {
 # standard discretisation of the reference-medium-free projector for
 # "fourier_galerkin" (operators.galerkin.GalerkinProjector); passed through
 # unchanged for "displacement" too, where solve_fracture ignores it. Mirrors
-# benchmark_3/elastic_solve_vtu.py's SOLVER_CONFIGS.
+# benchmark_3/elastic_solve.py's SOLVER_CONFIGS.
 SOLVER_CONFIGS: list[tuple[str, str, str]] = [
     ("ls_rotated",   "lippmann_schwinger", "rotated"),
     ("ls_standard",  "lippmann_schwinger", "standard"),

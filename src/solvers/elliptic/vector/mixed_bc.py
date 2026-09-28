@@ -150,6 +150,7 @@ def solve_mixed_bc_dc_identity(
     macro_stress_goal: jnp.ndarray,
     toler_lin:        float = 1e-4,
     maxiter:          int = 1000,
+    max_devices:      int | None = None,
 ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
     Single-CG-solve mixed strain/stress macroscopic BC via the DC-bin identity
@@ -183,6 +184,10 @@ def solve_mixed_bc_dc_identity(
     macro_stress_goal : (3, 3)  target macroscopic stress; only entries where
                   ``control == 1`` are used
     toler_lin, maxiter : CG tolerance / iteration cap
+    max_devices : caps the device count Gamma0Operator auto-detects for its
+                  domain decomposition (see operators.projection.Gamma0Operator)
+                  -- None (default) uses whatever jax.local_device_count()
+                  reports; on a single-device machine this is a no-op.
 
     Returns
     -------
@@ -196,7 +201,7 @@ def solve_mixed_bc_dc_identity(
     control_arr = jnp.asarray(control, dtype=eps_bar.dtype)
 
     patched_op = _PatchedOperator(patch_dc_identity(elastic_op.G, control))
-    gamma0 = Gamma0Operator(n, patched_op)
+    gamma0 = Gamma0Operator(n, patched_op, max_devices=max_devices)
 
     def A_op(v_flat):
         v = v_flat.reshape(3, 3, Nv)

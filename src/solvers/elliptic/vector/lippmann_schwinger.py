@@ -25,6 +25,7 @@ def solve_lippmann_schwinger(
     stress_goal: jnp.ndarray | None = None,
     toler_lin:   float = 1e-4,
     maxiter:     int = 1000,
+    max_devices: int | None = None,
 ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
     Inner CG solve for one Newton step of the variational FFT elastic solver
@@ -52,6 +53,11 @@ def solve_lippmann_schwinger(
     stress_goal : (3, 3, Nv) or None target stress field (None = zero, strain BC)
     toler_lin   : relative CG residual tolerance
     maxiter     : maximum CG iterations
+    max_devices : caps the device count Gamma0Operator auto-detects for its
+                  domain decomposition (see operators.projection.Gamma0Operator)
+                  -- None (default) uses whatever jax.local_device_count()
+                  reports; on a single-device machine this is a no-op, the
+                  exact original single-device solve.
 
     Returns
     -------
@@ -69,7 +75,7 @@ def solve_lippmann_schwinger(
     individually JIT-compiled.
     """
     Nv = prod(n)
-    gamma0 = Gamma0Operator(n, green_op)
+    gamma0 = Gamma0Operator(n, green_op, max_devices=max_devices)
 
     # ── Linear operator  A(v) = Gamma0(C:v) ─────────────────────────────────
     def A_op(v_flat):
@@ -100,19 +106,28 @@ class LippmannSchwingerSolver(ElasticitySolver):
     periodic. Formulation-specific setup (grid shape, Green's operator, CG
     tolerance) lives here in __init__; solve() takes only what's common to
     every ElasticitySolver.
+
+    Automatically domain-decomposes across jax.local_device_count() devices
+    when more than one is available (see operators.projection.Gamma0Operator)
+    -- no separate solver class or formulation needed; on a single-device
+    machine this is exactly the original single-device solve. ``max_devices``
+    caps the auto-detected count (mainly for tests forcing the single-device
+    fallback on a multi-device machine).
     """
 
     def __init__(
         self,
-        n:         Tuple[int, ...],
-        green_op:  LinearOperator,
-        toler_lin: float = 1e-4,
-        maxiter:   int = 1000,
+        n:           Tuple[int, ...],
+        green_op:    LinearOperator,
+        toler_lin:   float = 1e-4,
+        maxiter:     int = 1000,
+        max_devices: int | None = None,
     ):
         self.n = n
         self.green_op = green_op
         self.toler_lin = toler_lin
         self.maxiter = maxiter
+        self.max_devices = max_devices
 
     def solve(
         self,
@@ -122,6 +137,7 @@ class LippmannSchwingerSolver(ElasticitySolver):
     ) -> ElasticitySolution:
         eps, sigma, delta, converged = solve_lippmann_schwinger(
             self.n, C_field, self.green_op, eps_bar, stress_goal, self.toler_lin, self.maxiter,
+            max_devices=self.max_devices,
         )
         return ElasticitySolution(eps, sigma, delta, converged)
 
@@ -135,6 +151,7 @@ def solve_lippmann_schwinger_dc(
     macro_stress_goal: jnp.ndarray | None = None,
     toler_lin:         float = 1e-4,
     maxiter:           int = 1000,
+    max_devices:       int | None = None,
 ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
     Kabel et al (2016) single-CG-solve mixed strain/stress macroscopic-BC
@@ -155,6 +172,7 @@ def solve_lippmann_schwinger_dc(
     macro_stress_goal = jnp.zeros((3, 3)) if macro_stress_goal is None else macro_stress_goal
     return solve_mixed_bc_dc_identity(
         n, C_field, green_op, control, eps_bar, macro_stress_goal, toler_lin, maxiter,
+        max_devices=max_devices,
     )
 
 
@@ -170,6 +188,7 @@ def solve_lippmann_schwinger_mixed_bc(
     toler_outer:       float = 1e-6,
     maxiter_outer:     int = 50,
     C0:                jnp.ndarray | None = None,
+    max_devices:       int | None = None,
 ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, int]:
     """
     Michel et al (1999) outer iterative correction for mixed strain/stress
@@ -240,6 +259,7 @@ def solve_lippmann_schwinger_mixed_bc(
     if not pairs:
         eps, sigma, delta, converged = solve_lippmann_schwinger(
             n, C_field, green_op, eps_bar_guess, toler_lin=toler_lin, maxiter=maxiter,
+            max_devices=max_devices,
         )
         return eps, sigma, delta, eps_bar_guess, converged, 1
 
@@ -268,6 +288,7 @@ def solve_lippmann_schwinger_mixed_bc(
     for it in range(1, maxiter_outer + 1):
         eps, sigma, delta, converged = solve_lippmann_schwinger(
             n, C_field, green_op, eps_bar, toler_lin=toler_lin, maxiter=maxiter,
+            max_devices=max_devices,
         )
         sigma_mean = jnp.mean(sigma, axis=-1)
         resid = sm2sv(macro_stress_goal - sigma_mean, pairs)
@@ -312,6 +333,7 @@ class LippmannSchwingerMixedBCSolver(ElasticitySolver):
         toler_outer:   float = 1e-6,
         maxiter_outer: int = 50,
         C0:            jnp.ndarray | None = None,
+        max_devices:   int | None = None,
     ):
         self.n = n
         self.green_op = green_op
@@ -321,6 +343,7 @@ class LippmannSchwingerMixedBCSolver(ElasticitySolver):
         self.toler_outer = toler_outer
         self.maxiter_outer = maxiter_outer
         self.C0 = C0
+        self.max_devices = max_devices
 
     def solve(
         self,
@@ -333,5 +356,6 @@ class LippmannSchwingerMixedBCSolver(ElasticitySolver):
             self.n, C_field, self.green_op, self.control, eps_bar, sg,
             toler_lin=self.toler_lin, maxiter=self.maxiter,
             toler_outer=self.toler_outer, maxiter_outer=self.maxiter_outer, C0=self.C0,
+            max_devices=self.max_devices,
         )
         return ElasticitySolution(eps, sigma, delta, converged, eps_bar=eps_bar_out)

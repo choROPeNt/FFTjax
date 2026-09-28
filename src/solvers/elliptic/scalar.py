@@ -22,11 +22,12 @@ from math import prod
 import jax
 import jax.numpy as jnp
 
+from operators.fft_distributed import distributed_fft_flat, distributed_ifft_flat
 from operators.green import nyquist_safe_xi
 from solvers.krylov.cg import cg_solve
 
 
-@partial(jax.jit, static_argnames=("n", "maxiter"))
+@partial(jax.jit, static_argnames=("n", "maxiter", "max_devices"))
 def solve_damage_helmholtz_cg(
     H_field: jnp.ndarray,
     xi_flat: jnp.ndarray,
@@ -39,6 +40,7 @@ def solve_damage_helmholtz_cg(
     eta: float = 0.0,
     dt: float = 1.0,
     k: float | jnp.ndarray = 0.0,
+    max_devices: int | None = None,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """
     Preconditioned CG solve of the AT2 Helmholtz damage equation with
@@ -94,6 +96,13 @@ def solve_damage_helmholtz_cg(
                            sync with the true variational stationarity
                            condition -- negligibly for k~1e-6, not
                            negligibly as k approaches 1)
+    max_devices : caps the device count every FFT call in this solve
+                           auto-detects for domain decomposition (see
+                           operators.fft_distributed.distributed_fft_flat)
+                           -- None (default) uses whatever
+                           jax.local_device_count() reports; on a
+                           single-device machine this is a no-op, the exact
+                           original single-device solve.
 
     Returns
     -------
@@ -106,10 +115,10 @@ def solve_damage_helmholtz_cg(
     driving = 2.0 * (1.0 - k) * H_field   # -g'(d)·ψ⁺, affine-in-d term folded into the mass coefficient below
 
     def fft_(v):
-        return jnp.fft.fftn(v.reshape(n)).reshape(Nv)
+        return distributed_fft_flat(v, n, max_devices=max_devices)
 
     def ifft_(v_hat):
-        return jnp.fft.ifftn(v_hat.reshape(n)).real.reshape(Nv)
+        return distributed_ifft_flat(v_hat, n, max_devices=max_devices)
 
     def A_op(v_flat):
         lap_v = ifft_(-xi_sq * fft_(v_flat))
@@ -130,7 +139,7 @@ def solve_damage_helmholtz_cg(
     return jnp.clip(d, 0.0, 1.0), converged
 
 
-@partial(jax.jit, static_argnames=("n", "maxiter"))
+@partial(jax.jit, static_argnames=("n", "maxiter", "max_devices"))
 def solve_damage_helmholtz_cg_het(
     H_field: jnp.ndarray,
     xi_flat: jnp.ndarray,
@@ -143,6 +152,7 @@ def solve_damage_helmholtz_cg_het(
     eta: float = 0.0,
     dt: float = 1.0,
     k: float | jnp.ndarray = 0.0,
+    max_devices: int | None = None,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """
     Preconditioned CG solve of the AT2 Helmholtz damage equation for a
@@ -196,6 +206,9 @@ def solve_damage_helmholtz_cg_het(
     dt       : float       time-step size Δt (only used when η > 0)
     k        : float or (Nv,)  AT2 residual stiffness k_res -- see
                            ``solve_damage_helmholtz_cg``'s docstring
+    max_devices : caps the device count every FFT call in this solve
+                           auto-detects for domain decomposition -- see
+                           ``solve_damage_helmholtz_cg``'s docstring.
 
     Returns
     -------
@@ -209,16 +222,16 @@ def solve_damage_helmholtz_cg_het(
     driving = 2.0 * (1.0 - k) * H_field
 
     def fft_(v):
-        return jnp.fft.fftn(v.reshape(n)).reshape(Nv)
+        return distributed_fft_flat(v, n, max_devices=max_devices)
 
     def ifft_(v_hat):
-        return jnp.fft.ifftn(v_hat.reshape(n)).real.reshape(Nv)
+        return distributed_ifft_flat(v_hat, n, max_devices=max_devices)
 
     def fft_vec(v):
-        return jnp.fft.fftn(v.reshape(ndim, *n), axes=(-3, -2, -1)).reshape(ndim, Nv)
+        return distributed_fft_flat(v, n, max_devices=max_devices)
 
     def ifft_vec(v_hat):
-        return jnp.fft.ifftn(v_hat.reshape(ndim, *n), axes=(-3, -2, -1)).real.reshape(ndim, Nv)
+        return distributed_ifft_flat(v_hat, n, max_devices=max_devices)
 
     def div_Gc_grad(v_flat):
         """div(Gc(x) * grad(v_flat)) via gradient -> real-space Gc multiply -> divergence."""
@@ -249,7 +262,7 @@ def solve_damage_helmholtz_cg_het(
 _ZERO_CONTROL_1D = (0, 0, 0)
 
 
-@partial(jax.jit, static_argnames=("n", "control", "maxiter"))
+@partial(jax.jit, static_argnames=("n", "control", "maxiter", "max_devices"))
 def solve_thermal_conduction(
     n:          tuple[int, ...],
     K_field:    jnp.ndarray,
@@ -260,6 +273,7 @@ def solve_thermal_conduction(
     toler_lin:  float = 1e-6,
     maxiter:    int = 1000,
     K0:         jnp.ndarray | None = None,
+    max_devices: int | None = None,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
     Steady-state heat conduction on a periodic voxel grid, true heterogeneous
@@ -314,6 +328,13 @@ def solve_thermal_conduction(
                  unknown here is scalar, unlike the displacement case's
                  3-component acoustic tensor). Default is the voxel-average
                  of K_field.
+    max_devices : caps the device count every FFT call in this solve
+                 auto-detects for domain decomposition (see
+                 operators.fft_distributed.distributed_fft_flat, same
+                 mechanism solve_displacement_based uses) -- None (default)
+                 uses whatever jax.local_device_count() reports; on a
+                 single-device machine this is a no-op, the exact original
+                 single-device solve.
 
     Returns
     -------
@@ -334,16 +355,16 @@ def solve_thermal_conduction(
     iq = 1j * nyquist_safe_xi(xi_flat, n)  # (3, Nv) -- gradient/divergence are odd powers of ξ
 
     def fft_(v):
-        return jnp.fft.fftn(v.reshape(n)).reshape(Nv)
+        return distributed_fft_flat(v, n, max_devices=max_devices)
 
     def ifft_(v_hat):
-        return jnp.fft.ifftn(v_hat.reshape(n)).real.reshape(Nv)
+        return distributed_ifft_flat(v_hat, n, max_devices=max_devices)
 
     def fft_vec(v):
-        return jnp.fft.fftn(v.reshape(3, *n), axes=(-3, -2, -1)).reshape(3, Nv)
+        return distributed_fft_flat(v, n, max_devices=max_devices)
 
     def ifft_vec(v_hat):
-        return jnp.fft.ifftn(v_hat.reshape(3, *n), axes=(-3, -2, -1)).real.reshape(3, Nv)
+        return distributed_ifft_flat(v_hat, n, max_devices=max_devices)
 
     # ── pack/unpack the macroscopic-gradient correction (flux-controlled only) ──
     def sv2full(sv):
