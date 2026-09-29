@@ -35,8 +35,9 @@ to grow out to it. If the hardening law also saturates -- ``H = 0``, or any
 tabulated law past its last row -- sigma_y has a ceiling, and trial states
 with 3*a_f*p_trial > sigma_y_max - a_tip have NO admissible return at all.
 That is a property of the yield surface, not of the solver: a cone closes at
-a finite hydrostatic tension. Such states are returned as NaN (see
-_unreachable) rather than silently mapped to a plausible wrong stress. The
+a finite hydrostatic tension. Such states are returned as NaN -- stress,
+tangent and state alike (see _unreachable and stress_and_tangent) -- rather
+than silently mapped to a plausible wrong stress. The
 real fix, if a non-dilatant frictional material genuinely has to carry
 tension past that limit, is a TENSION CUT-OFF: a second (Rankine) surface at
 p = p_tip whose flow is purely volumetric, which supplies the missing lever
@@ -260,7 +261,7 @@ class DruckerPrager(ConstitutiveModel):
         # legitimate non-dilatant frictional material, and a config may never
         # go near it. Raising would forbid every tabulated law at a_g = 0,
         # since the plateau always puts a ceiling on sigma_y.
-        if self.a_f > 0.0 and self.a_g == 0.0 and np.isfinite(self.hardening.sigma_y_max):
+        if self._can_be_unreachable():
             p_lim = (self.hardening.sigma_y_max - self.a_tip) / (3.0 * self.a_f)
             why = (f"sigma_y is capped at {self.hardening.sigma_y_max:.4g} "
                    f"(perfectly plastic)" if self.hardening.sigma_y_max == self.sigma_y0
@@ -278,6 +279,13 @@ class DruckerPrager(ConstitutiveModel):
                 f"         tension cut-off if the run needs to go past it.",
                 file=sys.stderr)
 
+    def _can_be_unreachable(self) -> bool:
+        """Whether ANY trial state can lack an admissible return -- the static
+        half of _unreachable: friction, no dilatancy, and a ceiling on
+        sigma_y. False means every state is reachable."""
+        return bool(self.a_f > 0.0 and self.a_g == 0.0
+                    and np.isfinite(self.hardening.sigma_y_max))
+
     def _unreachable(self, p_trial):
         """
         Per-voxel mask for trial states the yield surface can never reach, or
@@ -294,15 +302,17 @@ class DruckerPrager(ConstitutiveModel):
         a_tip + 3*a_f*p_trial <= sqrt(q^2 + a_tip^2) + 3*a_f*p_trial <=
         sigma_y(alpha_prev) <= sigma_y_max, so it can never trip this test.
         """
-        if not (self.a_f > 0.0 and self.a_g == 0.0
-                and np.isfinite(self.hardening.sigma_y_max)):
+        if not self._can_be_unreachable():
             return None
         return self.hardening.sigma_y_max < self.a_tip + 3.0 * self.a_f * p_trial
 
     @staticmethod
     def _nan_out(bad, sigma, eps_p, alpha):
         """NaN out an unreachable state, so it surfaces as a failed Newton
-        step rather than as a plausible-looking wrong stress."""
+        step rather than as a plausible-looking wrong stress.
+
+        This covers stress() only. Differentiating it gives a ZERO tangent at
+        those voxels, not NaN, so stress_and_tangent NaNs C_tan separately."""
         if bad is None:
             return sigma, eps_p, alpha
         nan = jnp.asarray(jnp.nan, dtype=sigma.dtype)
@@ -764,6 +774,9 @@ class DruckerPrager(ConstitutiveModel):
         only returns (jacobian, aux), never the primal value) so this needs
         just one autodiff pass, not a second plain call to stress().
 
+        An unreachable state (see _unreachable) is NaN in all four outputs:
+        C_tan is NaN exactly where sigma is.
+
         Returns
         -------
         sigma  : (3,3)
@@ -775,6 +788,16 @@ class DruckerPrager(ConstitutiveModel):
             return sigma, (sigma, new_state)
 
         C_tan, (sigma, new_state) = jax.jacfwd(_fn, has_aux=True)(eps)
+        if self._can_be_unreachable():
+            # _nan_out's jnp.where passes on the tangent of the branch it
+            # selects, and a constant NaN's tangent is ZERO: without this an
+            # unreachable voxel's C_tan is a finite zero block -- a singular
+            # tangent, indistinguishable from the sharp vertex's. Not fixed
+            # inside stress() with a non-constant NaN (sigma * nan) instead:
+            # that NaNs the reverse-mode gradient of every REACHABLE state,
+            # since jnp.where sends it a zero cotangent and 0 * nan = nan.
+            C_tan = jnp.where(jnp.all(jnp.isfinite(sigma)), C_tan,
+                              jnp.asarray(jnp.nan, dtype=C_tan.dtype))
         return sigma, C_tan, new_state
 
     def stress_and_tangent_field(

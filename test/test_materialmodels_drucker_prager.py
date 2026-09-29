@@ -3,7 +3,7 @@ Standalone test for materialmodels.inelastic.plasticity_drucker_prager
 .DruckerPrager -- the pressure-sensitive drop-in replacement for
 J2Plasticity.
 
-Thirteen checks
+Fourteen checks
 ---------------
 1. J2 degeneracy: with a_f = a_g = 0 the Drucker-Prager cone IS the von
    Mises cylinder, so stress, tangent AND updated state must reproduce
@@ -62,6 +62,12 @@ Thirteen checks
    asked for -- a monotone uniaxial sweep must trace the tabulated curve
    through both slopes and onto the plateau, and must be distinguishable
    from the linear law it replaces.
+14. Unreachable states are LOUD: with a_g = 0 and a capped sigma_y, trial
+   states past the cone's closing pressure have no return. Stress, tangent
+   and state must all be NaN exactly there -- the tangent included, which
+   jnp.where alone leaves as a silent zero block -- and finite everywhere
+   else, on both tips. Through the nonlinear solver, such a load must come
+   back unconverged, and one just below it must still converge.
 
 Usage
 -----
@@ -555,5 +561,54 @@ assert gap_13 > 1.0, (
     "-- check 13 cannot tell them apart, so it is not testing the table"
 )
 print("[13] PASSED")
+
+# ── 14. unreachable states: NaN in stress, tangent AND state ────────────────
+# a_g = 0 with H = 0 caps sigma_y at SY, so trial states with
+# 3*A_F*p_trial > SY - a_tip have no admissible return. The expected mask is
+# computed here from p_trial = K*tr(eps), independently of the model's own.
+
+K14 = DruckerPrager(E=E, nu=NU, sigma_y0=SY, H=0.0, a_f=A_F, a_g=0.0).K
+n_bad14 = n_ok14 = 0
+for a_tip14 in (0.0, 0.1 * SY):
+    dp14 = DruckerPrager(E=E, nu=NU, sigma_y0=SY, H=0.0, a_f=A_F, a_g=0.0, a_tip=a_tip14)
+    e_lim = (SY - a_tip14) / (3.0 * A_F) / (3.0 * K14)   # hydrostatic strain at the limit
+    dev14 = rng.normal(scale=0.005, size=(400, 3, 3))
+    dev14 = 0.5 * (dev14 + np.transpose(dev14, (0, 2, 1)))
+    dev14 -= np.trace(dev14, axis1=1, axis2=2)[:, None, None] / 3.0 * np.eye(3)
+    eps14 = dev14 + rng.uniform(-0.5, 2.5, size=400)[:, None, None] * e_lim * np.eye(3)
+    margin = SY - a_tip14 - 3.0 * A_F * K14 * np.trace(eps14, axis1=1, axis2=2)
+    keep = np.abs(margin) > 1e-6 * SY          # off the boundary itself, where rounding decides
+    eps14, bad = jnp.array(eps14[keep]), margin[keep] < 0.0
+    m14 = int(keep.sum())
+    sig14, C14, (ep14, al14) = jax.vmap(dp14.stress_and_tangent)(
+        eps14, jnp.zeros((m14, 3, 3)), jnp.zeros(m14))
+    for name, out in (("sigma", sig14), ("C_tan", C14), ("eps_p", ep14), ("alpha", al14)):
+        flat = np.asarray(out).reshape(m14, -1)
+        assert np.array_equal(np.all(np.isnan(flat), axis=1), bad), (
+            f"a_tip={a_tip14}: {name} is not all-NaN exactly at the unreachable states")
+        assert np.all(np.isfinite(flat[~bad])), (
+            f"a_tip={a_tip14}: {name} is non-finite at a reachable state")
+    n_bad14 += int(bad.sum())
+    n_ok14 += int((~bad).sum())
+print(f"[14] {n_bad14} unreachable states all-NaN in sigma, C_tan, eps_p, alpha; "
+      f"{n_ok14} reachable states all finite (sharp and rounded tip)")
+assert n_bad14 > 200 and n_ok14 > 200, (n_bad14, n_ok14)
+
+# What callers rely on: NaN in sigma makes solve_displacement_based_nonlinear
+# report failure, and the mask must not disturb a solve that stays reachable.
+lu14, st14 = assemble_local_update(
+    [DruckerPrager(E=E, nu=NU, sigma_y0=SY, H=0.0, a_f=A_F, a_g=0.0),
+     LinearElasticIsotropic(E=70.0e3, nu=0.20)], phase)
+e_lim = SY / (3.0 * A_F) / (3.0 * K14)
+for factor, expect in ((0.3, True), (2.0, False)):
+    _, sig14, _, conv14, it14 = solve_displacement_based_nonlinear(
+        n, xi_flat, factor * e_lim * jnp.eye(3), lu14, st14,
+        toler_lin=1e-8, maxiter_lin=2000, toler_nr=1e-8, maxiter_nr=10)
+    n_nan = int(jnp.sum(~jnp.all(jnp.isfinite(sig14), axis=(0, 1))))
+    print(f"[14] hydrostatic load at {factor}x the limit: converged={conv14}  "
+          f"n_iter={it14}  NaN voxels={n_nan}/{Nv}")
+    assert conv14 == expect, f"{factor}x the limit: converged={conv14}, expected {expect}"
+    assert (n_nan == 0) == expect
+print("[14] PASSED")
 
 print("\ntest_materialmodels_drucker_prager: all checks passed")
