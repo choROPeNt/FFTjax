@@ -62,6 +62,11 @@ _ZERO_CONTROL = ((0, 0, 0), (0, 0, 0), (0, 0, 0))
 # its use.
 _NR_STALL_SWEEPS = 10   # Newton converged ~1 sweep in 4 at its floor on the bi cell;
                         # at 5, P(premature give-up) ~ 0.75^5 = 24%, at 10 ~ 6%
+# Consecutive sweeps whose Newton DIVERGED (failed with relative residual
+# above _NR_DIVERGED_RES) after which _staggered_loop gives up on the increment,
+# whatever the damage residual is doing -- see the comment at its use.
+_NR_DIVERGED_SWEEPS = 3
+_NR_DIVERGED_RES    = 1.0
 
 
 def _has_plastic_pff(materials) -> bool:
@@ -466,6 +471,7 @@ def _staggered_loop(
         accelerator.reset(floor=np.asarray(d_init))
 
     nr_stall = 0
+    nr_diverged = 0
     for iter_st in range(1, maxiter_st + 1):
         d_prev_st = d_st
         t_sweep = time.perf_counter()
@@ -649,6 +655,28 @@ def _staggered_loop(
             # to the fold below (rejected -> the stepper's cutback).
             nr_stall = nr_stall + 1 if staggered_converged else 0
             if nr_stall >= _NR_STALL_SWEEPS:
+                break
+            # The stall guard above only fires once the damage has converged.
+            # A DIVERGED Newton never gets there: each sweep warm-starts from
+            # the previous failed iterate, so the failure is absorbing and the
+            # loop runs to maxiter_st on damage driven by non-equilibrium
+            # strain. Tangled 152^3 PP RVE (fracture_tangled_pp.yaml), t =
+            # 0.25 -> 0.29: Newton converged in sweeps 1-3, then failed 30/30
+            # from sweep 4 on with r = 0.5, 3, 9, ... 38, at ~20 min a sweep --
+            # 80+ sweeps (26 h) with maxiter_st 200 still ~40 h from the first
+            # cutback. r is ||residual|| / ||sigma||, so r > 1 is divergence,
+            # not a near miss: across every sweep log in sim/sim/12_mini_eta,
+            # 01_uni and 11_mini_square, no attempt with a Newton failure above
+            # r = 0.24 was ever accepted. Near-miss failures (bi cell, r ~ 0.2,
+            # which did recover after 12 sweeps) are left to the guard above.
+            nr_diverged = (nr_diverged + 1
+                           if mechanics == "newton" and not bool(converged_mech)
+                           and res_nr > _NR_DIVERGED_RES else 0)
+            if nr_diverged >= _NR_DIVERGED_SWEEPS:
+                if log_sweeps:
+                    print(f"      [sweep {iter_st:3d}] Newton diverged in "
+                          f"{nr_diverged} consecutive sweeps -- giving up on "
+                          f"the increment", flush=True)
                 break
         else:
             # stay array-valued -- float()/bool() on a batched/traced value
