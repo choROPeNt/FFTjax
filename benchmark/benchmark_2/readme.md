@@ -1,6 +1,13 @@
 # Random Periodic RVE Benchmark Data
 
-`assets/load_*_phi_*.csv` (and the earlier digitizations in `assets/archiv/`)
+`elastic_random_periodic.py` is the active script -- linear elastic
+homogenization only (no phase-field damage) on the same random-fibre RVE
+geometry. `archiv/pff_random_periodic.py` is the earlier phase-field
+(AT2 damage) version, archived rather than deleted since it's still the
+reference for the fibre-matrix interphase/Gc calibration work against the
+Varandas paper below; not currently wired up to a working snap-through.
+
+`assets/load_*_phi_*.csv`
 contain reference data from:
 
 > Varandas, L. F., Catalanotti, G., Melro, A. R., & Falzon, B. G. (2020).
@@ -16,7 +23,7 @@ loaded axis (load_11/22) and in-plane shear (load_12/13/23).
 `load_22_tension_phi_0.XX_.csv`, `load_22_comp_phi_0.XX_.csv`,
 `load_13_shear_phi_0.XX_.csv`, `load_23_shear_phi_0.XX_.csv`: stress-strain
 curves digitized from the paper's figures, used as reference curves for
-`pff_random_periodic.py`'s tension_x / compression_x / shear_xy load paths.
+`archiv/pff_random_periodic.py`'s tension_x / compression_x / shear_xy load paths.
 
 The random fibre-packing algorithm underlying `generation.rve.make_random_composite_rve`
 (Catalanotti 2016) traces back to:

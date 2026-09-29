@@ -122,7 +122,7 @@ toler_st_abs, toler_st_rel, maxiter_st = 1e-2, 1e-3, 200
 eta = 1e-6   # damage-equation viscous regularisation (Fig. 3b, Schneider & Kästner 2025)
 
 out_root_path = "output_"
-output = f"{out_root_path}/benchmark/single_notch_plate"
+output = f"{out_root_path}/benchmark/benchmark_1"
 here   = os.path.dirname(os.path.abspath(__file__))
 
 LOADING_CASES = {

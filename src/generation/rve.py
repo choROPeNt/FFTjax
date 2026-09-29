@@ -107,7 +107,8 @@ def make_square_composite_rve(phi, r_fiber, dx, N_min=32, nz=1, clean_isolated=T
 
 
 def make_random_composite_rve(phi, r_fiber, dx, N_min=32, size_in_r=None, nz=1, K=15,
-                               seed=None, interphase_thickness=None, clean_isolated=True):
+                               seed=None, interphase_thickness=None, interphase_erosion_fraction=0.0,
+                               clean_isolated=True):
     """
     Densely-packed random-fibre RVE. Based on Catalanotti (2016),
     doi.org/10.1016/j.compstruct.2015.11.039 -- reaches any phi up to the
@@ -134,17 +135,40 @@ def make_random_composite_rve(phi, r_fiber, dx, N_min=32, size_in_r=None, nz=1, 
     interphase_thickness : None (default) -- binary fibre/matrix, phase in
                   {0, 1}. Set to a radial thickness [same length unit as
                   r_fiber] to add a 3rd phase (2 = interphase) filling the
-                  analytic annulus r_fiber <= dist_to_centre < r_fiber +
-                  interphase_thickness around every fibre -- an exact
-                  radial dilation (computed from the same per-fibre
-                  center-distance test as the fibre mask itself, so it's
-                  not subject to a voxel structuring element's directional
-                  bias the way e.g. scipy.ndimage.binary_dilation would
-                  be). Interphase rings from nearby fibres may overlap each
-                  other (fine, just merges); a fibre's own body always
-                  wins over a neighbour's interphase (interphase is
-                  defined as dilated-but-not-actually-fibre, checked
-                  against the true, undilated fibre mask).
+                  analytic annulus r_core <= dist_to_centre < r_outer around
+                  every fibre -- an exact radial erosion/dilation (computed
+                  from the same per-fibre center-distance test as the fibre
+                  mask itself, so it's not subject to a voxel structuring
+                  element's directional bias the way e.g.
+                  scipy.ndimage.binary_dilation would be). r_core/r_outer
+                  split interphase_thickness around the nominal r_fiber per
+                  interphase_erosion_fraction below -- fibre PACKING (centre
+                  positions, minimum-separation check) is always done at the
+                  nominal r_fiber regardless of that split, so only the
+                  fibre/interphase/matrix voxel LABELLING moves, not the
+                  underlying geometry. Interphase rings from nearby fibres
+                  may overlap each other (fine, just merges); a fibre's own
+                  eroded core always wins over a neighbour's interphase
+                  (interphase is defined as dilated-but-not-actually-fibre,
+                  checked against the eroded fibre mask).
+    interphase_erosion_fraction : float in [0, 1], default 0.0 -- how much of
+                  interphase_thickness is taken from the fibre (erosion) vs.
+                  added into the matrix (dilation): r_core = r_fiber -
+                  interphase_erosion_fraction * interphase_thickness,
+                  r_outer = r_fiber + (1 - interphase_erosion_fraction) *
+                  interphase_thickness. 0.0 (default) is pure dilation --
+                  r_core = r_fiber, i.e. the fibre's true radius is
+                  untouched and the whole ring is carved out of the matrix
+                  (this function's original, only behaviour before this
+                  parameter existed). 0.5 splits the ring evenly around the
+                  nominal fibre surface -- less fibre volume fraction than
+                  pure dilation (the eroded core is genuinely smaller), while
+                  encroaching into the inter-fibre matrix channels only half
+                  as much as pure dilation does, so the packing's own gap
+                  structure is better preserved visually/statistically than
+                  at either extreme. 1.0 is pure erosion -- r_outer =
+                  r_fiber, the interphase eats only into the fibre, none of
+                  the matrix. Ignored when interphase_thickness is None.
     clean_isolated : bool  reassign single-voxel phase islands to their
                   majority neighbour phase (see _remove_isolated_voxels) --
                   most useful with a thin interphase_thickness (only ~1-2
@@ -164,6 +188,10 @@ def make_random_composite_rve(phi, r_fiber, dx, N_min=32, size_in_r=None, nz=1, 
         raise ValueError(f'nz must be >= 1, got {nz}')
     if interphase_thickness is not None and interphase_thickness <= 0:
         raise ValueError(f'interphase_thickness must be > 0, got {interphase_thickness}')
+    if not 0.0 <= interphase_erosion_fraction <= 1.0:
+        raise ValueError(
+            f'interphase_erosion_fraction must be in [0, 1], got {interphase_erosion_fraction}'
+        )
     phi_max = np.pi * np.sqrt(3.0) / 6.0   # hexagonal close-packing limit ≈ 0.9069
     if phi >= phi_max:
         raise ValueError(f'phi={phi:.4f} exceeds hexagonal-packing max {phi_max:.4f}')
@@ -175,9 +203,16 @@ def make_random_composite_rve(phi, r_fiber, dx, N_min=32, size_in_r=None, nz=1, 
     delta_y = 2.0 * np.sqrt(3.0) * r_fiber
     f = np.sqrt(phi_max / phi)   # uniform expansion factor to reach target phi (step 2)
 
-    r_dilated = r_fiber + (interphase_thickness or 0.0)
+    # r_core/r_outer split interphase_thickness around the nominal r_fiber per
+    # interphase_erosion_fraction (0.0 = pure dilation, r_core = r_fiber --
+    # this function's original behaviour; see interphase_erosion_fraction's
+    # own docstring). Fibre PACKING below always uses the nominal r_fiber
+    # regardless of this split -- only the voxel labelling (further down)
+    # uses r_core/r_outer.
+    r_core = r_fiber - interphase_erosion_fraction * (interphase_thickness or 0.0)
+    r_outer = r_fiber + (1.0 - interphase_erosion_fraction) * (interphase_thickness or 0.0)
     size_floor = size_in_r * r_fiber if size_in_r is not None else N_min * dx
-    L_min = max(size_floor, 4.0 * r_dilated)
+    L_min = max(size_floor, 4.0 * r_outer)
     # >=3 cells per axis (>=18 fibres): keeps the domain comfortably larger
     # than the fibre (or, with an interphase, dilated-fibre) diameter for
     # the single-periodic-image check below -- see docstring.
@@ -233,19 +268,23 @@ def make_random_composite_rve(phi, r_fiber, dx, N_min=32, size_in_r=None, nz=1, 
     ys = (np.arange(Ny) + 0.5) / Ny * Ly
     X, Y = np.meshgrid(xs, ys, indexing='ij')
 
+    # fibre_mask uses r_core (== r_fiber when interphase_erosion_fraction=0,
+    # the pure-dilation default -- identical to this function's pre-erosion
+    # behaviour); dilated_mask uses r_outer (== r_fiber + interphase_thickness
+    # at that same default). See interphase_erosion_fraction's own docstring.
     fibre_mask = np.zeros((Nx, Ny), dtype=bool)
     dilated_mask = np.zeros((Nx, Ny), dtype=bool) if interphase_thickness else None
     for cx, cy in centres:
         ddx = X - cx;  ddx -= Lx * np.round(ddx / Lx)
         ddy = Y - cy;  ddy -= Ly * np.round(ddy / Ly)
         dist_sq = ddx ** 2 + ddy ** 2
-        fibre_mask |= dist_sq < r_fiber ** 2
+        fibre_mask |= dist_sq < r_core ** 2
         if dilated_mask is not None:
-            dilated_mask |= dist_sq < r_dilated ** 2
+            dilated_mask |= dist_sq < r_outer ** 2
 
     phase_2d = fibre_mask.astype(int)
     if dilated_mask is not None:
-        phase_2d[dilated_mask & ~fibre_mask] = 2   # interphase -- fibre always wins the overlap
+        phase_2d[dilated_mask & ~fibre_mask] = 2   # interphase -- fibre's eroded core always wins the overlap
     if clean_isolated:
         phase_2d = _remove_isolated_voxels(phase_2d)
 
