@@ -14,7 +14,7 @@ sim/
 sim
 uv.lock
 
-out # slurm output
+out/ # slurm output
 .venv_
 output_
 
