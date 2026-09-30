@@ -17,7 +17,14 @@
 set -euo pipefail
 
 # Site-/account-specific settings -- not committed, see slurm/.env.example
-ENV_FILE="$(dirname "${BASH_SOURCE[0]}")/.env"
+# Under sbatch the script runs from a copy in /var/spool/slurmd/, so
+# BASH_SOURCE doesn't point at slurm/ -- resolve from the submit dir instead
+# (submit from the repo root, e.g. `sbatch slurm/run_sbatch.sh`).
+if [[ -n "${SLURM_SUBMIT_DIR:-}" ]]; then
+    ENV_FILE="$SLURM_SUBMIT_DIR/slurm/.env"
+else
+    ENV_FILE="$(dirname "${BASH_SOURCE[0]}")/.env"
+fi
 if [[ ! -f "$ENV_FILE" ]]; then
     echo "Missing $ENV_FILE -- copy slurm/.env.example to slurm/.env and fill in your own values." >&2
     exit 1

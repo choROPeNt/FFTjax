@@ -15,15 +15,22 @@
 #SBATCH --gres=gpu:2
 #SBATCH --gpus-per-task=2
 #SBATCH -c 12
-#SBATCH --mem-per-cpu=10G
+#SBATCH --mem-per-cpu=4G
 #SBATCH -t 01:00:00
 #SBATCH -J fftjax-multigpu
-#SBATCH -o slurm-multigpu-%j.out
+#SBATCH -o out/slurm-multigpu-%j.out
 
 set -euo pipefail
 
 # Site-/account-specific settings -- not committed, see slurm/.env.example
-ENV_FILE="$(dirname "${BASH_SOURCE[0]}")/.env"
+# Under sbatch the script runs from a copy in /var/spool/slurmd/, so
+# BASH_SOURCE doesn't point at slurm/ -- resolve from the submit dir instead
+# (submit from the repo root, e.g. `sbatch slurm/run_sbatch_multi_gpu.sh`).
+if [[ -n "${SLURM_SUBMIT_DIR:-}" ]]; then
+    ENV_FILE="$SLURM_SUBMIT_DIR/slurm/.env"
+else
+    ENV_FILE="$(dirname "${BASH_SOURCE[0]}")/.env"
+fi
 if [[ ! -f "$ENV_FILE" ]]; then
     echo "Missing $ENV_FILE -- copy slurm/.env.example to slurm/.env and fill in your own values." >&2
     exit 1
@@ -64,15 +71,15 @@ print('devices:', jax.devices())
 print('local_device_count:', jax.local_device_count())
 "
 
-# echo '--- distributed correctness suite (real 2-GPU run) ---'
-# python -m pytest \
-#     test/test_operators_fft_distributed.py \
-#     test/test_operators_projection_distributed.py \
-#     test/test_problems_mechanics_distributed.py \
-#     test/test_problems_mechanics_nonlinear_distributed.py \
-#     test/test_solvers_elliptic_scalar_distributed.py \
-#     test/test_solvers_krylov_cg_sharded.py \
-#     -v
+echo '--- distributed correctness suite (real 2-GPU run) ---'
+python -m pytest \
+    test/test_operators_fft_distributed.py \
+    test/test_operators_projection_distributed.py \
+    test/test_problems_mechanics_distributed.py \
+    test/test_problems_mechanics_nonlinear_distributed.py \
+    test/test_solvers_elliptic_scalar_distributed.py \
+    test/test_solvers_krylov_cg_sharded.py \
+    -v
 
 # Uncomment to also benchmark real geometry with n_devices auto-detecting
 # the 2 GPUs above (needs --data-dir pointing at .vtu data on this node):
