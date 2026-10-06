@@ -209,7 +209,9 @@ class TransverseIsotropic(ConstitutiveModel):
         R = rotation_from_direction(jnp.asarray(fiber_dir, float))
         return rotate_tensor4(R, self._stiffness_tensor_reference())
 
-    def stiffness_field_oriented(self, orientations: jnp.ndarray) -> jnp.ndarray:
+    def stiffness_field_oriented(
+        self, orientations: jnp.ndarray, C_ref: jnp.ndarray | None = None,
+    ) -> jnp.ndarray:
         """
         Per-voxel rotated stiffness field -- the field-valued counterpart of
         ``stiffness_tensor_rotated`` (one direction) for a spatially varying
@@ -236,12 +238,28 @@ class TransverseIsotropic(ConstitutiveModel):
         Parameters
         ----------
         orientations : (3, Nv)  unit fibre direction per voxel (global frame)
+        C_ref : (3,3,3,3) or None -- the reference-frame tensor to rotate;
+                None (default) computes it fresh via
+                ``_stiffness_tensor_reference()``. That computation's own
+                Voigt-conversion step (``materialmodels.tensors.
+                voigt_to_tensor4``) is plain numpy by design (see that
+                module's docstring: built once per material at setup time,
+                not per-voxel) -- safe called eagerly here, but NOT safe to
+                call fresh from inside a ``jax.jit``/``jax.pmap`` trace
+                (``np.asarray`` on an abstract tracer raises
+                ``TracerArrayConversionError``). A caller that needs this
+                inside a trace (e.g. ``materialmodels.assembly.
+                _assemble_C_field_sharded``, sharding this rotation itself
+                across devices) precomputes ``C_ref`` eagerly -- e.g. via
+                ``stiffness_tensor_rotated([0, 0, 1])``, the reference axis
+                -- and passes it in here instead.
 
         Returns
         -------
         C_field : (3, 3, 3, 3, Nv)
         """
-        C_ref = self._stiffness_tensor_reference()
+        if C_ref is None:
+            C_ref = self._stiffness_tensor_reference()
         R_field = rotation_field_from_directions(orientations)  # (3, 3, Nv)
         return rotate_tensor4_field(R_field, C_ref)              # (3, 3, 3, 3, Nv)
 

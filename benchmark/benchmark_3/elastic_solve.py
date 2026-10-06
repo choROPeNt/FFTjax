@@ -237,14 +237,21 @@ def bench_one(path: str, label: str, formulation: str, scheme: str) -> dict:
 
     # Explicit, standalone call purely to snapshot the material model's own
     # memory cost in isolation -- assemble_C_field is what actually builds
-    # the (3,3,3,3,Nv) oriented stiffness field (this is where the OOM in
-    # the benchmark_3 investigation happens, well before the CG solve
-    # itself). solve_mechanics below builds its own C_field again
-    # internally (no way to hand it a precomputed one through that API), so
-    # this genuinely costs an extra materials-assembly pass -- acceptable
-    # for a benchmark script, not something to do in production code.
+    # the (3,3,3,3,Nv) oriented stiffness field (this is where the OOM the
+    # benchmark_3 investigation first found happens, well before the CG
+    # solve itself -- an 18.5 GiB single allocation at 600x600x85, on every
+    # formulation equally, since every one of them called this the same
+    # unsharded way). n=n opts this into the same auto-sharded assembly
+    # solve_mechanics's own internal call now uses (see assemble_C_field's
+    # docstring) -- without it, this standalone diagnostic call would OOM
+    # and abort the whole (file, solver) subprocess before ever reaching
+    # the solve below, masking that the actual fix works. solve_mechanics
+    # below builds its own C_field again internally (no way to hand it a
+    # precomputed one through that API), so this genuinely costs an extra
+    # materials-assembly pass -- acceptable for a benchmark script, not
+    # something to do in production code.
     mem_before_materials = mem_snapshot(path, label, n, "inputs on device")
-    jax.block_until_ready(assemble_C_field(materials, phase))
+    jax.block_until_ready(assemble_C_field(materials, phase, n=n))
     # the returned C_field is dropped right away (never bound), so it is not
     # resident during the solve below -- solve_mechanics builds its own.
     mem_after_materials = mem_snapshot(path, label, n, "materials")

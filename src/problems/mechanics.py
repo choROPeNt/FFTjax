@@ -98,7 +98,16 @@ def _solve_mechanics_step(
     """
     control_nonzero = any(any(row) for row in control)
 
-    C_field = assemble_C_field(materials, phase)
+    # n=n opts assemble_C_field into building C_field directly as x-slabs
+    # when n_devices resolves to >1, instead of materializing the full
+    # (3,3,3,3,Nv) tensor on one device first -- this project's single
+    # largest per-voxel array, and what OOMs first on a large grid
+    # regardless of formulation (see assemble_C_field's own docstring and
+    # benchmark/benchmark_3/elastic_solve.py's investigation). Every
+    # formulation below resolves the identical device count from this same
+    # (n, n_devices) pair via its own choose_device_count call, so this
+    # stays in lockstep with whichever solver consumes C_field next.
+    C_field = assemble_C_field(materials, phase, n=n, n_devices=n_devices)
 
     if formulation == "lippmann_schwinger":
         # Reference medium + Green's operator: see module docstring for why
