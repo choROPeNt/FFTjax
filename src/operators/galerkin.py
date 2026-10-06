@@ -10,9 +10,12 @@ writing this module, see notes/FOURIER_GALERKIN.md.
 
 import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on TPU, no GPU prealloc)
 
+from functools import partial
+
 import jax.numpy as jnp
 
 from operators.base import LinearOperator
+from operators.fft_distributed import choose_device_count, shard_voxel_tensor
 from operators.general_functions import ddot42
 from operators.green import build_freq_grid, build_willot_freq
 
@@ -80,16 +83,22 @@ class GalerkinProjector(LinearOperator):
     (major-symmetric: Ĝₛ_ijkl = Ĝₛ_klij), so ``.T`` returns self.
     """
 
-    def __init__(self, n: tuple[int, ...], L: tuple[float, ...], scheme: str = 'rotated'):
+    def __init__(
+        self, n: tuple[int, ...], L: tuple[float, ...], scheme: str = 'rotated',
+        n_devices: int | None = None,
+    ):
         self.n, self.L, self.scheme = n, L, scheme
+        self.n_devices = n_devices
         self.G = self._build_G()
 
     def _build_G(self) -> jnp.ndarray:
         xi_flat = build_freq_grid(self.n, self.L)
-        if self.scheme == 'rotated':
-            dx = tuple(Li / ni for Li, ni in zip(self.L, self.n))
-            return build_galerkin_projection_operator(xi_flat, scheme='rotated', dx=dx)
-        return build_galerkin_projection_operator(xi_flat, scheme=self.scheme)
+        dx = tuple(Li / ni for Li, ni in zip(self.L, self.n)) if self.scheme == 'rotated' else None
+        resolved_n_devices = choose_device_count(self.n, self.n_devices)
+        if resolved_n_devices > 1:
+            build_local = partial(build_galerkin_projection_operator, scheme=self.scheme, dx=dx)
+            return shard_voxel_tensor(build_local, xi_flat, resolved_n_devices)
+        return build_galerkin_projection_operator(xi_flat, scheme=self.scheme, dx=dx)
 
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
         """x, result: (3, 3, Nv) -- e.g. a strain or stress field in Fourier space."""
@@ -104,6 +113,7 @@ def build_galerkin_projector(
     n: tuple[int, ...],
     L: tuple[float, ...],
     scheme: str = 'rotated',
+    n_devices: int | None = None,
 ) -> GalerkinProjector:
     """
     Build a GalerkinProjector for a grid -- the materials-free counterpart
@@ -114,8 +124,14 @@ def build_galerkin_projector(
 
     Parameters
     ----------
-    n, L   : grid shape and physical domain size
-    scheme : 'standard' or 'rotated'
+    n, L      : grid shape and physical domain size
+    scheme    : 'standard' or 'rotated'
+    n_devices : caps the device count GalerkinProjector auto-detects for
+                sharding its own G tensor's construction (see
+                operators.fft_distributed.shard_voxel_tensor) -- None
+                (default) uses whatever jax.local_device_count() reports;
+                on a single-device machine this is a no-op, the exact
+                original single-device construction.
 
     Returns
     -------
@@ -123,4 +139,4 @@ def build_galerkin_projector(
     """
     if scheme not in ('standard', 'rotated'):
         raise ValueError(f"unknown scheme {scheme!r}, expected 'standard' or 'rotated'")
-    return GalerkinProjector(n, L, scheme=scheme)
+    return GalerkinProjector(n, L, scheme=scheme, n_devices=n_devices)

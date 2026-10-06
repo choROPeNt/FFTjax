@@ -93,6 +93,48 @@ def gather_x_slabs(field_sharded: jnp.ndarray) -> jnp.ndarray:
     return moved.reshape(*lead, -1)
 
 
+def shard_voxel_tensor(build_local, xi_flat: jnp.ndarray, n_devices: int) -> jnp.ndarray:
+    """
+    Build a per-voxel tensor field directly as ``n_devices`` x-slabs under
+    ``jax.pmap``, instead of materializing the full ``(..., Nv)`` tensor on
+    one device first -- the same purely-per-voxel sharding
+    ``materialmodels.assembly._assemble_C_field_sharded`` uses, factored out
+    here since ``operators.green.build_green_operator`` and
+    ``operators.galerkin.build_galerkin_projection_operator`` are both
+    ALSO pure (no-cross-voxel-coupling) functions of ``xi_flat`` alone,
+    producing an equally large ``(3,3,3,3,Nv)`` tensor -- the second half of
+    the OOM benchmark_3's own investigation found (the first being
+    ``C_field`` itself): the Green's/Galerkin tensor is built fully
+    unsharded regardless of ``C_field``'s own sharding, so a
+    lippmann_schwinger/fourier_galerkin solve still OOMs on it alone even
+    once ``C_field`` no longer does.
+
+    Parameters
+    ----------
+    build_local : xi_flat_local (3, Nv_local) -> (..., Nv_local) -- every
+                  non-array argument (scheme, reference moduli, voxel
+                  spacing, ...) already bound in, e.g. via functools.partial.
+    xi_flat     : (3, Nv) angular-frequency grid (operators.green.build_freq_grid)
+    n_devices   : already resolved (> 1) -- callers dispatch via
+                  operators.fft_distributed.choose_device_count themselves,
+                  same convention as every other sharded entry point.
+
+    Returns
+    -------
+    (..., Nv) -- gathered back to one array; not (yet) memory-scaling on its
+    own the way the sharded CG solvers are (the gather step itself briefly
+    needs more than one device's share of memory for a tensor this large,
+    observed on real GPU hardware -- a genuinely no-gather, stays-sharded
+    version is the natural follow-up, mirroring how the CG solves
+    themselves never gather C_field/G mid-solve), but still genuinely
+    avoids ever materializing the full, unsharded computation on one
+    device, which is what OOMs first otherwise.
+    """
+    xi_sharded = split_x_slabs(xi_flat, n_devices)
+    out_sharded = jax.pmap(build_local)(xi_sharded)
+    return gather_x_slabs(out_sharded)
+
+
 def _transpose_x_to_y(x: jnp.ndarray, axis_name: str) -> jnp.ndarray:
     """(..., nx_local, ny, nz) -> (..., nx, ny_local, nz): gather x, split y.
     Axis positions computed from ``x.ndim`` (not hardcoded 0/1) so this works

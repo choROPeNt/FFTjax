@@ -111,8 +111,11 @@ def _solve_mechanics_step(
 
     if formulation == "lippmann_schwinger":
         # Reference medium + Green's operator: see module docstring for why
-        # this isn't materialmodels/averaging.py yet.
-        green_op = build_reference_green_operator(n, L, materials, scheme=scheme)
+        # this isn't materialmodels/averaging.py yet. n_devices=n_devices
+        # shards green_op.G's own construction the same way C_field's is
+        # above -- an equally large (3,3,3,3,Nv) tensor that OOMed on its
+        # own once C_field no longer did (benchmark_3's weave grids).
+        green_op = build_reference_green_operator(n, L, materials, scheme=scheme, n_devices=n_devices)
 
         # Every branch here ultimately calls operators.projection.Gamma0Operator
         # for its FFT-heavy inner apply, which auto-decomposes across
@@ -141,7 +144,7 @@ def _solve_mechanics_step(
         solver = DisplacementBasedSolver(n, xi_flat, control, toler_lin, maxiter, n_devices=n_devices)
         return solver.solve(C_field, eps_bar, stress_goal)
     elif formulation == "fourier_galerkin":
-        galerkin_op = build_galerkin_projector(n, L, scheme=scheme)
+        galerkin_op = build_galerkin_projector(n, L, scheme=scheme, n_devices=n_devices)
 
         solver = FourierGalerkinSolver(n, galerkin_op, control, toler_lin, maxiter, n_devices=n_devices)
         return solver.solve(C_field, eps_bar, stress_goal)

@@ -1,10 +1,13 @@
 import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on TPU, no GPU prealloc)
 
+from functools import partial
+
 import jax.numpy as jnp
 from jax.typing import ArrayLike
 
 from materialmodels.tensors import isotropic_equivalent_lame
 from operators.base import LinearOperator
+from operators.fft_distributed import choose_device_count, shard_voxel_tensor
 from operators.general_functions import ddot42
 
 
@@ -198,12 +201,20 @@ class GreenOperatorBasic(LinearOperator):
     Self-adjoint (major-symmetric: Γ_ijkl = Γ_klij), so ``.T`` returns self.
     """
 
-    def __init__(self, n: tuple[int, ...], L: tuple[float, ...], lam0: ArrayLike, mu0: ArrayLike):
+    def __init__(
+        self, n: tuple[int, ...], L: tuple[float, ...], lam0: ArrayLike, mu0: ArrayLike,
+        n_devices: int | None = None,
+    ):
         self.n, self.L, self.lam0, self.mu0 = n, L, lam0, mu0
+        self.n_devices = n_devices
         self.G = self._build_G()
 
     def _build_G(self) -> jnp.ndarray:
         xi_flat = build_freq_grid(self.n, self.L)
+        resolved_n_devices = choose_device_count(self.n, self.n_devices)
+        if resolved_n_devices > 1:
+            build_local = partial(build_green_operator, lam0=self.lam0, mu0=self.mu0, scheme='standard')
+            return shard_voxel_tensor(build_local, xi_flat, resolved_n_devices)
         return build_green_operator(xi_flat, self.lam0, self.mu0, scheme='standard')
 
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
@@ -229,12 +240,17 @@ class GreenOperatorWillot(GreenOperatorBasic):
         lam0: ArrayLike,
         mu0: ArrayLike,
         dx: tuple[float, ...],
+        n_devices: int | None = None,
     ):
         self.dx = dx
-        super().__init__(n, L, lam0, mu0)
+        super().__init__(n, L, lam0, mu0, n_devices=n_devices)
 
     def _build_G(self) -> jnp.ndarray:
         xi_flat = build_freq_grid(self.n, self.L)
+        resolved_n_devices = choose_device_count(self.n, self.n_devices)
+        if resolved_n_devices > 1:
+            build_local = partial(build_green_operator, lam0=self.lam0, mu0=self.mu0, scheme='rotated', dx=self.dx)
+            return shard_voxel_tensor(build_local, xi_flat, resolved_n_devices)
         return build_green_operator(xi_flat, self.lam0, self.mu0, scheme='rotated', dx=self.dx)
 
 
@@ -243,6 +259,7 @@ def build_reference_green_operator(
     L: tuple[float, ...],
     materials: list,
     scheme: str = 'rotated',
+    n_devices: int | None = None,
 ) -> GreenOperatorBasic:
     """
     Build a GreenOperatorBasic/Willot for the arithmetic-mean-Lame reference
@@ -272,6 +289,12 @@ def build_reference_green_operator(
     n, L       : grid shape and physical domain size
     materials  : list, each exposing .elastic_stiffness_tensor()
     scheme     : 'standard' (GreenOperatorBasic) or 'rotated' (GreenOperatorWillot)
+    n_devices  : caps the device count GreenOperatorBasic/Willot auto-detects
+                 for sharding their own G tensor's construction (see
+                 operators.fft_distributed.shard_voxel_tensor) -- None
+                 (default) uses whatever jax.local_device_count() reports;
+                 on a single-device machine this is a no-op, the exact
+                 original single-device construction.
 
     Returns
     -------
@@ -285,9 +308,9 @@ def build_reference_green_operator(
     lam0, mu0 = isotropic_equivalent_lame(C_mean)
 
     if scheme == 'standard':
-        return GreenOperatorBasic(n, L, lam0, mu0)
+        return GreenOperatorBasic(n, L, lam0, mu0, n_devices=n_devices)
     elif scheme == 'rotated':
         dx = tuple(Li / ni for Li, ni in zip(L, n))
-        return GreenOperatorWillot(n, L, lam0, mu0, dx)
+        return GreenOperatorWillot(n, L, lam0, mu0, dx, n_devices=n_devices)
     else:
         raise ValueError(f"unknown scheme {scheme!r}, expected 'standard' or 'rotated'")
