@@ -60,23 +60,27 @@ memory to the OS) starts clean for every run instead of getting fragmented
 by earlier, differently-shaped solves.
 
 Per-(file, solver) solved fields -- phase, yarn_index, orientation, strain,
-stress (Voigt), von Mises stress, displacement -- are also written to
-XDMF/HDF5 via utils.io.xdmf_writer.IncrementalWriter -- this project's
-standard field-data output (see CLAUDE.md's IO conventions) -- one
+stress (Voigt), von Mises stress, displacement -- are written to XDMF/HDF5
+via utils.io.xdmf_writer.IncrementalWriter -- this project's standard
+field-data output (see CLAUDE.md's IO conventions) -- one
 <stem>__<solver_label>.h5/.xdmf pair per (file, solver) combination,
-alongside the JSON summary in OUT_DIR. Mirrors exactly what
-problems.mechanics.solve_mechanics's own writer= support writes
-(field_to_grid/to_voigt/compute_displacement, same field names) -- done by
-hand here instead of passed as writer= to that function, so yarn_index (not
-a production field) can be added to the same increment in one call.
+alongside the JSON summary in OUT_DIR, ONLY when --write-fields is passed
+(off by default -- the write itself costs real time/device memory on top
+of the solve at these grid sizes, not worth paying on every quick sweep).
+Mirrors exactly what problems.mechanics.solve_mechanics's own writer=
+support writes (field_to_grid/to_voigt/compute_displacement, same field
+names) -- done by hand here instead of passed as writer= to that function,
+so yarn_index (not a production field) can be added to the same increment
+in one call.
 
 Usage
 -----
     python benchmark/benchmark_3/elastic_solve.py --data-dir data/texgen_exports
+    python benchmark/benchmark_3/elastic_solve.py --data-dir data/texgen_exports --write-fields
 
-Prints a summary table (one row per file x solver combination) and writes,
-per combination, <stem>__<solver_label>.h5/.xdmf plus one combined
-output/benchmark/benchmark_3/results_<date>.json.
+Prints a summary table (one row per file x solver combination) and writes
+one combined output/benchmark/benchmark_3/results_<date>.json; with
+--write-fields, also <stem>__<solver_label>.h5/.xdmf per combination.
 """
 import sys
 sys.path.insert(0, "src")
@@ -218,7 +222,7 @@ def mem_snapshot(path: str, label: str, n, stage: str) -> dict:
             "device_peak_mb": dev["peak"] if dev is not None else None}
 
 
-def bench_one(path: str, label: str, formulation: str, scheme: str) -> dict:
+def bench_one(path: str, label: str, formulation: str, scheme: str, write_fields: bool = False) -> dict:
     t0 = time.perf_counter()
     n, L, phase_np, orientations_np, yarn_index_np, vf_np, _, _ = SimulationReader(path).read()
     read_time_s = time.perf_counter() - t0
@@ -287,28 +291,32 @@ def bench_one(path: str, label: str, formulation: str, scheme: str) -> dict:
     mem_after_solve = mem_snapshot(path, label, n, "solve")
 
     stem = f"{os.path.splitext(os.path.basename(path))[0]}__{label}"
-    t0 = time.perf_counter()
-    eps_grid = field_to_grid(sol.eps, n)
-    sigma_grid = field_to_grid(sol.sigma, n)
-    # sol.eps_bar is populated only by formulation="displacement" (mixed
-    # strain/stress BC) -- None for lippmann_schwinger's pure strain BC,
-    # where the prescribed EPS_BAR is exactly the macroscopic strain
-    # (stepping="single", never overridden here, always reaches t=1.0).
-    eps_bar_u = sol.eps_bar if sol.eps_bar is not None else EPS_BAR
-    u_grid = compute_displacement(sol.eps, eps_bar_u, n, L)
-    with IncrementalWriter(os.path.join(OUT_DIR, stem), grid_shape=n, grid_length=L) as w:
-        w.write_increment(0, {
-            "phase":        np.asarray(phase_np).reshape(n).astype(np.float32),
-            "yarn_index":   np.asarray(yarn_index_np).reshape(n).astype(np.int32),
-            "orientation":  np.asarray(orientations_np).T.reshape(*n, 3).astype(np.float64),
-            "strain":       to_voigt(eps_grid).astype(np.float64),
-            "stress":       to_voigt(sigma_grid).astype(np.float64),
-            "von_mises":    von_mises(sigma_grid).astype(np.float64),
-            "displacement": np.asarray(u_grid).astype(np.float64),
-        }, time=0.0)
-    write_time_s = time.perf_counter() - t0
-    output_path = os.path.join(OUT_DIR, stem + ".xdmf")
-    mem_after_write = mem_snapshot(path, label, n, "write")
+    write_time_s = 0.0
+    output_path = None
+    mem_after_write = None
+    if write_fields:
+        t0 = time.perf_counter()
+        eps_grid = field_to_grid(sol.eps, n)
+        sigma_grid = field_to_grid(sol.sigma, n)
+        # sol.eps_bar is populated only by formulation="displacement" (mixed
+        # strain/stress BC) -- None for lippmann_schwinger's pure strain BC,
+        # where the prescribed EPS_BAR is exactly the macroscopic strain
+        # (stepping="single", never overridden here, always reaches t=1.0).
+        eps_bar_u = sol.eps_bar if sol.eps_bar is not None else EPS_BAR
+        u_grid = compute_displacement(sol.eps, eps_bar_u, n, L)
+        with IncrementalWriter(os.path.join(OUT_DIR, stem), grid_shape=n, grid_length=L) as w:
+            w.write_increment(0, {
+                "phase":        np.asarray(phase_np).reshape(n).astype(np.float32),
+                "yarn_index":   np.asarray(yarn_index_np).reshape(n).astype(np.int32),
+                "orientation":  np.asarray(orientations_np).T.reshape(*n, 3).astype(np.float64),
+                "strain":       to_voigt(eps_grid).astype(np.float64),
+                "stress":       to_voigt(sigma_grid).astype(np.float64),
+                "von_mises":    von_mises(sigma_grid).astype(np.float64),
+                "displacement": np.asarray(u_grid).astype(np.float64),
+            }, time=0.0)
+        write_time_s = time.perf_counter() - t0
+        output_path = os.path.join(OUT_DIR, stem + ".xdmf")
+        mem_after_write = mem_snapshot(path, label, n, "write")
 
     # Homogenized modulus from the already-solved fields -- no second solve.
     # eps_bar_h/sigma_bar_h are the *actual* volume averages (homogenize()),
@@ -423,6 +431,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", required=True,
                          help="directory to scan for *.vtu TexGen exports")
+    parser.add_argument("--write-fields", action="store_true",
+                         help="also write per-(file, solver) XDMF/HDF5 field output "
+                              "(phase, strain, stress, von Mises, displacement); off by "
+                              "default, since the write itself costs real time/device "
+                              "memory on top of the solve at these grid sizes")
     parser.add_argument("--single", default=None,
                          help=argparse.SUPPRESS)  # internal: one-run subprocess worker mode
     parser.add_argument("--solver-label", default=None,
@@ -436,7 +449,7 @@ def main():
         label, formulation, scheme = next(
             c for c in SOLVER_CONFIGS if c[0] == args.solver_label
         )
-        print(json.dumps(bench_one(args.single, label, formulation, scheme)))
+        print(json.dumps(bench_one(args.single, label, formulation, scheme, write_fields=args.write_fields)))
         return
 
     paths = find_vtu_files(args.data_dir)
@@ -459,11 +472,11 @@ def main():
     results = []
     for path in paths:
         for label, formulation, scheme in SOLVER_CONFIGS:
-            proc = subprocess.run(
-                [sys.executable, __file__, "--data-dir", args.data_dir,
-                 "--single", path, "--solver-label", label],
-                capture_output=True, text=True,
-            )
+            cmd = [sys.executable, __file__, "--data-dir", args.data_dir,
+                   "--single", path, "--solver-label", label]
+            if args.write_fields:
+                cmd.append("--write-fields")
+            proc = subprocess.run(cmd, capture_output=True, text=True)
             if proc.returncode != 0:
                 # On OOM, XLA's own message says how much it tried to
                 # allocate on top of what was already in use -- that sum,
