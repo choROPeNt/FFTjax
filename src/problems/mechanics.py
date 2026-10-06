@@ -525,10 +525,15 @@ def solve_displacement_based_nonlinear(
     # whenever eps_bar changed, and in the worst case that alone can satisfy
     # div(sigma)=0 trivially (e.g. at eps=0) well short of the actual target
     # strain, reporting false convergence. Project unconditionally rather
-    # than trusting the caller to have gotten this right.
-    delta_hat = fft_(delta)
-    delta_hat = delta_hat.at[:, :, 0].set(0.0)
-    delta = ifft_(delta_hat)
+    # than trusting the caller to have gotten this right. jit-wrapped for the
+    # same reason as _residual/_cg_correction below -- see that comment.
+    @jit
+    def _zero_mean_strain(eps_field):
+        eps_hat = fft_(eps_field)
+        eps_hat = eps_hat.at[:, :, 0].set(0.0)
+        return ifft_(eps_hat)
+
+    delta = _zero_mean_strain(delta)
     state = state_init
     converged = False
     n_iter = 0
@@ -613,7 +618,17 @@ def solve_displacement_based_nonlinear(
             return pack(z_du, z_sv)
 
         x0 = jnp.zeros_like(bb)
-        return cg_solve(A_op, bb, x0, toler_lin, maxiter_lin, M=M)
+        x_flat, cg_converged = cg_solve(A_op, bb, x0, toler_lin, maxiter_lin, M=M)
+
+        # Folded in here (rather than left for the caller, as the pre-fix
+        # code did) so this FFT call also runs inside this jit trace: du_sol's
+        # symmetric gradient IS delta's own update (strain_from_correction),
+        # same as A_op's own eps_trial above; sv_sol is the macroscopic-strain
+        # correction, applied by the caller via sv2sm (that part has no FFT
+        # in it, safe to stay outside).
+        du_sol, sv_sol = unpack(x_flat)
+        delta_update = strain_from_correction(du_sol)
+        return delta_update, sv_sol, cg_converged
 
     for n_iter in range(1, maxiter_nr + 1):
         eps_bar_free_bcast = jnp.ones((3, 3, Nv)) * eps_bar_free[:, :, None]
@@ -634,14 +649,9 @@ def solve_displacement_based_nonlinear(
         # the equation it encodes -- mean(sigma_k + C_tan : deps) = stress_goal
         # -- exactly as it was.
         bb = pack((-residual_div).reshape(-1), residual_extra)
-        x_flat, _cg_converged = _cg_correction(C_tan_k, bb)
+        delta_update, sv_sol, _cg_converged = _cg_correction(C_tan_k, bb)
 
-        # x_flat's du block is a displacement-like field (3, Nv), not a
-        # strain tensor -- the actual fluctuation correction is its symmetric
-        # gradient, same as A_op's own eps_trial above; the sv block is the
-        # macroscopic-strain correction, accumulated separately from delta.
-        du_sol, sv_sol = unpack(x_flat)
-        delta = delta + strain_from_correction(du_sol)
+        delta = delta + delta_update
         eps_bar_free = eps_bar_free + sv2sm(sv_sol)
         # ``state`` is deliberately NOT advanced here. It is the state at the
         # last CONVERGED load increment, and a return mapping is defined
