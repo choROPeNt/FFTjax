@@ -55,6 +55,7 @@ from functools import partial
 from typing import Any, Callable, Tuple, cast
 from math import prod
 
+from jax import jit
 import jax.numpy as jnp
 import numpy as np
 
@@ -532,22 +533,33 @@ def solve_displacement_based_nonlinear(
     converged = False
     n_iter = 0
 
-    for n_iter in range(1, maxiter_nr + 1):
-        eps_bar_free_bcast = jnp.ones((3, 3, Nv)) * eps_bar_free[:, :, None]
-        eps_k = eps0 + eps_bar_free_bcast + delta
+    # Every nested jax.pmap call inside fft_/ifft_ (n_devices > 1) needs to be
+    # reached through tracers from an enclosing jax.jit, not concrete,
+    # already-device-committed arrays -- true of every OTHER distributed
+    # solver in this project (solve_displacement_based, solve_thermal_conduction,
+    # solve_damage_helmholtz_cg(_het), all @jax.jit-wrapped as a whole), but this
+    # driver's outer Newton loop needs real Python control flow (the toler_nr
+    # early-exit `break` below) and so can't be jit-compiled as one piece.
+    # Pushing jit down to just the two FFT-heavy per-iteration pieces -- the
+    # residual evaluation and the CG correction -- gives pmap the trace
+    # boundary it needs without touching the outer loop's control flow.
+    # Reproduces and fixes a real 2-GPU failure: a bare eager jax.pmap call
+    # here raises "Sharding passed to jit does not match the sharding on the
+    # respective arg" against JAX's default multi-device mesh, since the
+    # array flowing into it is already committed to a (replicated) sharding
+    # rather than an abstract jit tracer pmap can shard itself.
+    @jit
+    def _residual(eps_k, state):
         sigma_k, C_tan_k, new_state = local_update(eps_k, state)
-
-        residual_div   = div_of(sigma_k)                  # (3, Nv) -- want 0
-        sigma_sum      = jnp.real(fft_(sigma_k)[:, :, 0])  # DC bin = sum over voxels
+        residual_div   = div_of(sigma_k)                   # (3, Nv) -- want 0
+        sigma_sum      = jnp.real(fft_(sigma_k)[:, :, 0])   # DC bin = sum over voxels
         residual_extra = sm2sv(sigma_sum) - Nv * sm2sv(stress_goal)  # want 0
+        resid_norm = jnp.sqrt(jnp.sum(residual_div ** 2) + jnp.sum(residual_extra ** 2))
+        ref_norm   = jnp.linalg.norm(sigma_k) + 1e-30
+        return sigma_k, C_tan_k, new_state, residual_div, residual_extra, resid_norm, ref_norm
 
-        resid_norm = float(jnp.sqrt(jnp.sum(residual_div ** 2) + jnp.sum(residual_extra ** 2)))
-        ref_norm   = float(jnp.linalg.norm(sigma_k)) + 1e-30
-        if resid_norm / ref_norm < toler_nr:
-            converged = True
-            state = new_state
-            break
-
+    @jit
+    def _cg_correction(C_tan_k, bb):
         def A_op(x_flat):
             du, sv      = unpack(x_flat)
             eps_trial   = strain_from_u(du, sv2sm(sv))
@@ -600,13 +612,29 @@ def solve_displacement_based_nonlinear(
             z_sv   = jnp.linalg.solve(P_extra, sv) if pairs else sv
             return pack(z_du, z_sv)
 
+        x0 = jnp.zeros_like(bb)
+        return cg_solve(A_op, bb, x0, toler_lin, maxiter_lin, M=M)
+
+    for n_iter in range(1, maxiter_nr + 1):
+        eps_bar_free_bcast = jnp.ones((3, 3, Nv)) * eps_bar_free[:, :, None]
+        eps_k = eps0 + eps_bar_free_bcast + delta
+        sigma_k, C_tan_k, new_state, residual_div, residual_extra, resid_norm_j, ref_norm_j = (
+            _residual(eps_k, state)
+        )
+
+        resid_norm = float(resid_norm_j)
+        ref_norm   = float(ref_norm_j)
+        if resid_norm / ref_norm < toler_nr:
+            converged = True
+            state = new_state
+            break
+
         # The extra block enters as +residual_extra, not -: A_op's extra row
         # is negated (see above), so its RHS is negated with it, which leaves
         # the equation it encodes -- mean(sigma_k + C_tan : deps) = stress_goal
         # -- exactly as it was.
         bb = pack((-residual_div).reshape(-1), residual_extra)
-        x0 = jnp.zeros_like(bb)
-        x_flat, _cg_converged = cg_solve(A_op, bb, x0, toler_lin, maxiter_lin, M=M)
+        x_flat, _cg_converged = _cg_correction(C_tan_k, bb)
 
         # x_flat's du block is a displacement-like field (3, Nv), not a
         # strain tensor -- the actual fluctuation correction is its symmetric

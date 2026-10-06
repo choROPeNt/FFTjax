@@ -19,18 +19,24 @@ Three checks
 3. A load well past the matrix's yield stress must converge, produce no
    NaN, and leave a nonzero accumulated plastic strain in at least one
    matrix voxel (confirming the plastic branch actually engaged).
-4. The returned plastic state must be exactly ONE return mapping from the
-   state the solve started at, evaluated at the converged strain -- the
-   regression guarding the frozen-``state`` invariant in
+4. The returned plastic state must be ONE return mapping from the state the
+   solve started at, evaluated at the converged strain -- the regression
+   guarding the frozen-``state`` invariant in
    solve_displacement_based_nonlinear (see its comment where ``delta`` is
    updated). A return mapping is defined relative to the last CONVERGED
    increment, so that state must stay frozen for every Newton iteration.
    When it was advanced per iteration instead, each iteration's return
    started from the previous iterate's already-updated plastic strain,
    plastic flow ratcheted up once per iteration, and the converged answer
-   depended on how many iterations Newton happened to take. Because the
-   frozen version makes this the very computation the converging iteration
-   performed, the check is an exact equality, not a tolerance.
+   depended on how many iterations Newton happened to take. A tight
+   numerical tolerance, not exact equality: the solver's own convergence
+   check runs local_update inside a jax.jit boundary (needed so the
+   distributed FFT path's nested jax.pmap calls get a trace to attach to,
+   see solve_displacement_based_nonlinear's own comment at its ``_residual``
+   helper), while this test's independent reference call is eager -- same
+   math, but XLA can fuse/round the two differently at the ULP level. The
+   ratcheting bug this check exists to catch is orders of magnitude larger
+   than that, so a tight tolerance still catches it.
 5. Mixed-BC linear reproduction: same idea as check 1, but with a nonzero
    ``control`` (free lateral surfaces under axial tension) -- the nonlinear
    driver's bordered-system port must reproduce solve_displacement_based's
@@ -176,14 +182,19 @@ d_alpha = float(jnp.max(jnp.abs(alpha_chk - alpha_large)))
 print(f"[4] state is one return mapping from state0: max|dsigma|={d_sigma:.3e}  "
       f"max|deps_p|={d_eps_p:.3e}  max|dalpha|={d_alpha:.3e}")
 assert float(jnp.max(alpha_large)) > 0.0, "check 4 is vacuous if nothing yielded"
-# eps_p/alpha are bit-exact: they ARE the converging iteration's own outputs.
 # sigma only matches to roundoff -- the driver recomputes it after the loop via
 # local_update(eps_final, state) with state already advanced, so it takes a
 # different (dgamma == 0, hence value-identical) arithmetic path to the same
 # stress. 1e-12 relative is ~4 orders above the observed 1e-16 and ~10 orders
 # below the per-iteration ratcheting the bug produced.
 assert d_sigma < 1e-12 * float(jnp.max(jnp.abs(sigma_large)))
-assert d_eps_p == 0.0 and d_alpha == 0.0, (
+# eps_p/alpha: the converging iteration's own local_update call runs inside
+# solve_displacement_based_nonlinear's jitted _residual helper, this
+# reference call is eager -- same math, ULP-level rounding differences from
+# XLA fusion are expected (observed ~1e-18 absolute), not the >>1e-6-scale
+# drift the ratcheting bug produces. 1e-9 absolute is far above the former,
+# far below the latter.
+assert d_eps_p < 1e-9 and d_alpha < 1e-9, (
     "the returned plastic state is not a single return mapping from the state the "
     "solve started at -- plastic state is being advanced inside the Newton loop "
     "instead of staying frozen at the last converged increment, so plastic flow "
