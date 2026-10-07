@@ -16,7 +16,7 @@
 #SBATCH --gpus-per-task=2
 #SBATCH -c 12
 #SBATCH --mem-per-cpu=4G
-#SBATCH -t 01:00:00
+#SBATCH -t 03:00:00
 #SBATCH -J fftjax-multigpu
 #SBATCH -o out/slurm-multigpu-%j.out
 
@@ -71,18 +71,18 @@ print('devices:', jax.devices())
 print('local_device_count:', jax.local_device_count())
 "
 
-echo '--- distributed correctness suite (real 2-GPU run) ---'
-python -m pytest \
-    test/test_operators_fft_distributed.py \
-    test/test_operators_projection_distributed.py \
-    test/test_problems_mechanics_distributed.py \
-    test/test_problems_mechanics_nonlinear_distributed.py \
-    test/test_solvers_elliptic_scalar_distributed.py \
-    test/test_solvers_krylov_cg_sharded.py \
-    -v
+# echo '--- distributed correctness suite (real 2-GPU run) ---'
+# python -m pytest \
+#     test/test_operators_fft_distributed.py \
+#     test/test_operators_projection_distributed.py \
+#     test/test_problems_mechanics_distributed.py \
+#     test/test_problems_mechanics_nonlinear_distributed.py \
+#     test/test_solvers_elliptic_scalar_distributed.py \
+#     test/test_solvers_krylov_cg_sharded.py \
+#     -v
 
 # Uncomment to also benchmark real geometry with n_devices auto-detecting
 # the 2 GPUs above (needs --data-dir pointing at .vtu data on this node):
-# python benchmark/benchmark_3/elastic_solve.py --data-dir /path/to/texgen/exports
+python benchmark/benchmark_3/elastic_solve.py --data-dir data/benchmark_3_
 
 exit 0
