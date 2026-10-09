@@ -16,7 +16,7 @@
 #SBATCH --gpus-per-task=2
 #SBATCH -c 12
 #SBATCH --mem-per-cpu=4G
-#SBATCH -t 03:00:00
+#SBATCH -t 01:00:00
 #SBATCH -J fftjax-multigpu
 #SBATCH -o out/slurm-multigpu-%j.out
 
