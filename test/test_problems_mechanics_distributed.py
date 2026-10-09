@@ -10,16 +10,10 @@ just the Lippmann-Schwinger/Fourier-Galerkin family's shared
   BC) both route through ``operators.projection.Gamma0Operator``, which
   auto-decomposes; no other code in either formulation changed.
 - "displacement" (pure strain BC and mixed strain/stress BC, i.e.
-  ``control`` nonzero) has its own separate FFT/gradient/DC-bin machinery
-  (solvers.elliptic.vector.displacement_based) -- domain-decomposed via
-  ``operators.fft_distributed.distributed_fft_flat``, a drop-in for
-  ``jnp.fft.fftn``/``ifftn`` that splits/gathers internally so the
-  gradient-via-``iq``, DC-bin macroscopic-strain trick (``.at[:, :,
-  0].set(...)``), preconditioner, and CG's own reductions all still operate
-  on the full, gathered array exactly as before -- the mixed-BC case in
-  particular exercises the DC-bin injection with a genuinely nonzero value
-  (pure strain BC injects zero there, a degenerate case of the same code
-  path), so it's included here as the stronger check.
+  ``control`` nonzero) runs its whole CG under one ``shard_map``
+  (``_solve_displacement_based_sharded``), with the DC-bin macroscopic-strain
+  injection masked to device 0 -- the mixed-BC case exercises that injection
+  with a genuinely nonzero, solved-for value, so it's the stronger check.
 
 There is only ONE ``solve_mechanics`` now (no separate "distributed" entry
 point) -- passing ``n_devices`` caps the device count each formulation

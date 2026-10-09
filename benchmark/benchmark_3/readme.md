@@ -16,17 +16,12 @@ export directory.
 python benchmark/benchmark_3/elastic_solve.py --data-dir /path/to/texgen/exports
 ```
 
-`ls_rotated`/`ls_standard` (`formulation="lippmann_schwinger"`) and `galerkin`
-(`formulation="fourier_galerkin"`) both automatically domain-decompose their FFT-heavy CG solve
-across `jax.local_device_count()` devices -- genuinely memory-scaling (`C_field` and every CG state
-vector stay sharded for the whole iterative solve, never gathered mid-solve; see
-`operators.projection.Gamma0Operator` and
-`solvers.elliptic.vector.mixed_bc.solve_mixed_bc_dc_identity`) -- no separate solver config needed
-for that, it's always on. On a single-device machine it's exactly the original single-device solve
-(verified in `test/test_problems_mechanics_distributed.py`); each of those rows' `n_devices_pmap`
-field in the JSON output shows how many devices it actually used. `displacement` doesn't (yet) get
-this -- its own separate FFT/DC-bin machinery isn't on the sharded-CG path -- so its
-`n_devices_pmap` stays `null`.
+Every solver config (`ls_rotated`, `ls_standard`, `displacement`, `galerkin`) automatically
+domain-decomposes across `jax.local_device_count()` devices -- genuinely memory-scaling: `C_field`,
+`G` and every CG state vector are built and kept as x-slab shards, never gathered onto one device.
+On a single-device machine it's exactly the original single-device solve (verified in
+`test/test_problems_mechanics_distributed.py`); each row's `n_devices_pmap` field shows how many
+devices it used. Device memory columns report device 0 (each device holds ~1/`n_devices`).
 
 Tracks wall-clock read/jit/solve/write time, peak memory (host RSS via `resource`, plus JAX device
 memory via `jax.devices()[0].memory_stats()` on GPU/TPU), and the homogenized modulus per file,
