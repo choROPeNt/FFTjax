@@ -7,8 +7,10 @@ import jax
 import jax.numpy as jnp
 
 from operators.base import LinearOperator
+from jax.sharding import PartitionSpec as P
+
 from operators.fft_distributed import (
-    choose_device_count, gather_x_slabs, pfft3d_flat, pifft3d_flat, split_x_slabs,
+    choose_device_count, pfft3d_flat, pifft3d_flat, shard_x_slabs, x_slab_mesh, x_slab_spec,
 )
 from operators.general_functions import ddot42
 from operators.green import GreenOperatorBasic
@@ -137,8 +139,9 @@ def _solve_lippmann_schwinger_sharded(
     ``green_op.G``, and every CG state vector (``x``, ``r``, ``p``, ``Ap``)
     stay sharded across ``n_devices`` (``n[0] % n_devices == 0`` and
     ``n[1] % n_devices == 0``, guaranteed by ``choose_device_count``) for
-    the ENTIRE iterative solve -- split once, up front, never gathered until
-    the final answer. ``cg_solve_pmap`` (``solvers.krylov.cg``) supplies the
+    the ENTIRE iterative solve -- run under one ``jax.shard_map``; already-
+    sharded inputs (``assemble_C_field(n=...)``, ``shard_voxel_tensor``) are
+    used in place, and the returned fields stay sharded too. ``cg_solve_pmap`` (``solvers.krylov.cg``) supplies the
     ``jax.lax.psum``-based dot products/norms that make this correct:
     every device computes the same scalar step size each iteration without
     ever assembling a full vector.
@@ -149,10 +152,10 @@ def _solve_lippmann_schwinger_sharded(
     """
     n_local = (n[0] // n_devices, n[1], n[2])
 
-    C_sharded = split_x_slabs(C_field, n_devices)     # (n_devices, 3,3,3,3,Nv_local)
-    G_sharded = split_x_slabs(green_op.G, n_devices)  # (n_devices, 3,3,3,3,Nv_local)
-    sg = jnp.zeros_like(C_field[0, 0]) if stress_goal is None else stress_goal
-    sg_sharded = split_x_slabs(sg, n_devices)         # (n_devices, 3,3,Nv_local)
+    C_sharded = shard_x_slabs(C_field, n_devices)
+    G_sharded = shard_x_slabs(green_op.G, n_devices)
+    sg = jnp.zeros((3, 3, prod(n))) if stress_goal is None else stress_goal
+    sg_sharded = shard_x_slabs(sg, n_devices)
 
     def solve_local(C_local, G_local, sg_local):
         Nv_local = C_local.shape[-1]
@@ -183,16 +186,11 @@ def _solve_lippmann_schwinger_sharded(
         sigma_local = ddot42(C_local, eps_local)
         return eps_local, sigma_local, delta_local, converged
 
-    eps_sharded, sigma_sharded, delta_sharded, converged_sharded = jax.pmap(
-        solve_local, axis_name="i",
+    return jax.shard_map(
+        solve_local, mesh=x_slab_mesh(n_devices),
+        in_specs=(x_slab_spec(5), x_slab_spec(5), x_slab_spec(3)),
+        out_specs=(x_slab_spec(3), x_slab_spec(3), x_slab_spec(3), P()),
     )(C_sharded, G_sharded, sg_sharded)
-
-    eps = gather_x_slabs(eps_sharded)
-    sigma = gather_x_slabs(sigma_sharded)
-    delta = gather_x_slabs(delta_sharded)
-    converged = converged_sharded[0]  # identical on every device (psum'd)
-
-    return eps, sigma, delta, converged
 
 
 class LippmannSchwingerSolver(ElasticitySolver):

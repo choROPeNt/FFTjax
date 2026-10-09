@@ -12,7 +12,7 @@ import jax.numpy as jnp
 
 from materialmodels.base import ConductivityModel, ConstitutiveModel
 from materialmodels.phasefield.degradation import degradation_at2
-from operators.fft_distributed import choose_device_count, gather_x_slabs, split_x_slabs
+from operators.fft_distributed import choose_device_count, shard_x_slabs, x_slab_mesh, x_slab_spec
 
 
 def assemble_C_field(
@@ -69,7 +69,8 @@ def assemble_C_field(
 
     Returns
     -------
-    C_field : (3, 3, 3, 3, Nv)
+    C_field : (3, 3, 3, 3, Nv) -- on the sharded path a global array left
+              split as x-slabs across devices (never gathered onto one)
     """
     if n is not None:
         resolved_n_devices = choose_device_count(n, n_devices)
@@ -116,8 +117,8 @@ def _assemble_C_field_sharded(
     n_devices: int,
 ) -> jnp.ndarray:
     """
-    Build ``C_field`` directly as ``n_devices`` x-slabs under ``jax.pmap``,
-    so the full ``(3,3,3,3,Nv)`` tensor -- and, for a per-voxel-oriented
+    Build ``C_field`` directly as ``n_devices`` x-slabs under
+    ``jax.shard_map`` and leave it sharded, so the full ``(3,3,3,3,Nv)`` tensor -- and, for a per-voxel-oriented
     material, the rotation that builds its own full-grid field -- is never
     materialized on one device. Purely per-voxel work with no cross-voxel
     coupling at all (unlike the FFT-based solves elsewhere in this project),
@@ -137,16 +138,16 @@ def _assemble_C_field_sharded(
     material needs. A constant-tensor material needs no slicing at all: its
     own ``elastic_stiffness_tensor()`` is the same tiny array on every
     device, recomputed independently by closure capture rather than passed
-    through ``pmap``.
+    through ``shard_map``.
     """
-    phase_sharded = split_x_slabs(phase, n_devices)  # (n_devices, Nv_local)
+    phase_sharded = shard_x_slabs(phase, n_devices)
 
     field_material_idx = [
         i for i, m in enumerate(materials)
         if getattr(m, "fiber_dir", None) is not None and m.fiber_dir.ndim > 1
     ]
     field_sharded = tuple(
-        split_x_slabs(materials[i].fiber_dir, n_devices) for i in field_material_idx
+        shard_x_slabs(materials[i].fiber_dir, n_devices) for i in field_material_idx
     )
 
     # The reference-frame tensor each per-voxel material's own
@@ -154,11 +155,11 @@ def _assemble_C_field_sharded(
     # (materials[i]._stiffness_tensor_reference()) goes through plain numpy
     # (materialmodels.tensors.voigt_to_tensor4 -- see that module's
     # docstring), which raises TracerArrayConversionError if recomputed
-    # fresh inside the pmap trace below. Computed eagerly here instead, via
+    # fresh inside the shard_map trace below. Computed eagerly here instead, via
     # the public stiffness_tensor_rotated([0, 0, 1]) (the documented
     # reference axis -- see TransverseIsotropic's own docstring), and
     # passed into stiffness_field_oriented's C_ref parameter per-device, so
-    # only the (jax.numpy, trace-safe) rotation itself runs under pmap.
+    # only the (jax.numpy, trace-safe) rotation itself runs under shard_map.
     C_ref_by_idx = {
         i: materials[i].stiffness_tensor_rotated(jnp.array([0.0, 0.0, 1.0]))
         for i in field_material_idx
@@ -173,8 +174,11 @@ def _assemble_C_field_sharded(
         ]
         return _assemble_C_field_local(local_materials, phase_local)
 
-    out_sharded = jax.pmap(local)(phase_sharded, field_sharded)
-    return gather_x_slabs(out_sharded)
+    return jax.shard_map(
+        local, mesh=x_slab_mesh(n_devices),
+        in_specs=(x_slab_spec(1), tuple(x_slab_spec(f.ndim) for f in field_sharded)),
+        out_specs=x_slab_spec(5),
+    )(phase_sharded, field_sharded)
 
 
 class _LocalFieldMaterial:

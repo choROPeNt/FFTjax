@@ -16,10 +16,11 @@ from typing import Protocol, Tuple, runtime_checkable
 
 import jax
 import jax.numpy as jnp
+from jax.sharding import PartitionSpec as P
 
 from operators.base import LinearOperator
 from operators.fft_distributed import (
-    choose_device_count, gather_x_slabs, pfft3d_flat, pifft3d_flat, split_x_slabs,
+    choose_device_count, pfft3d_flat, pifft3d_flat, shard_x_slabs, x_slab_mesh, x_slab_spec,
 )
 from operators.general_functions import ddot42
 from operators.projection import Gamma0Operator
@@ -256,8 +257,8 @@ def _solve_mixed_bc_dc_identity_sharded(
 ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
     Fully domain-decomposed counterpart of ``solve_mixed_bc_dc_identity``'s
-    CG solve, for ``n_devices > 1`` -- same "split once, whole CG under one
-    ``jax.pmap``, gather once" pattern as
+    CG solve, for ``n_devices > 1`` -- same "whole CG under one
+    ``jax.shard_map``, fields stay sharded" pattern as
     ``solvers.elliptic.vector.lippmann_schwinger._solve_lippmann_schwinger_sharded``.
     The DC-bin identity patch is computed once on the full ``G`` (exactly
     like the single-device path above) before splitting, so -- unlike the
@@ -279,8 +280,8 @@ def _solve_mixed_bc_dc_identity_sharded(
     control_arr = jnp.asarray(control, dtype=eps_bar.dtype)
 
     patched_G = patch_dc_identity(elastic_op.G, control)  # DC patch baked in once, on the full G
-    C_sharded = split_x_slabs(C_field, n_devices)
-    G_sharded = split_x_slabs(patched_G, n_devices)
+    C_sharded = shard_x_slabs(C_field, n_devices)
+    G_sharded = shard_x_slabs(patched_G, n_devices)
 
     def solve_local(C_local, G_local):
         Nv_local = C_local.shape[-1]
@@ -313,14 +314,8 @@ def _solve_mixed_bc_dc_identity_sharded(
         eps_bar_out_local = jax.lax.psum(jnp.sum(eps_local, axis=-1), "i") / Nv
         return eps_local, sigma_local, delta_local, eps_bar_out_local, converged
 
-    eps_sharded, sigma_sharded, delta_sharded, eps_bar_out_sharded, converged_sharded = jax.pmap(
-        solve_local, axis_name="i",
+    return jax.shard_map(
+        solve_local, mesh=x_slab_mesh(n_devices),
+        in_specs=(x_slab_spec(5), x_slab_spec(5)),
+        out_specs=(x_slab_spec(3), x_slab_spec(3), x_slab_spec(3), P(), P()),
     )(C_sharded, G_sharded)
-
-    eps = gather_x_slabs(eps_sharded)
-    sigma = gather_x_slabs(sigma_sharded)
-    delta = gather_x_slabs(delta_sharded)
-    eps_bar_out = eps_bar_out_sharded[0]  # identical on every device (psum'd)
-    converged = converged_sharded[0]
-
-    return eps, sigma, delta, eps_bar_out, converged

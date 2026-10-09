@@ -42,7 +42,32 @@ import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on 
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import lax
+from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
+
+AXIS = "i"  # mesh/collective axis name shared by every sharded solver
+
+
+def x_slab_mesh(n_devices: int) -> Mesh:
+    """1-D mesh over the first ``n_devices`` local devices (``pmap``'s own
+    device order), axis name ``AXIS``."""
+    return Mesh(np.array(jax.local_devices()[:n_devices]), (AXIS,))
+
+
+def x_slab_spec(ndim: int) -> P:
+    """``PartitionSpec`` splitting the last (flat voxel) axis of an
+    ``ndim``-dim array into contiguous blocks -- the same x-slab layout as
+    ``split_x_slabs``, but as one global ``jax.Array``."""
+    return P(*([None] * (ndim - 1)), AXIS)
+
+
+def shard_x_slabs(field: jnp.ndarray, n_devices: int) -> jnp.ndarray:
+    """Place ``(*lead, Nv)`` as x-slabs across ``n_devices`` (no-op if it
+    already is). Unlike ``split_x_slabs``, the result keeps its global shape,
+    so plain ``jnp`` code on it stays correct, and ``jax.shard_map`` with
+    ``x_slab_spec`` in_specs consumes it without any copy or gather."""
+    return jax.device_put(field, NamedSharding(x_slab_mesh(n_devices), x_slab_spec(field.ndim)))
 
 
 def choose_device_count(n: tuple[int, ...], n_devices: int | None = None) -> int:
@@ -121,18 +146,15 @@ def shard_voxel_tensor(build_local, xi_flat: jnp.ndarray, n_devices: int) -> jnp
 
     Returns
     -------
-    (..., Nv) -- gathered back to one array; not (yet) memory-scaling on its
-    own the way the sharded CG solvers are (the gather step itself briefly
-    needs more than one device's share of memory for a tensor this large,
-    observed on real GPU hardware -- a genuinely no-gather, stays-sharded
-    version is the natural follow-up, mirroring how the CG solves
-    themselves never gather C_field/G mid-solve), but still genuinely
-    avoids ever materializing the full, unsharded computation on one
-    device, which is what OOMs first otherwise.
+    (..., Nv) -- a global array left sharded as x-slabs (``x_slab_spec``),
+    never gathered onto one device; the sharded CG solvers consume it as-is.
     """
-    xi_sharded = split_x_slabs(xi_flat, n_devices)
-    out_sharded = jax.pmap(build_local)(xi_sharded)
-    return gather_x_slabs(out_sharded)
+    xi = shard_x_slabs(xi_flat, n_devices)
+    out_ndim = jax.eval_shape(build_local, xi_flat).ndim
+    return jax.shard_map(
+        build_local, mesh=x_slab_mesh(n_devices),
+        in_specs=x_slab_spec(xi.ndim), out_specs=x_slab_spec(out_ndim),
+    )(xi)
 
 
 def _transpose_x_to_y(x: jnp.ndarray, axis_name: str) -> jnp.ndarray:
