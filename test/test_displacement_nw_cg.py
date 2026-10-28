@@ -35,6 +35,11 @@ sign error in that coupling). A random per-voxel two-phase field with high
 stiffness contrast is a worst-case (sharp-interface) exercise of that
 coupling.
 
+Case 5 — heterogeneous, stress-controlled SHEAR: uniaxial tension of a 45-deg
+layered cell with every other component (shear included) stress-free. First
+checks that sm2sv is the adjoint of sv2sm, which keeps the shear rows of the
+bordered operator symmetric, then solves the case end to end.
+
 Usage
 -----
     python test/test_displacement_nw_cg.py
@@ -57,6 +62,7 @@ from materialmodels.assembly import assemble_C_field
 from operators.green        import build_freq_grid, GreenOperatorBasic
 from solvers.elliptic.vector.lippmann_schwinger import solve_lippmann_schwinger
 from solvers.elliptic.vector.displacement_based import solve_displacement_based
+from solvers.elliptic.vector.mixed_bc import _active_pairs, sm2sv, sv2sm
 
 jax.config.update("jax_enable_x64", True)
 
@@ -211,4 +217,45 @@ assert bool(conv_u)  # regression guard: the sign bug made this never converge
 assert abs(float(sigma_mean[0, 0]) - sigma_11_goal) < 1e-4
 assert abs(float(sigma_mean[1, 1])) < 1e-4
 assert abs(float(sigma_mean[2, 2])) < 1e-4
+print("PASSED\n")
+
+# ── Case 5 — heterogeneous, stress-controlled SHEAR ──────────────────────────
+# Uniaxial tension of an anisotropic cell: eps_11 prescribed, EVERY other
+# component (shear included) stress-free. Layers inclined at 45 deg in the
+# x-y plane couple normal loading into shear, so a correct solve needs a
+# nonzero macroscopic eps_12.
+print("── Case 5: heterogeneous, stress-controlled shear ───────────────────")
+
+control = ((0, 1, 1), (1, 1, 1), (1, 1, 1))
+pairs = _active_pairs(control)
+
+# The bordered operator is symmetric only if sm2sv is the ADJOINT of sv2sm:
+# <sm2sv(S), v> == <S, sv2sm(v)>_F for any S, symmetric or not. The old map
+# (sm[i, j] alone) fails this on every shear pair. The elastic solve below
+# converges either way, so this is the check that actually guards it.
+S = jnp.array(rng.standard_normal((3, 3)))
+v = jnp.array(rng.standard_normal(len(pairs)))
+adj_err = abs(float(jnp.dot(sm2sv(S, pairs), v) - jnp.sum(S * sv2sm(v, pairs))))
+print(f"adjoint identity error = {adj_err:.3e}")
+assert adj_err < 1e-12
+
+ix, iy, _ = np.meshgrid(*[np.arange(n_het[0])] * 3, indexing="ij")
+phase_layers = jnp.array((((ix + iy) % 4) < 2).astype(int).ravel())
+C_field_layers = assemble_C_field([mat, mat2], phase_layers)
+eps_bar_guess = jnp.zeros((3, 3)).at[0, 0].set(1e-3)
+
+eps_u, sigma_u, delta_u, eps_bar_out, conv_u = solve_displacement_based(
+    n_het, C_field_layers, xi_flat_het, eps_bar_guess, control, jnp.zeros((3, 3)),
+    toler_lin=1e-10, maxiter=2000,
+)
+sigma_mean = jnp.mean(sigma_u, axis=-1)
+free = np.array(control, dtype=bool)
+print(f"disp-based CG : converged={bool(conv_u)}")
+print(f"mean sigma_11 = {float(sigma_mean[0, 0]):.4f}   max |free sigma| = "
+      f"{float(jnp.max(jnp.abs(sigma_mean[free]))):.3e}")
+print(f"macroscopic eps_12 = {float(eps_bar_out[0, 1]):.4e}  eps_22 = {float(eps_bar_out[1, 1]):.4e}")
+
+assert bool(conv_u)
+assert float(jnp.max(jnp.abs(sigma_mean[free]))) < 1e-6 * abs(float(sigma_mean[0, 0]))
+assert abs(float(eps_bar_out[0, 1])) > 1e-5    # the layering must actually shear
 print("PASSED")
