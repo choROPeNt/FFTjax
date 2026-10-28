@@ -26,8 +26,41 @@ class ElasticitySolution(NamedTuple):
                                            # stress-controlled entries filled in
                                            # by the solve -- None (default) for
                                            # solvers with no mixed-BC concept
-                                           # (e.g. LippmannSchwingerSolver);
-                                           # populated by DisplacementBasedSolver
+                                           # (LippmannSchwingerSolver -- the
+                                           # plain pure-strain-only one; see
+                                           # LippmannSchwingerMixedBCSolver for
+                                           # its mixed-BC counterpart, notes/
+                                           # controll.md); populated
+                                           # unconditionally (trivially equal to
+                                           # the prescribed eps_bar under pure
+                                           # strain BC) by DisplacementBasedSolver,
+                                           # FourierGalerkinSolver, and
+                                           # LippmannSchwingerMixedBCSolver
+
+
+class ThermalSolution(NamedTuple):
+    """Result of one steady-state thermal conduction solve."""
+
+    grad_T:       jnp.ndarray  # (3, Nv)  local temperature gradient
+    flux:         jnp.ndarray  # (3, Nv)  local heat flux  q = -K : grad_T
+    T_prime:      jnp.ndarray  # (Nv,)    periodic temperature fluctuation (the CG
+                                #          unknown itself) -- NOT the absolute
+                                #          temperature field, which also needs the
+                                #          macroscopic linear part grad_T_bar . x;
+                                #          gauge-free (an additive constant is
+                                #          arbitrary), same reasoning
+                                #          post.fields.compute_displacement exists
+                                #          to handle on the elasticity side
+    delta:        jnp.ndarray  # (3, Nv)  gradient correction from the CG solve
+    converged:    jnp.ndarray  # bool array
+    grad_T_bar:   jnp.ndarray | None = None  # (3,) macroscopic gradient with any
+                                              # flux-controlled entries filled in
+                                              # by the solve; None only for a
+                                              # hypothetical future formulation
+                                              # with no mixed-BC concept, mirroring
+                                              # ElasticitySolution.eps_bar -- the
+                                              # one solver this project has always
+                                              # populates it
 
 
 class FractureSolution(NamedTuple):
@@ -57,8 +90,20 @@ class FractureSolution(NamedTuple):
     err_rel:             float | jnp.ndarray  # err_abs / max|d_new| -- same float/array split
     eps_bar:             jnp.ndarray | None = None  # (3, 3) macroscopic strain with
                                                      # any stress-controlled entries
-                                                     # filled in -- None unless
-                                                     # formulation="displacement"
+                                                     # filled in -- populated for
+                                                     # formulation="displacement" or
+                                                     # "fourier_galerkin" always
+                                                     # (trivially equal to the
+                                                     # prescribed eps_bar under
+                                                     # pure strain BC); for
+                                                     # formulation=
+                                                     # "lippmann_schwinger", only
+                                                     # when ``control`` is
+                                                     # nonzero (the mixed-BC
+                                                     # outer-loop route, see
+                                                     # solve_lippmann_schwinger_
+                                                     # mixed_bc) -- None there
+                                                     # under pure strain BC
 
     @property
     def converged(self) -> bool | jnp.ndarray:

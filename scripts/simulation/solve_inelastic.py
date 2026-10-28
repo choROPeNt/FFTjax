@@ -12,7 +12,7 @@ CG-inner driver a stateful, strain-dependent-tangent material needs (unlike
 scripts/simulation/solve_mechanics.py's fixed-C_field linear solve). Plastic
 state (eps_p, alpha) is threaded across load steps by this script, never
 stored on the material instances -- see materialmodels/inelastic/
-plasticity_j2.py and notebooks/in-elastic_J2.ipynb for the underlying model
+plasticity_j2.py and notebooks/mechanics/in-elastic_J2.ipynb for the underlying model
 and its from-scratch demonstration.
 
 The plastic model is chosen per phase in the config, not by this script:
@@ -52,7 +52,7 @@ configs/simulation/inelastic_drucker_prager_example.yaml.
                 gets eps_bar[i,i] = gamma, a shear one the symmetrized
                 eps_bar[i,j] = eps_bar[j,i] = gamma/2 -- so one gamma_max is
                 one load magnitude across a sweep of both (see
-                problems.loadcases.LoadCase.eps_bar, which notes the one
+                problems.utils.loadcases.LoadCase.eps_bar, which notes the one
                 config shape this convention changed).
   gamma_max, n_load, n_unload, n_reload -- ramp 0 -> gamma_max -> -gamma_max
                 -> gamma_max in that many equal steps each, plus the virgin
@@ -71,7 +71,7 @@ stress_bar, own cycle or an explicit ``gammas`` path). With
 ``free_surfaces: true`` each case's control mask is derived per case --
 loaded component strain-driven, every unloaded surface traction-free --
 which a single fixed ``control`` mask cannot express across six cases. See
-problems.loadcases and configs/simulation/inelastic_base6_example.yaml.
+problems.utils.loadcases and configs/simulation/inelastic_base6_example.yaml.
 
 Every case starts from virgin plastic state and writes its own output files
 (suffixed ``_<case>``); plasticity is path-dependent, so cases are
@@ -129,8 +129,8 @@ from materialmodels.assembly import assemble_local_update, describe_materials
 from materialmodels.factory import build_material
 from operators.green import build_freq_grid
 from post.fields import compute_displacement, field_to_grid, to_voigt, von_mises
-from problems.loadcases import LoadCase, resolve_cases, select_cases, voigt_label
 from problems.mechanics import solve_displacement_based_nonlinear
+from problems.utils.loadcases import LoadCase, resolve_cases, select_cases, voigt_label
 from utils.config import field_write_mode, load_config
 from utils.io.reader import SimulationReader
 from utils.io.xdmf_writer import IncrementalWriter

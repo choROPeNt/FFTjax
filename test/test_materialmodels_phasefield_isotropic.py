@@ -5,7 +5,7 @@ Standalone test for PhaseFieldIsotropic (materialmodels/phasefield/isotropic.py)
 Five checks
 -----------
 1. Undamaged limit (d=0): stress_and_tangent must reproduce the plain
-   elastic stiffness_tensor() exactly -- g(0) = 1, so psi reduces to the
+   elastic_stiffness_tensor() exactly -- g(0) = 1, so psi reduces to the
    ordinary elastic energy and its Hessian must be the ordinary elastic C.
 2. Compression's stress and volumetric tangent are never degraded: under
    pure hydrostatic COMPRESSION (tr(eps) < 0, no deviatoric part), sigma
@@ -53,7 +53,7 @@ mat = PhaseFieldIsotropic(E=3.0e3, nu=0.35, Gc=1.0e-3, k_res=1e-6, name="epoxy")
 
 eps_test = jnp.array([[1.0e-3, 2.0e-4, 0.0], [2.0e-4, -5.0e-4, 0.0], [0.0, 0.0, 3.0e-4]])
 sigma0, C0, psi_pos0 = mat.stress_and_tangent(eps_test, jnp.array(0.0))
-C_elastic = mat.stiffness_tensor()
+C_elastic = mat.elastic_stiffness_tensor()
 sigma_elastic = jnp.einsum("ijkl,kl->ij", C_elastic, 0.5 * (eps_test + eps_test.T))
 
 err_sigma = float(jnp.max(jnp.abs(sigma0 - sigma_elastic)))

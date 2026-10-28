@@ -3,12 +3,21 @@ Macroscopic load cases for a homogenization run -- the (driven component,
 strain path, macroscopic BC) triple that is the ONLY thing distinguishing
 one solve from the next when microstructure and materials are held fixed.
 
-Split out of scripts/simulation/solve_inelastic.py so a driver can run many
-load cases on one microstructure from one config and one process: the
-geometry read, the material assembly and the frequency grid are per-RVE,
-not per-case, and re-paying them once per case (as a shell loop over six
-near-identical YAML files does) is pure overhead -- as is maintaining six
+Shared by scripts/simulation/solve_mechanics.py and solve_inelastic.py so a
+driver can run many load cases on one microstructure from one config and one
+process: the geometry read, the material assembly and the frequency grid are
+per-RVE, not per-case, and re-paying them once per case (as a shell loop over
+six near-identical YAML files does) is pure overhead -- as is maintaining six
 copies of everything the cases have in common.
+
+Pure config/bookkeeping logic (no solve happens here), so it isn't a
+problems/*.py solve driver itself -- see notes/TARGET_LAYOUT.md's problems/
+note -- but it's mechanics-domain vocabulary (Voigt components, eps_bar),
+not a generic cross-project utility either, hence problems/utils/ rather
+than plain utils/. A thermal problem's load cases (driven flux/gradient
+instead of strain) would get their own sibling module here, sharing this
+one's shape (resolve a ``loading:`` block into one or many cases) rather
+than its strain-tensor-specific internals.
 
 The six base cases
 ------------------
@@ -72,6 +81,20 @@ _SET_SHORTHANDS = {"base6", "base_six", "all"}
 def voigt_label(i: int, j: int) -> str:
     """(i, j) tensor index -> its xyz label, e.g. (0, 2) -> 'xz'."""
     return _AXIS[i] + _AXIS[j]
+
+
+def strain_symbol(i: int, j: int) -> str:
+    """(i, j) tensor index -> its Greek macroscopic-strain print label, e.g.
+    (0, 1) -> 'εxy'. Generic formatting helper factored out of what used to
+    be per-case hardcoded strings in benchmark_1/benchmark_2's own load-case
+    tables -- see stress_symbol for its stress-side counterpart."""
+    return f"ε{voigt_label(i, j)}"
+
+
+def stress_symbol(i: int, j: int) -> str:
+    """(i, j) tensor index -> its Greek macroscopic-stress print label, e.g.
+    (0, 1) -> 'σxy'."""
+    return f"σ{voigt_label(i, j)}"
 
 
 def free_surface_control(i: int, j: int) -> tuple[tuple[int, int, int], ...]:
@@ -153,14 +176,6 @@ class LoadCase:
         so "load to 5%" is one number that means the same size of load for
         every case in a sweep, instead of 5% axial strain in one case and
         2.5% in the next.
-
-        Note this is a deliberate correction of the single-case convention
-        scripts/simulation/solve_inelastic.py used before load cases existed,
-        which halved the DIAGONAL entry too (eps_bar[i,i] = gamma/2). Nothing
-        shipped drove a normal component through that path -- both example
-        configs drive [0, 1] -- and the shear convention is unchanged, so
-        only a hand-written `component: [i, i]` config is affected: it now
-        reaches twice the strain it used to at the same gamma_max.
         """
         eps = np.zeros((3, 3))
         if self.i == self.j:

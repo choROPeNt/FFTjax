@@ -6,10 +6,11 @@ All functions accept the solver's native layout — fields with shape
 ``(*grid_n, ...)`` suitable for ParaView export via ``utils.io.xdmf_writer``.
 """
 
-from typing import Sequence
+from typing import Mapping, Sequence
 
 import numpy as np
 import jax.numpy as jnp
+from jax.typing import ArrayLike
 
 from operators.green import build_freq_grid
 
@@ -98,6 +99,27 @@ def field_to_grid(arr_33_nv: jnp.ndarray, grid_n: tuple) -> np.ndarray:
             .transpose(*range(2, 2 + ndim), 0, 1))
 
 
+def vector_field_to_grid(arr_3_nv: jnp.ndarray, grid_n: tuple) -> np.ndarray:
+    """
+    Reshape a 1st-order (vector) field from solver layout to grid layout --
+    the ``field_to_grid`` counterpart for a plain 3-vector (e.g. a thermal
+    gradient/flux field) rather than a 2nd-order tensor.
+
+    Parameters
+    ----------
+    arr_3_nv : (3, Nv)   JAX or numpy array (solver layout)
+    grid_n   : tuple       grid shape, e.g. (nx, ny, nz)
+
+    Returns
+    -------
+    out : (*grid_n, 3) numpy array
+    """
+    ndim = len(grid_n)
+    return (np.asarray(arr_3_nv)
+            .reshape(3, *grid_n)
+            .transpose(*range(1, 1 + ndim), 0))
+
+
 def von_mises(sigma_grid: np.ndarray) -> np.ndarray:
     """
     Von Mises equivalent stress.
@@ -137,6 +159,100 @@ def homogenize(eps: jnp.ndarray, sigma: jnp.ndarray) -> tuple[jnp.ndarray, jnp.n
     eps_bar, sigma_bar : (3, 3)
     """
     return jnp.mean(eps, axis=-1), jnp.mean(sigma, axis=-1)
+
+
+def macroscopic_response(
+    eps_bar: jnp.ndarray,
+    sigma_bar: jnp.ndarray,
+    *,
+    scalars: Mapping[str, ArrayLike] | None = None,
+    tensors: Mapping[str, ArrayLike] | None = None,
+) -> dict[str, np.ndarray]:
+    """
+    Package one increment's macroscopic response into the flat, named dict
+    used for every solve_*.py script's per-increment stats row and
+    scripts/postprocessing/homogenize.py's post-hoc CSV -- the single place
+    the von Mises formula, the pressure sign convention and the Voigt order
+    are defined, so "live" (during the solve) and "after the fact" (reading
+    a written .h5) homogenization can't drift apart.
+
+    Parameters
+    ----------
+    eps_bar, sigma_bar : (3, 3)   volume-averaged strain/stress, e.g. from
+        ``homogenize(eps, sigma)`` (solver layout (3, 3, Nv)) or
+        ``field.reshape(-1, 3, 3).mean(axis=0)`` (grid layout, reading an
+        already-written .h5 back with ``from_voigt``).
+    scalars : optional ``{name: per-voxel array}`` -- any layout, reported
+        as ``{name}_mean``/``{name}_max`` (e.g. accumulated plastic strain
+        alpha, phase-field damage d).
+    tensors : optional ``{name: (3, 3) already volume-averaged tensor}`` --
+        reported as ``{name}_bar`` (Voigt 6) and ``{name}_vol`` (its trace,
+        e.g. tr(eps_p_bar), the macroscopic plastic volume change).
+
+    Returns
+    -------
+    dict with "eps_bar", "sigma_bar" (Voigt 6 each, order [11,22,33,12,13,23]),
+    "mises_stress", "pressure" (p = tr(sigma_bar)/3, p > 0 = hydrostatic
+    tension), plus the scalar/tensor extras above.
+    """
+    eps_v   = to_voigt(np.asarray(eps_bar))
+    sigma_v = to_voigt(np.asarray(sigma_bar))
+    out: dict[str, np.ndarray] = {
+        "eps_bar":      eps_v,
+        "sigma_bar":    sigma_v,
+        "mises_stress": float(von_mises(np.asarray(sigma_bar))),
+        "pressure":     float((sigma_v[0] + sigma_v[1] + sigma_v[2]) / 3.0),
+    }
+    for name, field in (scalars or {}).items():
+        arr = np.asarray(field)
+        out[f"{name}_mean"] = float(arr.mean())
+        out[f"{name}_max"]  = float(arr.max())
+    for name, bar in (tensors or {}).items():
+        v = to_voigt(np.asarray(bar))
+        out[f"{name}_bar"] = v
+        out[f"{name}_vol"] = float(v[0] + v[1] + v[2])
+    return out
+
+
+def macroscopic_thermal_response(
+    grad_T_bar: jnp.ndarray,
+    flux_bar: jnp.ndarray,
+    *,
+    scalars: dict[str, np.ndarray] | None = None,
+) -> dict[str, np.ndarray]:
+    """
+    Vector analogue of ``macroscopic_response`` for a thermal conduction
+    solve: a temperature gradient/flux pair is a plain 3-vector, not a
+    symmetric 2nd-order tensor, so there is no Voigt-6 form to report --
+    ``to_voigt``/``from_voigt`` are strain/stress-specific (see their own
+    docstrings) and don't apply here.
+
+    Parameters
+    ----------
+    grad_T_bar, flux_bar : (3,)   volume-averaged gradient/flux, e.g. from
+        ``jnp.mean(grad_T, axis=-1)``/``jnp.mean(flux, axis=-1)`` (solver
+        layout (3, Nv)).
+    scalars : optional ``{name: per-voxel array}`` -- any layout, reported
+        as ``{name}_mean``/``{name}_max`` (e.g. a per-voxel temperature field).
+
+    Returns
+    -------
+    dict with "grad_T_bar", "flux_bar" (plain (3,) arrays), "flux_magnitude"
+    (Euclidean norm |flux_bar| -- the vector equivalent of ``mises_stress``
+    as a single-number summary), plus the scalar extras above.
+    """
+    grad_v  = np.asarray(grad_T_bar)
+    flux_v  = np.asarray(flux_bar)
+    out: dict[str, np.ndarray] = {
+        "grad_T_bar":     grad_v,
+        "flux_bar":       flux_v,
+        "flux_magnitude": float(np.linalg.norm(flux_v)),
+    }
+    for name, field in (scalars or {}).items():
+        arr = np.asarray(field)
+        out[f"{name}_mean"] = float(arr.mean())
+        out[f"{name}_max"]  = float(arr.max())
+    return out
 
 
 def homogenize_response(

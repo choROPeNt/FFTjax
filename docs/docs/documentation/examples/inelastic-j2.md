@@ -1,6 +1,6 @@
 # In-Elastic Solve (J2 Elastoplasticity)
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/choROPeNt/FFTjax/blob/main/notebooks/in-elastic_J2.ipynb)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/choROPeNt/FFTjax/blob/main/notebooks/mechanics/in-elastic_J2.ipynb)
 
 FFTjax's rate-independent J2 (von Mises) plasticity material model
 (`materialmodels.inelastic.plasticity_j2.J2Plasticity`, linear isotropic hardening),
@@ -115,7 +115,7 @@ plastic matrix voxels: 3524/3952
 max accumulated plastic strain: 1.8632e-01
 ```
 
-![In-Elastic Solve (J2 elastoplasticity)](/img/in-elastic_J2_random-rve.png)
+![In-Elastic Solve (J2 elastoplasticity)](/img/examples/in-elastic_J2_random-rve.png)
 
 The unloading branch (left) has the elastic modulus's slope, not the plastic tangent's —
 correct, since unloading from a plastic state is purely elastic until the reversed yield
@@ -140,7 +140,7 @@ build-time execution here, since Docusaurus can't run Python.
 For the full interactive version — including the virgin `strain_p = 0` field, XDMF/HDF5 export
 via `IncrementalWriter` for the whole load/unload/reload history, and the theoretical background
 (yield function, closed-form radial return) — see
-[`notebooks/in-elastic_J2.ipynb`](https://github.com/choROPeNt/FFTjax/blob/main/notebooks/in-elastic_J2.ipynb),
+[`notebooks/mechanics/in-elastic_J2.ipynb`](https://github.com/choROPeNt/FFTjax/blob/main/notebooks/mechanics/in-elastic_J2.ipynb),
 linked via the Colab badge above.
 :::
 

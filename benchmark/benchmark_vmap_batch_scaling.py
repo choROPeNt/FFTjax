@@ -1,6 +1,6 @@
 """
 Batch-size scaling benchmark for jax.vmap(solve_mechanics), companion to
-notebooks/lin-elastic_strain_vmap.ipynb.
+notebooks/mechanics/lin-elastic_strain_vmap.ipynb.
 
 Every load path in the batch is the *same* macroscopic strain (in-plane
 shear) replicated B times -- deliberately, so B is the only thing that

@@ -1,6 +1,6 @@
 # Mixed Strain/Stress Boundary Conditions
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/choROPeNt/FFTjax/blob/main/notebooks/lin-elastic_mixed-BC.ipynb)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/choROPeNt/FFTjax/blob/main/notebooks/mechanics/lin-elastic_mixed-BC.ipynb)
 
 A more realistic walkthrough of FFTjax's mechanical solver: instead of prescribing the full
 macroscopic strain tensor (as in [Linear-Elastic Solve](./lin-elastic-strain.md)), this example
@@ -119,7 +119,7 @@ build-time execution here, since Docusaurus can't run Python.
 
 For the full interactive version — with per-field strain/stress visualization and `.xdmf`/`.h5`
 export for ParaView — see
-[`notebooks/lin-elastic_mixed-BC.ipynb`](https://github.com/choROPeNt/FFTjax/blob/main/notebooks/lin-elastic_mixed-BC.ipynb),
+[`notebooks/mechanics/lin-elastic_mixed-BC.ipynb`](https://github.com/choROPeNt/FFTjax/blob/main/notebooks/mechanics/lin-elastic_mixed-BC.ipynb),
 linked via the Colab badge above.
 :::
 

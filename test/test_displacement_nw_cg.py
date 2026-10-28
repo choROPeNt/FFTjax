@@ -147,8 +147,8 @@ X, Y, Z = np.meshgrid(xs, xs, xs, indexing="ij")
 w = jnp.asarray(0.5 + 0.5 * np.sin(2.0 * np.pi * X)).ravel()   # smooth blend weight in [0,1]
 
 C_field_het = (
-    jnp.einsum("ijkl,m->ijklm", mat.stiffness_tensor(),  1.0 - w)
-    + jnp.einsum("ijkl,m->ijklm", mat2.stiffness_tensor(), w)
+    jnp.einsum("ijkl,m->ijklm", mat.elastic_stiffness_tensor(),  1.0 - w)
+    + jnp.einsum("ijkl,m->ijklm", mat2.elastic_stiffness_tensor(), w)
 )
 
 lam0 = 0.5 * (mat.lam + mat2.lam)

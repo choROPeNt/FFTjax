@@ -15,6 +15,11 @@ sim
 uv.lock
 
 
+# slurm output
+out/ 
+.venv_
+output_
+
 **/archiv/
 **/archive/
 

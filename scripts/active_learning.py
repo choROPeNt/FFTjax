@@ -173,7 +173,7 @@ def fit_and_predict(
     """
     Fit Matérn-5/2 GP and return (posterior mean, posterior variance,
     hyperparams) -- thin wrapper around learning.surrogates.GPSurrogate
-    (shared with notebooks/structure-property_phi-sweep.ipynb's own GP
+    (shared with notebooks/structure_property/structure-property_phi-sweep.ipynb's own GP
     fitting), kept here only to build this script's specific Linear+Matern32
     sum kernel and extract its particular hyperparameters afterwards.
 

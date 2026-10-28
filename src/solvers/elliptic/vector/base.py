@@ -29,9 +29,11 @@ class ElasticitySolver(ABC):
     ) -> ElasticitySolution:
         """
         ``stress_goal``'s shape and meaning are formulation-specific -- see
-        each concrete solver: ``LippmannSchwingerSolver`` takes a per-voxel
-        ``(3, 3, Nv)`` target stress field (None = zero, pure strain BC);
-        ``DisplacementBasedSolver`` takes a macroscopic ``(3, 3)`` target,
-        used only on the entries its ``control`` marks stress-controlled.
+        each concrete solver: ``LippmannSchwingerSolver`` (pure strain BC
+        only, no ``control``) takes a per-voxel ``(3, 3, Nv)`` target stress
+        field (None = zero); ``DisplacementBasedSolver``,
+        ``FourierGalerkinSolver``, and ``LippmannSchwingerMixedBCSolver``
+        take a macroscopic ``(3, 3)`` target, used only on the entries their
+        ``control`` marks stress-controlled.
         """
         ...

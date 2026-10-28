@@ -15,11 +15,40 @@ class ConstitutiveModel(ABC):
     sigma = C : eps. Deliberately thin -- symmetry class, parametrization,
     and any derived quantities (moduli, Voigt form, ...) are up to each
     concrete model.
+
+    ``elastic_stiffness_tensor()`` is the one every model must provide: a
+    constant, state-independent reference tensor -- for a linear model
+    (``LinearElasticIsotropic``, ``TransverseIsotropic``) this *is* the
+    tangent; for a nonlinear one (``J2Plasticity``, ``DruckerPrager``,
+    ``PhaseFieldIsotropic``) it's the undamaged/virgin elastic tensor used
+    e.g. as the FFT solver's reference medium (``operators.green.
+    build_reference_green_operator``), never the true state-dependent
+    tangent -- see each such model's own ``stiffness_tensor(eps, ...)``
+    for that.
     """
 
     @abstractmethod
-    def stiffness_tensor(self) -> jnp.ndarray:
-        """(3, 3, 3, 3) stiffness tensor C_ijkl."""
+    def elastic_stiffness_tensor(self) -> jnp.ndarray:
+        """(3, 3, 3, 3) constant elastic stiffness tensor C_ijkl."""
+        ...
+
+
+class ConductivityModel(ABC):
+    """
+    A material's flux-gradient law, reduced to what the FFT solver needs: a
+    2nd-order conductivity tensor K_ij relating flux and gradient via
+    Fourier's law, q = -K : grad(T). Deliberately thin, mirroring
+    ConstitutiveModel -- symmetry class, parametrization, and any derived
+    quantities are up to each concrete model. Not a ConstitutiveModel
+    subclass: a conductivity tensor is rank 2, not rank 4, so there is
+    nothing to share beyond the pattern (see materialmodels.assembly.
+    assemble_K_field, materialmodels.thermal.isotropic.
+    ThermalConductivityIsotropic).
+    """
+
+    @abstractmethod
+    def conductivity_tensor(self) -> jnp.ndarray:
+        """(3, 3) conductivity tensor K_ij."""
         ...
 
 
@@ -38,4 +67,4 @@ class PhaseFieldMaterial(Protocol):
     k_res: float
     Gc:    float | None
 
-    def stiffness_tensor(self) -> jnp.ndarray: ...
+    def elastic_stiffness_tensor(self) -> jnp.ndarray: ...

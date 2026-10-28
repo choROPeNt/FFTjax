@@ -118,3 +118,5 @@ fracture:
 
 output:  output/simulation
 jobname: "{fracture.input.stem}_fracture"
+
+# stats: "{jobname}_stats.csv"   # optional; default "{jobname}_stats.npy" -- extension picks format

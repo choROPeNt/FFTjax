@@ -14,8 +14,10 @@ const sidebars = {
       label: 'Theorie',
       link: {type: 'doc', id: 'theorie/index'},
       items: [
+        'theorie/operators',
         'theorie/mechanical',
         'theorie/damage',
+        'theorie/thermal',
       ],
     },
     {
@@ -42,6 +44,11 @@ const sidebars = {
           type: 'category',
           label: 'Inverse Calibration',
           items: ['examples/inverse-calibration'],
+        },
+        {
+          type: 'category',
+          label: 'Thermal Conduction',
+          items: ['examples/thermal-conduction'],
         },
         // Structure-Property is still a placeholder on the Examples page
         // (no doc page yet) -- add a matching category here once one exists.

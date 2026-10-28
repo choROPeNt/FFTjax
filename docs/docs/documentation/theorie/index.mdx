@@ -6,101 +6,109 @@ import CardGrid from '@site/src/components/CardGrid';
 
 # 📖 Theorie
 
-FFTjax solves variational partial differential equations on voxelized domains using a spectral
-Fourier-based approach. This page introduces the shared spectral framework; the specific
-variational formulation, solver algorithm and discretization choices for each physical problem
-are documented on their own page, mirroring the `solvers/` package layout in the code
-(`solvers/mechanical/`, `solvers/damage/`, ...).
+FFTjax solves variational partial differential equations on voxelized periodic domains using a
+spectral, FFT-based approach. This page introduces the shared spectral framework and solver
+scaffolding; the variational formulation, solver algorithm and material models for each physical
+problem are documented on their own page, mirroring the code layout (`operators/`,
+`solvers/elliptic/`, `materialmodels/`, `problems/`).
 
 ## Quick introduction to spectral solvers
 
 Consider a generic equilibrium problem in small-strain elasticity:
 
 $$
-\nabla \cdot \sigma(\mathbf{x}) = 0
-$$
-
-with constitutive relation
-
-$$
-\sigma = \mathbb{C} : \varepsilon,
-\qquad
-\varepsilon = \frac{1}{2}(\nabla u + \nabla u^\top)
+\nabla \cdot \sigma(\mathbf{x}) = 0, \qquad \sigma = \mathbb{C} : \varepsilon,
+\qquad \varepsilon = \tfrac{1}{2}(\nabla u + \nabla u^\top)
 $$
 
 Rather than assembling a stiffness matrix as in FEM, the spectral (FFT-Galerkin) approach
-transforms fields into Fourier space:
+transforms fields into Fourier space on a periodic voxel grid,
 
 $$
-\hat{f}(\boldsymbol{\xi}) = \mathcal{F}[f(\mathbf{x})]
+\hat{f}(\boldsymbol{\xi}) = \mathcal{F}[f(\mathbf{x})], \qquad \nabla \rightarrow i\boldsymbol{\xi},
 $$
 
-on a periodic voxel grid, so spatial derivatives become simple multiplications:
-
-$$
-\nabla \rightarrow i\boldsymbol{\xi}
-$$
-
-which converts differential operators into algebraic expressions. The equilibrium (or, for
-damage, Helmholtz-type) equation is then solved iteratively -- via a matrix-free Conjugate
-Gradient (CG) applied entirely in Fourier space -- using either a fixed reference-medium
-Green's operator $\hat{\Gamma}_0(\boldsymbol{\xi})$ (Moulinec-Suquet Lippmann-Schwinger scheme)
-or a direct discrete-gradient (FFT-Galerkin) operator built from $\hat{\varepsilon} =
-\text{sym}(i\boldsymbol{\xi}\otimes\hat{u})$. Both give the same continuum limit; which one a
-given solver uses, and why, is a per-problem choice documented on the corresponding page below.
-
-Because no matrix is ever assembled, the cost per CG iteration is one forward and one inverse
-FFT plus voxel-local algebra -- the computational complexity scales as $\mathcal{O}(N\log N)$ in
-the number of voxels $N$, versus $\mathcal{O}(N^{1.5})$ or worse for a sparse FEM solve.
+turning differential operators into algebraic (pointwise) ones. The equilibrium (or, for damage
+and thermal conduction, Helmholtz/diffusion-type) equation is then solved iteratively by a
+matrix-free Conjugate Gradient (CG) applied entirely in Fourier space, using either a fixed
+reference-medium Green's operator (Lippmann-Schwinger) or a direct discrete-gradient (Galerkin)
+operator — see [Frequency-Space Operators](/documentation/theorie/operators) for both. Because no matrix is ever
+assembled, one CG iteration costs one forward and one inverse FFT plus voxel-local algebra:
+$\mathcal{O}(N\log N)$ in the number of voxels $N$, versus $\mathcal{O}(N^{1.5})$ or worse for a
+sparse FEM solve.
 
 ## Shared solver scaffolding
 
-Every problem type builds on the same skeleton, defined once in `solvers/types.py` rather than
-duplicated per solver:
+**Frequency-space operators** (`operators/`) are built around a common `LinearOperator`
+interface — `__call__`, `.T` (adjoint), and `@` for composition without evaluating either side
+— so a Green's operator, a Galerkin projector, and their DC-patched mixed-BC variants are all
+interchangeable wherever a solver needs "the" operator for a grid. See
+[Frequency-Space Operators](/documentation/theorie/operators).
 
-- `SolverSettings` -- static configuration (grid, tolerances, iteration caps) plus a list of
-  load steps, each a `(control, strain_ave_goal, stress_ave_goal, timer)` tuple. `control` is a
-  `(3, 3)` mask selecting, per tensor component, whether the macroscopic loading for that step is
-  strain- or stress-controlled -- the same mixed-BC mechanism used by every mechanical solver
-  variant.
-- `SolveState` -- a JAX-pytree `NamedTuple` carrying the evolving per-voxel fields (strain,
-  stress, tangent), macroscopic averages, and Newton/CG bookkeeping (`iter_nw`, `iter_cg`,
-  `pnewdt`, ...) through `jax.jit`/`lax.while_loop` without breaking tracing.
+**CG driver** (`solvers/krylov/cg.py`) is one operator-agnostic implementation shared by every
+elliptic solve in the project (mechanical, damage, thermal):
 
-Precomputed operators (the Green's operator, the material stiffness field) are deliberately kept
-*outside* `SolveState` -- they are static per solve and passed as separate arguments, not
-recomputed or carried through the iteration state.
+- `cg_solve` — fast (`jax.lax.while_loop`, early-exits on convergence), but **not**
+  differentiable through `jax.grad`: JAX's own CG gradient rule silently gives wrong gradients on
+  this project's operators.
+- `cg_solve_scan` — differentiable (fixed-length `jax.lax.scan`, ordinary autodiff through the
+  literal iteration sequence), the safe choice when a solve must be differentiated. Every solver's
+  own `A_op` is *structurally singular* (the mean/DC mode is prescribed separately, not solved
+  for), which breaks the implicit-function-theorem alternative (`cg_solve_diff`) — see that
+  function's docstring for the full finding before reaching for it.
+- `cg_solve_pmap` — same algorithm as `cg_solve_scan`, for use inside a `jax.pmap` domain
+  decomposition, where every reduction is a `jax.lax.psum` all-reduce across devices so the full
+  field never has to exist on one device.
+
+**Solution types** (`solvers/solution.py`) — `ElasticitySolution`, `ThermalSolution`,
+`FractureSolution` — are `NamedTuple`s (automatically JAX pytrees, safe through
+`jit`/`grad`/`vmap`) returned uniformly by every `problems/` entry point. Each carries the local
+field(s), a `converged` flag, and (where relevant) the macroscopic average with any
+stress/flux-controlled entries filled in by the solve.
+
+**Load stepping** (`problems/incremental.py`) wraps any per-increment `solve_fn(t) -> Solution`
+in an Abaqus-`*STATIC`-style loop — equal increments (`solve_fixed`) or adaptive step size, grown
+on convergence and cut back on failure (`solve_automatic`) — independent of which physical problem
+or formulation `solve_fn` solves.
 
 ## Image-based discretization
 
-The computational domain is defined on a regular voxel grid, optionally derived directly from
-segmented experimental data (e.g. TexGen VTU geometry, via `utils.io_read.read_vtu`). Material
-heterogeneity is assigned per voxel, avoiding geometric idealization and enabling direct
-microstructure-to-simulation coupling. Periodic boundary conditions are naturally satisfied
-within the spectral framework -- no boundary-condition enforcement is needed beyond the
-macroscopic average constraint.
-
-This formulation enables:
-
-- Efficient voxel-scale simulations directly on image-based microstructures
-- Differentiability throughout (JAX autodiff) for inverse parameter identification
-- GPU acceleration via JAX, with the same code path on CPU/TPU
+The computational domain is a regular voxel grid, optionally derived directly from segmented
+experimental data (e.g. TexGen VTU geometry via `utils.io.reader.read_vtu`). Material
+heterogeneity is assigned per voxel (`materialmodels/assembly.py`), avoiding geometric
+idealization. Periodic boundary conditions are naturally satisfied within the spectral framework —
+no boundary-condition enforcement is needed beyond the macroscopic average constraint. This
+enables efficient voxel-scale simulation directly on image-based microstructures, full
+differentiability (JAX autodiff) for inverse parameter identification, and GPU acceleration with
+the same code path on CPU/GPU/TPU.
 
 ## Problem-specific formulations
 
 <CardGrid
   cards={[
     {
+      emoji: '🌀',
+      title: 'Frequency-Space Operators',
+      description: 'The LinearOperator abstraction, Green\'s operator (standard and Willot-rotated), the reference-medium-free Galerkin projector, and the Nyquist gotcha shared by every odd-power-of-ξ operator.',
+      to: '/documentation/theorie/operators',
+    },
+    {
       emoji: '⚙️',
       title: 'Mechanical Solvers',
-      description: 'Strain- and displacement-based Newton-CG formulations for (linear elastic and J2 plastic) equilibrium, mixed strain/stress boundary conditions, and the Nyquist/preconditioner subtleties specific to each.',
+      description: 'Three interchangeable elastic formulations (Lippmann-Schwinger, displacement-based, Fourier-Galerkin), two mixed strain/stress BC schemes, and the J2/Drucker-Prager Newton-CG plasticity extension.',
       to: '/documentation/theorie/mechanical',
     },
     {
       emoji: '💥',
       title: 'Damage & Fracture Solvers',
-      description: 'The phase-field (AT2) energy functional, the Helmholtz-type damage sub-problem solved by CG in Fourier space, and the staggered elastic/damage loop -- including Anderson and NGMRES acceleration.',
+      description: 'The phase-field (AT2) energy functional, the Amor tension/compression split, hybrid irreversibility, and the homogeneous/heterogeneous Helmholtz damage sub-problem in the staggered loop.',
       to: '/documentation/theorie/damage',
+    },
+    {
+      emoji: '🌡️',
+      title: 'Thermal Conduction',
+      description: 'Steady-state heat conduction as the scalar analogue of the displacement-based elastic solve, with mixed macroscopic gradient/flux boundary conditions.',
+      to: '/documentation/theorie/thermal',
     },
   ]}
 />
