@@ -35,9 +35,9 @@ mechanics:
     # arbitrary-case syntax (own component/control/stress_bar/gammas).
     cases: base6
 
-    # Each case drives its own component and leaves every unloaded surface
-    # traction-free (uniaxial: the other two normals; shear: all three
-    # normals) -- the mask is derived per case, which the one fixed
+    # Each case drives its own component and leaves every other macroscopic
+    # stress zero, normals and shears alike -- the mask is derived per case,
+    # which the one fixed
     # `control` mechanics_example.yaml spells out by hand cannot do across
     # six cases.
     free_surfaces: true

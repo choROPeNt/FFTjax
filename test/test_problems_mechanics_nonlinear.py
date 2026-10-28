@@ -48,6 +48,11 @@ Three checks
    at convergence -- not just "not crash", since a bordered-system bug could
    easily converge to the wrong (e.g. pure-strain) answer while still
    reporting success.
+7. free_surfaces masks: on 45-degree layers, which couple normal load into
+   shear, uniaxial_x and shear_xz under free_surface_control must leave every
+   non-driven macroscopic stress at round-off, and must actually develop the
+   coupled shear strain. A mask that clamped the non-driven shears would
+   leave sigma_12 (resp. sigma_23) nonzero instead.
 
 Usage
 -----
@@ -70,6 +75,7 @@ from materialmodels.assembly import assemble_C_field
 from materialmodels.inelastic.plasticity_j2 import J2Plasticity
 from operators.green import build_freq_grid
 from problems.mechanics import solve_displacement_based_nonlinear
+from problems.utils.loadcases import free_surface_control
 from solvers.elliptic.vector.displacement_based import solve_displacement_based
 
 phase_np, n, L, phi_act = make_square_composite_rve(
@@ -304,5 +310,42 @@ assert n_plastic_mixed > 0, "expected at least one matrix voxel to yield at this
 assert abs(sigma22_avg) < 1e-3, f"free surface sigma22 did not converge to ~0: {sigma22_avg:.3e}"
 assert abs(sigma33_avg) < 1e-3, f"free surface sigma33 did not converge to ~0: {sigma33_avg:.3e}"
 print("[6] PASSED")
+
+# ── 7. free_surfaces masks: every non-driven macroscopic stress vanishes ────
+
+# Layers inclined at 45 deg in the x-y plane: x-tension couples into eps_12,
+# and xz-shear into eps_23, so each case below has a non-driven shear the
+# microstructure actually loads.
+n_lay = (8, 8, 8)
+ix, iy, _ = np.meshgrid(*[np.arange(n_lay[0])] * 3, indexing="ij")
+phase_lay = jnp.array((((ix + iy) % 4) < 2).astype(int).ravel())
+C_lay = assemble_C_field([matrix_el, fiber_el], phase_lay)
+xi_lay = build_freq_grid(n_lay, (1.0, 1.0, 1.0))
+
+
+def layered_local_update(eps_field, state):
+    return jnp.einsum("ijklm,klm->ijm", C_lay, eps_field), C_lay, state
+
+
+for (i, j), (ci, cj) in (((0, 0), (0, 1)), ((0, 2), (1, 2))):
+    control_fs = free_surface_control(i, j)
+    eps_bar_fs = jnp.zeros((3, 3)).at[i, j].set(1.0e-3).at[j, i].set(1.0e-3)
+    eps_fs, sigma_fs, _, converged_fs, n_iter_fs = solve_displacement_based_nonlinear(
+        n_lay, xi_lay, eps_bar_fs, layered_local_update, state_init=None,
+        toler_lin=1e-10, maxiter_lin=2000, toler_nr=1e-10, maxiter_nr=10,
+        control=control_fs, stress_goal=jnp.zeros((3, 3)),
+    )
+    sigma_bar_fs = jnp.mean(sigma_fs, axis=-1)
+    eps_coupled = float(jnp.mean(eps_fs[ci, cj]))
+    max_free = float(jnp.max(jnp.abs(sigma_bar_fs[np.array(control_fs, dtype=bool)])))
+    print(f"[7] driven ({i},{j}): converged={converged_fs}  n_iter={n_iter_fs}  "
+          f"sigma_driven={float(sigma_bar_fs[i, j]):.4f}  max|free sigma|={max_free:.3e}  "
+          f"eps_{ci + 1}{cj + 1}={eps_coupled:.4e}")
+    assert converged_fs
+    assert max_free < 1e-8 * abs(float(sigma_bar_fs[i, j])), \
+        f"driven ({i},{j}): a non-driven macroscopic stress is not zero: {max_free:.3e}"
+    assert abs(eps_coupled) > 1e-6, \
+        f"driven ({i},{j}): the layering must load eps_{ci + 1}{cj + 1}, or this check is vacuous"
+print("[7] PASSED")
 
 print("\ntest_problems_mechanics_nonlinear: all checks passed")

@@ -12,9 +12,9 @@ Eight checks
 1. base6 is the six canonical cases, in post.fields.to_voigt's Voigt order
    (11, 22, 33, 12, 13, 23) -- the ordering is load-bearing, since case k is
    meant to line up with row/column k of any effective 6x6 assembled later.
-2. free_surfaces derives a DIFFERENT control mask per case (loaded component
-   strain-driven, unloaded surfaces traction-free) -- the whole reason a
-   sweep cannot just reuse one fixed `control` mask.
+2. free_surfaces derives a DIFFERENT control mask per case (driven component
+   strain-controlled, every other one, shears included, stress-free) -- the
+   whole reason a sweep cannot just reuse one fixed `control` mask.
 3. No `cases` key resolves to exactly one case built from the loading block
    itself -- the backwards-compatibility guarantee for every pre-existing
    single-case config.
@@ -68,14 +68,13 @@ print("[1] PASSED")
 # ── [2] free_surfaces derives a per-case mask ───────────────────────────────
 free = resolve_cases({"cases": "base6", "free_surfaces": True})
 by_name = {c.name: c for c in free}
-assert by_name["uniaxial_x"].control == ((0, 0, 0), (0, 1, 0), (0, 0, 1))
-assert by_name["uniaxial_y"].control == ((1, 0, 0), (0, 0, 0), (0, 0, 1))
-assert by_name["uniaxial_z"].control == ((1, 0, 0), (0, 1, 0), (0, 0, 0))
-for shear in ("shear_xy", "shear_xz", "shear_yz"):
-    assert by_name[shear].control == ((1, 0, 0), (0, 1, 0), (0, 0, 1)), \
-        f"{shear}: every normal direction should be traction-free under shear"
-assert len({c.control for c in free}) == 4, \
-    "the six cases must not all share one control mask (3 uniaxial + 1 shear mask)"
+assert by_name["uniaxial_x"].control == ((0, 1, 1), (1, 1, 1), (1, 1, 1))
+assert by_name["shear_xy"].control == ((1, 0, 1), (0, 1, 1), (1, 1, 1))
+for c in free:
+    expected = tuple(tuple(int({a, b} != {c.i, c.j}) for b in range(3)) for a in range(3))
+    assert c.control == expected, \
+        f"{c.name}: only the driven pair may be strain-controlled, shears included"
+assert len({c.control for c in free}) == 6, "each of the six cases must get its own mask"
 for c in free:
     assert c.stress_bar is not None and not np.any(c.stress_bar), \
         f"{c.name}: free surfaces default to a zero (traction-free) stress target"
