@@ -554,7 +554,7 @@ def solve_displacement_based_nonlinear(
     # reached through tracers from an enclosing jax.jit, not concrete,
     # already-device-committed arrays -- true of every OTHER distributed
     # solver in this project (solve_displacement_based, solve_thermal_conduction,
-    # solve_damage_helmholtz_cg(_het), all @jax.jit-wrapped as a whole), but this
+    # solve_damage_helmholtz_cg, all @jax.jit-wrapped as a whole), but this
     # driver's outer Newton loop needs real Python control flow (the toler_nr
     # early-exit `break` below) and so can't be jit-compiled as one piece.
     # Pushing jit down to just the two FFT-heavy per-iteration pieces -- the

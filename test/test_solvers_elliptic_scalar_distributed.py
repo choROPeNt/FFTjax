@@ -1,8 +1,8 @@
 """
 Correctness check for the scalar FFT-CG solvers' automatic domain
 decomposition (``solvers/elliptic/scalar.py``): ``solve_damage_helmholtz_cg``
-(homogeneous Gc), ``solve_damage_helmholtz_cg_het`` (per-voxel Gc, needs a
-distributed gradient/divergence, not just a Laplacian), and
+with a scalar Gc and with a per-voxel Gc (needs a distributed
+gradient/divergence, not just a Laplacian), and
 ``solve_thermal_conduction`` (its own DC-bin macroscopic-gradient trick,
 pure gradient-BC and mixed flux-BC). All three use
 ``operators.fft_distributed.distributed_fft_flat``/``distributed_ifft_flat``
@@ -38,7 +38,7 @@ from materialmodels.assembly import assemble_K_field
 from materialmodels.thermal.isotropic import ThermalConductivityIsotropic
 from operators.green import build_freq_grid
 from solvers.elliptic.scalar import (
-    solve_damage_helmholtz_cg, solve_damage_helmholtz_cg_het, solve_thermal_conduction,
+    solve_damage_helmholtz_cg, solve_thermal_conduction,
 )
 
 # N[0] and N[1] must both be divisible by N_DEVICES -- scale the grid with it.
@@ -94,7 +94,7 @@ def test_helmholtz_heterogeneous_distributed_matches_single_device():
     d_prev = jnp.zeros(NV)
 
     d, converged = _compare(
-        solve_damage_helmholtz_cg_het, H_field, xi_flat, N, 1.0, Gc, d_prev,
+        solve_damage_helmholtz_cg, H_field, xi_flat, N, 1.0, Gc, d_prev,
         toler_cg=1e-10, maxiter=500,
     )
     assert bool(converged)

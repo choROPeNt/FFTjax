@@ -19,10 +19,8 @@ materialmodels/ and solvers/ stacks so far:
   the two single-notch-plate benchmarks' scheme (Schneider & Kaestner 2025,
   doi:10.1111/ffe.14553). Gc may be homogeneous (a scalar, or a uniform
   per-material gather) or heterogeneous (a genuinely varying per-voxel
-  field) -- solve_fracture dispatches to solvers.elliptic.scalar's
-  solve_damage_helmholtz_cg or solve_damage_helmholtz_cg_het accordingly;
-  see that module's docstring for why these solve different equations, not
-  the same one at different generality.
+  field); solvers.elliptic.scalar.solve_damage_helmholtz_cg takes either
+  (scalar: Gc*lap(d); field: div(Gc grad d)).
 - Damage/history (d, H) are carried across increments by the *caller*
   (this function takes d_init/H_init and returns d/H, it doesn't own the
   time-stepping loop) -- same division of responsibility as solve_mechanics
@@ -47,7 +45,7 @@ from operators.galerkin import build_galerkin_projector
 from operators.green import build_freq_grid, build_reference_green_operator
 from post.fields import compute_displacement, field_to_grid, to_voigt, von_mises
 from problems.incremental import IncrementResult, solve_automatic, solve_fixed
-from solvers.elliptic.scalar import solve_damage_helmholtz_cg, solve_damage_helmholtz_cg_het
+from solvers.elliptic.scalar import solve_damage_helmholtz_cg
 from solvers.elliptic.vector.displacement_based import solve_displacement_based
 from solvers.elliptic.vector.fourier_galerkin import solve_fourier_galerkin
 from solvers.elliptic.vector.lippmann_schwinger import solve_lippmann_schwinger, solve_lippmann_schwinger_mixed_bc
@@ -119,11 +117,9 @@ def solve_fracture(
                   phase, or an explicit (Nv,) array for a field not tied to
                   materials (e.g. a smoothly-varying one). A uniform Gc
                   (scalar, or an array/gather that happens to be uniform)
-                  uses the cheaper homogeneous solver
-                  (solve_damage_helmholtz_cg); a genuinely varying one uses
-                  the divergence-form heterogeneous solver
-                  (solve_damage_helmholtz_cg_het) -- see that module's
-                  docstring for why these solve different equations.
+                  is passed on as a scalar -- the cheaper exact-Laplacian
+                  damage solve; a genuinely varying one uses the divergence
+                  form (see solve_damage_helmholtz_cg).
     d_init      : (Nv,)          damage carried in from the previous increment
     H_init      : (Nv,)          history variable carried in from the previous increment
     formulation : "lippmann_schwinger" (reference-medium; mixed BC via an
@@ -179,15 +175,13 @@ def solve_fracture(
 
     if Gc is None:
         Gc = Gc_field(materials, phase)
-    # A per-voxel Gc that happens to be uniform collapses to the cheaper,
-    # exact-preconditioner homogeneous solver -- only a genuinely varying
-    # Gc needs the 3x-FFT divergence-form one (see solvers.elliptic.scalar).
-    Gc_heterogeneous = isinstance(Gc, jnp.ndarray) and jnp.ndim(Gc) > 0
-    if Gc_heterogeneous:
+    # A per-voxel Gc that happens to be uniform collapses to a scalar, which
+    # solve_damage_helmholtz_cg solves with the cheaper exact Laplacian --
+    # only a genuinely varying Gc needs its divergence form.
+    if jnp.ndim(Gc) > 0:
         Gc_min, Gc_max = float(jnp.min(Gc)), float(jnp.max(Gc))
         if Gc_min == Gc_max:
             Gc = Gc_min
-            Gc_heterogeneous = False
 
     if formulation == "lippmann_schwinger":
         elastic_op = build_reference_green_operator(n, L, materials, scheme=scheme)
@@ -199,7 +193,7 @@ def solve_fracture(
     return _staggered_loop(
         n=n, l0=l0, formulation=formulation, control=control, stress_goal_arr=stress_goal_arr,
         pff_local_update=pff_local_update, lam_vox=lam_vox, mu_vox=mu_vox, xi_flat=xi_flat, k_res_arr=k_res_arr,
-        Gc=Gc, Gc_heterogeneous=Gc_heterogeneous, elastic_op=elastic_op,
+        Gc=Gc, elastic_op=elastic_op,
         eps_bar=eps_bar, d_init=d_init, H_init=H_init,
         toler_lin=toler_lin, maxiter_cg=maxiter_cg,
         toler_helm=toler_helm, maxiter_helm=maxiter_helm,
@@ -211,7 +205,7 @@ def solve_fracture(
 
 def _staggered_loop(
     n, l0, formulation, control, stress_goal_arr,
-    pff_local_update, lam_vox, mu_vox, xi_flat, k_res_arr, Gc, Gc_heterogeneous, elastic_op,
+    pff_local_update, lam_vox, mu_vox, xi_flat, k_res_arr, Gc, elastic_op,
     eps_bar, d_init, H_init,
     toler_lin, maxiter_cg, toler_helm, maxiter_helm, eta, dt, d_thres,
     toler_st_abs, toler_st_rel, maxiter_st, early_exit: bool,
@@ -284,8 +278,7 @@ def _staggered_loop(
         psi_pos, _ = strain_energy_amor_split(eps, lam_vox, mu_vox)
         H_st = update_history_hybrid(H_st, psi_pos, d_prev_st, d_thres=d_thres)
 
-        damage_solve = solve_damage_helmholtz_cg_het if Gc_heterogeneous else solve_damage_helmholtz_cg
-        d_st, converged_helm = damage_solve(
+        d_st, converged_helm = solve_damage_helmholtz_cg(
             H_st, xi_flat, n, l0, Gc, d_prev_st,
             toler_cg=toler_helm, maxiter=maxiter_helm, eta=eta, dt=dt, k=k_res_arr,
         )
@@ -374,21 +367,16 @@ def solve_fracture_fixed(
     xi_flat = build_freq_grid(n, L)
     k_res_arr = k_res_field(materials, phase) if k_res is None else k_res
 
-    # Gc_heterogeneous is decided WITHOUT inspecting any array derived from
-    # `phase` (float()/bool() on a value that traces back to `phase` breaks
-    # under jax.vmap, since `phase` is exactly the argument a caller batches
-    # different RVE realizations over). Gc=None gathers per-material -- its
-    # heterogeneity is a static property of `materials` (plain Python floats),
-    # not something to inspect on the resulting per-voxel field. An explicit
-    # array Gc is trusted at face value (no auto-collapse-if-uniform check,
-    # unlike solve_fracture) -- pass a scalar yourself if you know it's
-    # uniform and want the cheaper homogeneous solver.
+    # Uniformity is decided WITHOUT inspecting any array derived from `phase`
+    # (float()/bool() on it breaks under jax.vmap, which batches over phase):
+    # for Gc=None it is a static property of `materials`. An explicit array Gc
+    # is used as given (no collapse-if-uniform, unlike solve_fracture) -- pass
+    # a scalar for the cheaper exact-Laplacian damage solve.
     if Gc is None:
-        Gc = Gc_field(materials, phase)
+        Gc = Gc_field(materials, phase)  # raises if a present phase has no Gc
         Gc_values = {float(m.Gc) for m in materials if m.Gc is not None}
-        Gc_heterogeneous = len(Gc_values) > 1
-    else:
-        Gc_heterogeneous = isinstance(Gc, jnp.ndarray) and jnp.ndim(Gc) > 0
+        if len(Gc_values) == 1:
+            Gc = Gc_values.pop()  # uniform -> scalar: the exact-Laplacian damage solve
 
     if formulation == "lippmann_schwinger":
         elastic_op = build_reference_green_operator(n, L, materials, scheme=scheme)
@@ -400,7 +388,7 @@ def solve_fracture_fixed(
     return _staggered_loop(
         n=n, l0=l0, formulation=formulation, control=control, stress_goal_arr=stress_goal_arr,
         pff_local_update=pff_local_update, lam_vox=lam_vox, mu_vox=mu_vox, xi_flat=xi_flat, k_res_arr=k_res_arr,
-        Gc=Gc, Gc_heterogeneous=Gc_heterogeneous, elastic_op=elastic_op,
+        Gc=Gc, elastic_op=elastic_op,
         eps_bar=eps_bar, d_init=d_init, H_init=H_init,
         toler_lin=toler_lin, maxiter_cg=maxiter_cg,
         toler_helm=toler_helm, maxiter_helm=maxiter_helm,

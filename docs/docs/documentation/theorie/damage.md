@@ -85,7 +85,7 @@ $$
 \Big(\frac{G_c}{\ell} + 2(1-k)H\Big)d - G_c\ell\,\Delta d = 2(1-k)H
 $$
 
-**Heterogeneous $G_c(\mathbf{x})$** (`solve_damage_helmholtz_cg_het`) — genuinely a different
+**Heterogeneous $G_c(\mathbf{x})$** (same `solve_damage_helmholtz_cg`, given a per-voxel `Gc`) — genuinely a different
 equation, not the same one at more generality: the variational derivative of the
 $G_c(\mathbf{x})\frac{\ell}{2}|\nabla d|^2$ term is $\nabla\!\cdot\!(G_c(\mathbf{x})\nabla d)$, not
 $G_c(\mathbf{x})\Delta d$ (product rule — an extra $\nabla G_c\cdot\nabla d$ term wherever $G_c$

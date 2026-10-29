@@ -1,17 +1,7 @@
 """
-Scalar elliptic FFT-CG solve. First user: the AT2 phase-field damage
-sub-problem (Helmholtz-type screened Poisson equation). Second: steady-state
-thermal conduction homogenization (``solve_thermal_conduction``, a genuinely
-different PDE -- no reaction/mass term, and the unknown carries a
-macroscopic mixed gradient/flux BC rather than an irreversibility floor).
-
-Two damage variants: ``solve_damage_helmholtz_cg`` (homogeneous Gc, a single
-scalar for the whole domain) and ``solve_damage_helmholtz_cg_het``
-(heterogeneous Gc, an (Nv,) per-voxel field). They solve genuinely
-different equations, not the same one at different generality -- see
-the heterogeneous solver's docstring for why a spatially varying Gc
-changes the diffusion term itself (Gc(x)*lap(d) is wrong; it has to be
-div(Gc(x)*grad(d))), not just which value gets plugged in where.
+Scalar elliptic FFT-CG solves: the AT2 phase-field damage equation
+(``solve_damage_helmholtz_cg``, scalar or per-voxel Gc) and steady-state
+thermal conduction homogenization (``solve_thermal_conduction``).
 """
 
 import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on TPU, no GPU prealloc)
@@ -36,7 +26,7 @@ def solve_damage_helmholtz_cg(
     xi_flat: jnp.ndarray,
     n: tuple[int, ...],
     l0: float,
-    Gc: float,
+    Gc: float | jnp.ndarray,
     d_prev: jnp.ndarray,
     toler_cg: float = 1e-4,
     maxiter: int = 300,
@@ -82,7 +72,11 @@ def solve_damage_helmholtz_cg(
     xi_flat  : (ndim, Nv) angular-frequency grid from ``operators.green.build_freq_grid``
     n        : tuple       grid shape -- must be static for JIT
     l0       : float       phase-field length scale
-    Gc       : float       critical energy release rate (homogeneous)
+    Gc       : float or (Nv,)  critical energy release rate. A scalar uses the
+                           exact Laplacian above (2 FFTs per CG step); a
+                           per-voxel field needs div(Gc(x) grad d) instead of
+                           Gc*lap(d) and goes to _solve_damage_helmholtz_cg_het
+                           (8 FFTs per step) -- pass a scalar when Gc is uniform
     d_prev   : (Nv,)      damage from the previous iteration (initial guess
                            AND irreversibility floor)
     toler_cg : float       CG relative residual tolerance
@@ -120,6 +114,11 @@ def solve_damage_helmholtz_cg(
     d          : (Nv,)        updated damage field in [0, 1]
     converged  : bool array   True if residual tolerance met
     """
+    if jnp.ndim(Gc) > 0:  # static under jit: shapes are known at trace time
+        return _solve_damage_helmholtz_cg_het(
+            H_field, xi_flat, n, l0, Gc, d_prev, toler_cg, maxiter, eta, dt, k, n_devices,
+        )
+
     resolved_n_devices = choose_device_count(n, n_devices)
     if resolved_n_devices > 1:
         return _solve_damage_helmholtz_cg_sharded(
@@ -210,7 +209,7 @@ def _solve_damage_helmholtz_cg_sharded(H_field, xi_flat, n, l0, Gc, d_prev, tole
 
 
 @partial(jax.jit, static_argnames=("n", "maxiter", "n_devices"))
-def solve_damage_helmholtz_cg_het(
+def _solve_damage_helmholtz_cg_het(
     H_field: jnp.ndarray,
     xi_flat: jnp.ndarray,
     n: tuple[int, ...],
@@ -337,7 +336,7 @@ def solve_damage_helmholtz_cg_het(
 
 def _solve_damage_helmholtz_cg_het_sharded(H_field, xi_flat, n, l0, Gc, d_prev, toler_cg, maxiter, eta, dt, k, n_devices):
     """
-    Fully domain-decomposed counterpart of ``solve_damage_helmholtz_cg_het``'s
+    Fully domain-decomposed counterpart of ``_solve_damage_helmholtz_cg_het``'s
     CG solve, for ``n_devices > 1`` -- same pattern as
     ``_solve_damage_helmholtz_cg_sharded``, extended to this equation's
     distributed gradient/divergence (``div_Gc_grad``, 3 FFT round-trips per
@@ -349,7 +348,7 @@ def _solve_damage_helmholtz_cg_het_sharded(H_field, xi_flat, n, l0, Gc, d_prev, 
     splitting, same reasoning as the homogeneous solver's ``driving_avg``.
 
     Not a public entry point -- called only from
-    ``solve_damage_helmholtz_cg_het`` when ``choose_device_count`` resolves
+    ``_solve_damage_helmholtz_cg_het`` when ``choose_device_count`` resolves
     to more than 1.
     """
     n_local = (n[0] // n_devices, n[1], n[2])

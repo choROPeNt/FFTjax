@@ -40,8 +40,8 @@ compressive branch $\psi^-$ is never degraded by construction. The carbon fibre 
 for an isotropic elastic law) — immaterial here since its `k_res=1.0` keeps it from ever losing
 stiffness regardless of which path degrades it. `Gc` differs across all three phases
 (`0.001`/`0.0004`/`0.0016` N/mm), so this example also exercises the heterogeneous-toughness path
-(`solvers.elliptic.scalar.solve_damage_helmholtz_cg_het`) automatically — `solve_fracture`
-dispatches to it whenever `Gc` isn't uniform, no separate call needed.
+(the divergence form inside `solvers.elliptic.scalar.solve_damage_helmholtz_cg`) automatically —
+`solve_fracture` passes the per-voxel `Gc` whenever it isn't uniform, no separate call needed.
 
 ```python
 import utils.precision  # side effect: configures JAX (X64 off on TPU, no GPU prealloc)
