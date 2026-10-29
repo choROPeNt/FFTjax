@@ -2,12 +2,11 @@
 
 from collections.abc import Sequence
 
-import jax
 import jax.numpy as jnp
 
 from materialmodels.base import ConductivityModel, ConstitutiveModel
 from materialmodels.phasefield.degradation import degradation_at2
-from operators.fft_distributed import choose_device_count, shard_x_slabs, x_slab_mesh, x_slab_spec
+from operators.fft_distributed import choose_device_count, shard_x_slabs, x_slab_shard_map, x_slab_spec
 
 
 def assemble_C_field(
@@ -109,8 +108,8 @@ def _assemble_C_field_sharded(
         ]
         return _assemble_C_field_local(local_materials, phase_local)
 
-    return jax.shard_map(
-        local, mesh=x_slab_mesh(n_devices),
+    return x_slab_shard_map(
+        local, n_devices,
         in_specs=(x_slab_spec(1), tuple(x_slab_spec(f.ndim) for f in field_sharded)),
         out_specs=x_slab_spec(5),
     )(phase_sharded, field_sharded)

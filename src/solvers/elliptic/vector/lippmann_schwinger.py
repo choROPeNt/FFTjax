@@ -5,14 +5,13 @@ import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on 
 from typing import Tuple
 from math import prod
 
-import jax
 import jax.numpy as jnp
 
 from operators.base import LinearOperator
 from jax.sharding import PartitionSpec as P
 
 from operators.fft_distributed import (
-    choose_device_count, pfft3d_flat, pifft3d_flat, shard_x_slabs, x_slab_mesh, x_slab_spec,
+    choose_device_count, pfft3d_flat, pifft3d_flat, shard_x_slabs, x_slab_shard_map, x_slab_spec,
 )
 from operators.general_functions import ddot42
 from operators.green import GreenOperatorBasic
@@ -133,8 +132,8 @@ def _solve_lippmann_schwinger_sharded(
         sigma_local = ddot42(C_local, eps_local)
         return eps_local, sigma_local, delta_local, converged
 
-    return jax.shard_map(
-        solve_local, mesh=x_slab_mesh(n_devices),
+    return x_slab_shard_map(
+        solve_local, n_devices,
         in_specs=(x_slab_spec(5), x_slab_spec(5), x_slab_spec(3)),
         out_specs=(x_slab_spec(3), x_slab_spec(3), x_slab_spec(3), P()),
     )(C_sharded, G_sharded, sg_sharded)

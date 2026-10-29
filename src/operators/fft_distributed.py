@@ -15,6 +15,8 @@ same ``axis_name``; complex in, complex out like ``jnp.fft.fftn``/``ifftn``.
 
 import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on TPU, no GPU prealloc)
 
+from typing import Any, Callable
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -32,6 +34,16 @@ def x_slab_mesh(n_devices: int) -> Mesh:
 def x_slab_spec(ndim: int) -> P:
     """PartitionSpec splitting the last (voxel) axis into contiguous x-slabs."""
     return P(*([None] * (ndim - 1)), AXIS)
+
+
+def x_slab_shard_map(f: Callable, n_devices: int, in_specs: Any, out_specs: Any) -> Callable[..., Any]:
+    """
+    ``jax.shard_map`` of ``f`` over ``x_slab_mesh(n_devices)``.
+
+    Typed here because jax.shard_map has no return annotation and checkers
+    infer its one-argument decorator form.
+    """
+    return jax.shard_map(f, mesh=x_slab_mesh(n_devices), in_specs=in_specs, out_specs=out_specs)
 
 
 def shard_x_slabs(field: jnp.ndarray, n_devices: int) -> jnp.ndarray:
@@ -89,9 +101,8 @@ def shard_voxel_tensor(build_local, xi_flat: jnp.ndarray, n_devices: int) -> jnp
     """
     xi = shard_x_slabs(xi_flat, n_devices)
     out_ndim = jax.eval_shape(build_local, xi_flat).ndim
-    return jax.shard_map(
-        build_local, mesh=x_slab_mesh(n_devices),
-        in_specs=x_slab_spec(xi.ndim), out_specs=x_slab_spec(out_ndim),
+    return x_slab_shard_map(
+        build_local, n_devices, in_specs=x_slab_spec(xi.ndim), out_specs=x_slab_spec(out_ndim),
     )(xi)
 
 

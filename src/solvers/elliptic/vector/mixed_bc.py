@@ -15,7 +15,7 @@ from jax.sharding import PartitionSpec as P
 
 from operators.base import LinearOperator
 from operators.fft_distributed import (
-    choose_device_count, pfft3d_flat, pifft3d_flat, shard_x_slabs, x_slab_mesh, x_slab_spec,
+    choose_device_count, pfft3d_flat, pifft3d_flat, shard_x_slabs, x_slab_shard_map, x_slab_spec,
 )
 from operators.general_functions import ddot42
 from operators.projection import Gamma0Operator
@@ -247,8 +247,8 @@ def _solve_mixed_bc_dc_identity_sharded(
         eps_bar_out_local = jax.lax.psum(jnp.sum(eps_local, axis=-1), "i") / Nv
         return eps_local, sigma_local, delta_local, eps_bar_out_local, converged
 
-    return jax.shard_map(
-        solve_local, mesh=x_slab_mesh(n_devices),
+    return x_slab_shard_map(
+        solve_local, n_devices,
         in_specs=(x_slab_spec(5), x_slab_spec(5)),
         out_specs=(x_slab_spec(3), x_slab_spec(3), x_slab_spec(3), P(), P()),
     )(C_sharded, G_sharded)

@@ -12,13 +12,12 @@ from typing import Tuple
 from functools import partial
 from math import prod
 
-import jax
 import jax.numpy as jnp
 from jax import jit, lax
 from jax.sharding import PartitionSpec as P
 
 from operators.fft_distributed import (
-    AXIS, choose_device_count, pfft3d_flat, pifft3d_flat, shard_x_slabs, x_slab_mesh, x_slab_spec,
+    AXIS, choose_device_count, pfft3d_flat, pifft3d_flat, shard_x_slabs, x_slab_shard_map, x_slab_spec,
 )
 from operators.green import nyquist_safe_xi
 from solvers.elliptic.vector.base import ElasticitySolver
@@ -255,8 +254,8 @@ def _solve_displacement_based_sharded(n, C_field, xi_flat, eps_bar, control, str
         eps_bar_out = eps_bar * (1.0 - control_arr) + deps_bar_free
         return eps, sigma, delta, eps_bar_out, converged
 
-    return jax.shard_map(
-        solve_local, mesh=x_slab_mesh(n_devices),
+    return x_slab_shard_map(
+        solve_local, n_devices,
         in_specs=(x_slab_spec(5), x_slab_spec(2), P()),
         out_specs=(x_slab_spec(3), x_slab_spec(3), x_slab_spec(3), P(), P()),
     )(C_field, xi_safe, C0_ref)
