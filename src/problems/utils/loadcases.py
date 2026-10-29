@@ -34,9 +34,10 @@ both readings are legitimate and they answer different questions:
       entry clamped to zero. Reading sigma_bar off case k gives column k of
       the effective stiffness directly.
   free_surfaces: true             -- the loaded component is strain-driven
-      and every surface that is not loaded is traction-free (see
+      and every other macroscopic stress, shear included, is zero (see
       free_surface_control). This is the *specimen-like* case: uniaxial
-      tension is free to contract laterally. For a pressure-sensitive
+      tension is free to contract laterally, and to shear wherever the
+      microstructure couples the two. For a pressure-sensitive
       matrix (drucker_prager) the difference is not cosmetic -- clamping
       the transverse directions confines the matrix and inflates the
       tension/compression yield asymmetry.
@@ -103,25 +104,22 @@ def free_surface_control(i: int, j: int) -> tuple[tuple[int, int, int], ...]:
     surface" case -- 1 marks a stress-controlled (traction-free, given a
     zero stress_bar) direction, 0 a strain-controlled one.
 
-    - Uniaxial (i == j): strain-controlled on the loaded diagonal entry,
-      stress-free on the other two normal directions, so the RVE contracts
-      laterally under axial tension instead of being confined. Shear stays
-      strain-controlled at zero -- a free shear direction would leave the
-      macroscopic rotation/shear undetermined rather than model anything.
-    - Shear (i != j): strain-controlled on the loaded shear pair, stress-free
-      on all three normal directions (every lateral surface free to expand or
-      contract, e.g. against plastic dilatancy); the other, non-loaded shear
-      pair stays strain-controlled at zero.
+    Only the driven pair (i, j)/(j, i) is strain-controlled; every other
+    component, normal and shear alike, is stress-controlled. Uniaxial tension
+    therefore contracts laterally instead of being confined, and shears
+    wherever the microstructure couples normal load into shear (any RVE that
+    is not orthotropic in the load frame). A shear case is free to dilate,
+    e.g. against plastic dilatancy, and to develop the other two shears.
+    Every macroscopic stress but the driven one comes out zero, which is what
+    a specimen test, or a reference code run with free surfaces, reports.
 
-    Same rule as benchmark/benchmark_2/pff_random_periodic.py's local
-    ``mixed_control`` -- that script predates this module and still carries
-    its own copy against its own LoadCase type.
+    A free shear leaves nothing undetermined: eps_bar is symmetric, so the
+    macroscopic rotation is never an unknown, and a stress-controlled shear
+    just solves for the eps_bar[i, j] that makes sigma_bar[i, j] vanish.
     """
-    if i == j:
-        diag = [1, 1, 1]
-        diag[i] = 0
-        return ((diag[0], 0, 0), (0, diag[1], 0), (0, 0, diag[2]))
-    return ((1, 0, 0), (0, 1, 0), (0, 0, 1))
+    control = [[1, 1, 1] for _ in range(3)]
+    control[i][j] = control[j][i] = 0
+    return tuple(tuple(row) for row in control)
 
 
 def cycle_gammas(gamma_max: float, n_load: int, n_unload: int, n_reload: int) -> np.ndarray:

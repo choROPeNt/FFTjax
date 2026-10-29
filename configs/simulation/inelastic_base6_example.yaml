@@ -38,9 +38,9 @@ inelastic:
     cases: base6
 
     # free_surfaces: derive each case's mixed-BC `control` mask from the
-    # component it drives -- loaded component strain-driven, every UNLOADED
-    # surface traction-free (uniaxial: the other two normals; shear: all three
-    # normals). This is what a single fixed `control` mask cannot express: the
+    # component it drives -- loaded component strain-driven, every OTHER
+    # macroscopic stress zero, normals and shears alike. This is what a single
+    # fixed `control` mask cannot express: the
     # mask for uniaxial_x is not the mask for uniaxial_y.
     #
     #   true  -- specimen-like. Uniaxial tension contracts laterally, so

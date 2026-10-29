@@ -64,10 +64,23 @@ def sv2sm(sv: jnp.ndarray, pairs: Tuple[Tuple[int, int], ...]) -> jnp.ndarray:
 
 
 def sm2sv(sm: jnp.ndarray, pairs: Tuple[Tuple[int, int], ...]) -> jnp.ndarray:
-    """(3, 3) -> (K,) stacked values at ``pairs`` only; K=0 (empty) if pairs is empty."""
+    """(3, 3) -> (K,) values at ``pairs``, the ADJOINT of sv2sm: sm[i, i] on the
+    diagonal, sm[i, j] + sm[j, i] off it. K=0 (empty) if pairs is empty.
+
+    Not sv2sm's inverse: sv2sm writes an off-diagonal unknown into both (i, j)
+    and (j, i), so the stress conjugate to it is sm[i, j] + sm[j, i]. Picking
+    sm[i, j] alone leaves every stress-controlled SHEAR row of the bordered
+    displacement-based operator at half its transpose (1.8e-2 relative
+    asymmetry on a 3^3 heterogeneous probe, 2e-16 with the sum), which
+    cg_solve does not tolerate. The equations solved are unchanged: residual,
+    RHS and preconditioner all go through this same map. The Lippmann-Schwinger
+    outer correction solves M x = sm2sv(resid) with M built through it too, so
+    its correction is unchanged as well; only its convergence norm now counts
+    a shear residual twice.
+    """
     if not pairs:
         return jnp.zeros((0,), dtype=sm.dtype)
-    return jnp.stack([sm[i, j] for i, j in pairs])
+    return jnp.stack([sm[i, j] if i == j else sm[i, j] + sm[j, i] for i, j in pairs])
 
 
 def _isotropic_stiffness(lam, mu) -> jnp.ndarray:
