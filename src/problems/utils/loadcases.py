@@ -1,53 +1,13 @@
 """
-Macroscopic load cases for a homogenization run -- the (driven component,
-strain path, macroscopic BC) triple that is the ONLY thing distinguishing
-one solve from the next when microstructure and materials are held fixed.
+Macroscopic load cases (driven component, strain path, BC) for running many
+cases on one microstructure from one config.
 
-Shared by scripts/simulation/solve_mechanics.py and solve_inelastic.py so a
-driver can run many load cases on one microstructure from one config and one
-process: the geometry read, the material assembly and the frequency grid are
-per-RVE, not per-case, and re-paying them once per case (as a shell loop over
-six near-identical YAML files does) is pure overhead -- as is maintaining six
-copies of everything the cases have in common.
-
-Pure config/bookkeeping logic (no solve happens here), so it isn't a
-problems/*.py solve driver itself -- see notes/TARGET_LAYOUT.md's problems/
-note -- but it's mechanics-domain vocabulary (Voigt components, eps_bar),
-not a generic cross-project utility either, hence problems/utils/ rather
-than plain utils/. A thermal problem's load cases (driven flux/gradient
-instead of strain) would get their own sibling module here, sharing this
-one's shape (resolve a ``loading:`` block into one or many cases) rather
-than its strain-tensor-specific internals.
-
-The six base cases
-------------------
-``BASE_SIX`` is the canonical set: three uniaxial (xx, yy, zz) and three
-shear (xy, xz, yz), ordered exactly like post.fields.to_voigt's Voigt index
-order (11, 22, 33, 12, 13, 23, Abaqus convention), so case k of a base-six
-sweep is column/row k of any effective 6x6 assembled from the results.
-
-What "base" means for the BC is a choice the config has to make, because
-both readings are legitimate and they answer different questions:
-
-  free_surfaces: false (default)  -- pure macroscopic strain BC, i.e. the
-      classic unit-strain cases. eps_bar is prescribed in full, every other
-      entry clamped to zero. Reading sigma_bar off case k gives column k of
-      the effective stiffness directly.
-  free_surfaces: true             -- the loaded component is strain-driven
-      and every other macroscopic stress, shear included, is zero (see
-      free_surface_control). This is the *specimen-like* case: uniaxial
-      tension is free to contract laterally, and to shear wherever the
-      microstructure couples the two. For a pressure-sensitive
-      matrix (drucker_prager) the difference is not cosmetic -- clamping
-      the transverse directions confines the matrix and inflates the
-      tension/compression yield asymmetry.
-
-Arbitrary load cases
---------------------
-A case is not restricted to the registry: any entry may spell out its own
-``component``, ``control``/``stress_bar`` and either the load/unload/reload
-cycle parameters or an explicit ``gammas`` path. The registry only supplies
-defaults for the six names that recur often enough to deserve one.
+``BASE_SIX``: uniaxial xx, yy, zz and shear xy, xz, yz, in Voigt order, so
+case k is column k of an effective 6x6. ``free_surfaces: false`` prescribes
+the full strain (unit-strain cases); ``true`` drives one component and keeps
+every other macroscopic stress at zero (specimen-like; for a
+pressure-sensitive matrix the difference matters). Any case may also spell
+out its own ``component``, ``control``/``stress_bar`` and path.
 """
 
 from __future__ import annotations
@@ -59,7 +19,6 @@ import numpy as np
 
 _AXIS = "xyz"
 
-# Ordered exactly like post.fields._VOIGT_IJ -- see the module docstring.
 BASE_COMPONENTS: dict[str, tuple[int, int]] = {
     "uniaxial_x": (0, 0),
     "uniaxial_y": (1, 1),
@@ -70,52 +29,36 @@ BASE_COMPONENTS: dict[str, tuple[int, int]] = {
 }
 BASE_SIX: tuple[str, ...] = tuple(BASE_COMPONENTS)
 
-# Voigt-label aliases ("xx", "xy", ...), so a config can name a case either way.
 _ALIASES: dict[str, str] = {
     _AXIS[i] + _AXIS[j]: name for name, (i, j) in BASE_COMPONENTS.items()
 }
 
-# Shorthands for the whole set, usable as `cases: base6`.
 _SET_SHORTHANDS = {"base6", "base_six", "all"}
 
 
 def voigt_label(i: int, j: int) -> str:
-    """(i, j) tensor index -> its xyz label, e.g. (0, 2) -> 'xz'."""
+    """``(0, 2) -> 'xz'``."""
     return _AXIS[i] + _AXIS[j]
 
 
 def strain_symbol(i: int, j: int) -> str:
-    """(i, j) tensor index -> its Greek macroscopic-strain print label, e.g.
-    (0, 1) -> 'εxy'. Generic formatting helper factored out of what used to
-    be per-case hardcoded strings in benchmark_1/benchmark_2's own load-case
-    tables -- see stress_symbol for its stress-side counterpart."""
+    """``(0, 1) -> 'εxy'``."""
     return f"ε{voigt_label(i, j)}"
 
 
 def stress_symbol(i: int, j: int) -> str:
-    """(i, j) tensor index -> its Greek macroscopic-stress print label, e.g.
-    (0, 1) -> 'σxy'."""
+    """``(0, 1) -> 'σxy'``."""
     return f"σ{voigt_label(i, j)}"
 
 
 def free_surface_control(i: int, j: int) -> tuple[tuple[int, int, int], ...]:
     """
-    Mixed-BC ``control`` mask for a "load this component, free every other
-    surface" case -- 1 marks a stress-controlled (traction-free, given a
-    zero stress_bar) direction, 0 a strain-controlled one.
+    ``control`` mask that strain-drives only (i, j)/(j, i); every other
+    component, shears included, is stress-controlled (traction-free with a
+    zero stress_bar).
 
-    Only the driven pair (i, j)/(j, i) is strain-controlled; every other
-    component, normal and shear alike, is stress-controlled. Uniaxial tension
-    therefore contracts laterally instead of being confined, and shears
-    wherever the microstructure couples normal load into shear (any RVE that
-    is not orthotropic in the load frame). A shear case is free to dilate,
-    e.g. against plastic dilatancy, and to develop the other two shears.
-    Every macroscopic stress but the driven one comes out zero, which is what
-    a specimen test, or a reference code run with free surfaces, reports.
-
-    A free shear leaves nothing undetermined: eps_bar is symmetric, so the
-    macroscopic rotation is never an unknown, and a stress-controlled shear
-    just solves for the eps_bar[i, j] that makes sigma_bar[i, j] vanish.
+    Free shears are well-posed: eps_bar is symmetric, so rotation is never an
+    unknown. They matter wherever the RVE couples normal load into shear.
     """
     control = [[1, 1, 1] for _ in range(3)]
     control[i][j] = control[j][i] = 0
@@ -123,14 +66,7 @@ def free_surface_control(i: int, j: int) -> tuple[tuple[int, int, int], ...]:
 
 
 def cycle_gammas(gamma_max: float, n_load: int, n_unload: int, n_reload: int) -> np.ndarray:
-    """
-    The load / unload / reload path 0 -> gamma_max -> -gamma_max -> gamma_max
-    in that many equal steps each, prefixed with the virgin gamma = 0 state.
-
-    Every path this module produces starts at 0.0, including an explicit
-    ``gammas`` list (0.0 is prepended if absent) -- callers rely on step 0
-    being the unloaded state.
-    """
+    """Path 0 -> gamma_max -> -gamma_max -> gamma_max in the given step counts, starting at 0."""
     load   = np.linspace(0.0, gamma_max, n_load + 1)[1:]
     unload = np.linspace(gamma_max, -gamma_max, n_unload + 1)[1:]
     reload = np.linspace(-gamma_max, gamma_max, n_reload + 1)[1:]
@@ -140,11 +76,8 @@ def cycle_gammas(gamma_max: float, n_load: int, n_unload: int, n_reload: int) ->
 @dataclass(frozen=True)
 class LoadCase:
     """
-    One macroscopic load path on a fixed microstructure.
-
-    ``gammas`` is the full applied path including the leading 0.0 virgin
-    state; ``control``/``stress_bar`` are the mixed-BC pair in
-    problems.mechanics's convention (None = pure strain BC).
+    One macroscopic load path; ``gammas`` starts at 0, ``control``/``stress_bar``
+    as in problems.mechanics (None = pure strain).
     """
     name:       str
     i:          int
@@ -155,7 +88,7 @@ class LoadCase:
 
     @property
     def label(self) -> str:
-        """xyz label of the driven component, e.g. 'xy'."""
+        """Label of the driven component, e.g. 'xy'."""
         return voigt_label(self.i, self.j)
 
     @property
@@ -164,16 +97,9 @@ class LoadCase:
 
     def eps_bar(self, gamma: float) -> np.ndarray:
         """
-        Macroscopic strain at path value ``gamma``, with ``gamma`` the
-        ENGINEERING measure in both cases:
-
-          normal (i == j)  eps_bar[i,i] = gamma
-          shear  (i != j)  eps_bar[i,j] = eps_bar[j,i] = gamma/2,
-                           i.e. engineering shear gamma_ij = 2 eps_ij
-
-        so "load to 5%" is one number that means the same size of load for
-        every case in a sweep, instead of 5% axial strain in one case and
-        2.5% in the next.
+        Macroscopic strain at ``gamma``, engineering measure: eps_ii = gamma,
+        or eps_ij = eps_ji = gamma/2, so one value means the same load size
+        in every case.
         """
         eps = np.zeros((3, 3))
         if self.i == self.j:
@@ -184,11 +110,7 @@ class LoadCase:
         return eps
 
     def describe(self, path: bool = True) -> str:
-        """
-        One-line summary. ``path=False`` drops the step count, for a caller
-        that takes only the peak gamma and owns the load path itself (see
-        scripts/simulation/solve_mechanics.py).
-        """
+        """One-line summary; ``path=False`` omits the step count."""
         bc = "pure strain"
         if self.control is not None:
             free = ", ".join(
@@ -232,36 +154,20 @@ def resolve_cases(
     stress_bar: Any = None,
 ) -> list[LoadCase]:
     """
-    Expand a ``loading`` config block into the list of load cases to run.
+    Load cases of a ``loading`` config block.
 
-    Parameters
-    ----------
-    lcfg : the ``loading`` mapping. Without a ``cases`` key this yields
-        exactly ONE case built from ``component``/``gamma_max``/``n_*`` --
-        i.e. every pre-existing single-case config resolves unchanged.
-        ``cases`` is either the shorthand ``base6`` or a list whose entries
-        are registry names (``shear_xy``, or its ``xy`` alias) and/or
-        mappings spelling a case out in full. Cycle parameters, ``control``
-        and ``stress_bar`` given at ``loading`` level are the defaults each
-        case inherits; anything in the case's own mapping overrides them,
-        and ``gammas: [...]`` replaces the cycle with an explicit path.
-    control, stress_bar : the run-level mixed BC (``inelastic.control`` /
-        ``inelastic.stress_bar``), used for any case that neither carries its
-        own nor asks for ``free_surfaces``.
+    Without ``cases`` the block itself is one case. ``cases`` is ``base6`` or
+    a list of names (``shear_xy`` or ``xy``) and/or mappings; loading-level
+    cycle parameters, ``control`` and ``stress_bar`` are defaults that a case
+    overrides, and ``gammas: [...]`` gives an explicit path. ``control`` and
+    ``stress_bar`` here are the run-level BC, used when a case has neither
+    its own nor ``free_surfaces``.
 
-    Raises
-    ------
-    ValueError : if a case drives a component that its own ``control`` marks
-        stress-controlled -- eps_bar is ignored on stress-controlled
-        directions, so such a case applies no load at all and every step is
-        the trivial eps = 0 state, which then fails to converge for a
-        confusing reason (the Newton criterion is relative to ||sigma||,
-        which is ~0) rather than reporting the config error it actually is.
+    Raises ValueError if a case marks its own driven component
+    stress-controlled: it would apply no load and fail to converge confusingly.
     """
     raw_cases = lcfg.get("cases")
     if raw_cases is None:
-        # No `cases` key: the loading block IS the one case, named after the
-        # component it drives -- every pre-existing config lands here.
         specs: list[Any] = [{"component": list(lcfg.get("component", [0, 1]))}]
     elif isinstance(raw_cases, str):
         if raw_cases not in _SET_SHORTHANDS:
@@ -280,11 +186,7 @@ def resolve_cases(
     seen: set[str] = set()
     for spec in specs:
         if isinstance(spec, str):
-            # A bare name is canonicalized ("xx" -> "uniaxial_x") so one
-            # physical case has one identity and one output path however it was
-            # spelled -- which is also what makes the duplicate check below
-            # catch `cases: [xx, uniaxial_x]`. A mapping's explicit `name` is
-            # the user's own label and is left exactly as written.
+            # Canonical names, so `[xx, uniaxial_x]` is caught as a duplicate.
             name, body = _ALIASES.get(spec, spec), {}
         elif isinstance(spec, dict):
             body = dict(spec)
@@ -305,9 +207,7 @@ def resolve_cases(
 
         i, j = _component_of(name, body)
 
-        # BC precedence, most specific first: the case's own control, else a
-        # per-case/loading-level `free_surfaces` derivation, else the run-level
-        # control (one fixed mask for every case), else pure strain.
+        # Precedence: own control, free_surfaces, run-level control, pure strain.
         free_surfaces = bool(body.get("free_surfaces", lcfg.get("free_surfaces", False)))
         if body.get("control") is not None:
             case_control = _as_control(body["control"])
@@ -316,10 +216,8 @@ def resolve_cases(
         else:
             case_control = _as_control(control)
 
-        # free_surfaces derives the control MASK only -- the target on those
-        # directions is still whatever the config says (a confining pressure
-        # is a perfectly ordinary thing to want on an otherwise "free"
-        # surface), defaulting to zero, i.e. traction-free.
+        # free_surfaces sets only the mask; the target stays configurable
+        # (e.g. a confining pressure) and defaults to zero.
         case_stress = _as_stress_bar(body.get("stress_bar", None))
         if case_stress is None:
             case_stress = _as_stress_bar(stress_bar)
@@ -355,11 +253,7 @@ def resolve_cases(
 
 
 def select_cases(cases: list[LoadCase], names: Sequence[str] | None) -> list[LoadCase]:
-    """
-    Filter resolved cases down to ``names`` (order follows the request, so a
-    SLURM array task or a rerun can pick one case out of a six-case config
-    without editing it). ``None`` keeps all of them.
-    """
+    """Cases named in ``names``, in that order (None keeps all)."""
     if not names:
         return cases
     by_name = {c.name: c for c in cases}

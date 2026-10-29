@@ -1,3 +1,5 @@
+"""Fourier-Galerkin elastic scheme (no reference medium)."""
+
 import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on TPU, no GPU prealloc)
 
 from typing import Tuple
@@ -21,52 +23,26 @@ def solve_fourier_galerkin(
     n_devices:       int | None = None,
 ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
-    Fourier-Galerkin elastic scheme (Vondrejc et al 2014; Lucarini, Upadhyay
-    & Segurado 2022, doi:10.1088/1361-651X/ac34e1, sec. 3.3, algorithm 5),
-    with mixed macroscopic strain/stress control (same paper, sec. 3.6,
-    Lucarini & Segurado 2019a) via solvers.elliptic.vector.mixed_bc.
-    solve_mixed_bc_dc_identity -- see that function's docstring for the
-    DC-bin-identity derivation. Passing a GalerkinProjector
-    (operators.galerkin) here instead of a GreenOperatorBasic/Willot
-    (operators.green) is what makes this the Fourier-Galerkin scheme rather
-    than the classical Krylov-based Lippmann-Schwinger one -- no reference
-    medium is involved anywhere in this call.
-
-    Unlike the pre-mixed-BC version of this function, this is no longer a
-    pure delegation to solve_lippmann_schwinger: solving directly for the
-    full field (rather than a correction around a fixed uniform eps0) is
-    needed to let a stress-controlled direction's macroscopic mean be a
-    genuine degree of freedom -- solve_mixed_bc_dc_identity implements that
-    shared core, used identically by solve_lippmann_schwinger_dc for the
-    reference-medium counterpart of this same scheme.
+    Fourier-Galerkin scheme (Vondrejc et al 2014; Lucarini, Upadhyay & Segurado
+    2022, alg. 5) with mixed strain/stress BC: ``solve_mixed_bc_dc_identity``
+    with a GalerkinProjector.
 
     Parameters
     ----------
-    n           : grid shape (nx, ny, nz)
-    C_field     : (3, 3, 3, 3, Nv)      per-voxel stiffness (or tangent)
-    galerkin_op : GalerkinProjector, already built for this grid
-                  (operators.galerkin.build_galerkin_projector)
-    eps_bar     : (3, 3)                prescribed macroscopic strain;
-                  entries where ``control == 1`` are ignored (solved for
-                  instead)
-    control     : (3, 3) 0/1 mask, 1 = stress-controlled, 0 = strain-controlled.
-                  None (default) = pure strain BC (all zero).
-    macro_stress_goal : (3, 3) or None  target macroscopic stress; only
-                  entries where ``control == 1`` are used. None = zeros.
-    toler_lin   : relative CG residual tolerance
-    maxiter     : maximum CG iterations
-    n_devices : caps the device count Gamma0Operator auto-detects for its
-                  domain decomposition -- None (default) uses whatever
-                  jax.local_device_count() reports.
+    n                 : grid shape (nx, ny, nz)
+    C_field           : (3, 3, 3, 3, Nv) stiffness or tangent
+    galerkin_op       : GalerkinProjector for this grid
+    eps_bar           : (3, 3) macroscopic strain; stress-controlled entries ignored
+    control           : (3, 3) 0/1 mask, 1 = stress-controlled (None = pure strain)
+    macro_stress_goal : (3, 3) target stress, stress-controlled entries only (None = 0)
+    toler_lin, maxiter: CG tolerance and iteration cap
+    n_devices         : device cap for domain decomposition (None = all)
 
     Returns
     -------
-    eps        : (3, 3, Nv)   updated local strain  ε = ε₀ + Δε
-    sigma      : (3, 3, Nv)   updated local stress  σ = C : ε
-    delta      : (3, 3, Nv)   strain correction     Δε
-    eps_bar_out: (3, 3)       macroscopic strain, with stress-controlled
-                 entries filled in by the solve
-    converged  : bool array   True if residual tolerance met
+    eps, sigma, delta : (3, 3, Nv) strain, stress, strain correction
+    eps_bar_out       : (3, 3) macroscopic strain, stress-controlled entries solved
+    converged         : bool
     """
     control = control if control is not None else _ZERO_CONTROL
     macro_stress_goal = jnp.zeros((3, 3)) if macro_stress_goal is None else macro_stress_goal
@@ -77,13 +53,7 @@ def solve_fourier_galerkin(
 
 
 class FourierGalerkinSolver(ElasticitySolver):
-    """
-    ElasticitySolver wrapping solve_fourier_galerkin: strain-based,
-    periodic, no reference medium, supports mixed strain/stress macroscopic
-    BC via ``control`` (same convention as DisplacementBasedSolver). Mirrors
-    LippmannSchwingerSolver's constructor except for the operator it's built
-    from -- see that class and operators.galerkin.GalerkinProjector.
-    """
+    """ElasticitySolver for ``solve_fourier_galerkin``; mixed BC via ``control``."""
 
     def __init__(
         self,

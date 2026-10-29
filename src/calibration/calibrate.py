@@ -1,40 +1,11 @@
 """
-Parameter calibration against a differentiable forward model: invert one (or
-a few) unknown parameters of an existing differentiable physical forward
-model against reference data. Two calibrators, for two different regimes:
+Calibrate parameters of a differentiable forward model against reference data.
 
-calibrate_adam    : first-order, any value_and_grad_fn (autodiff or a
-                    hand-supplied finite-difference gradient), scalar or
-                    array param -- the general-purpose default, but its
-                    fixed-magnitude Adam steps overshoot and oscillate
-                    around a well-conditioned minimum before the learning-
-                    rate schedule damps it out (see
-                    notebooks/inverse_calibration/lin-elastic_inverse-calibration.ipynb's
-                    own convergence plot for exactly this).
-calibrate_newton  : second-order, scalar param only, needs loss_fn itself
-                    (always differentiated twice via jax.grad, not a
-                    pluggable gradient source) -- converges in a handful of
-                    iterations with no oscillation at all on a smooth,
-                    locally-convex 1-D loss, since each step already
-                    accounts for curvature instead of taking a fixed-size
-                    step and hoping the schedule sorts it out. The common
-                    case for calibrating one physical constant.
-
-A sibling of learning/, not a member of it: learning.surrogates.GPSurrogate
-fits a statistical model to sparse (X, y) samples and interpolates between
-them, with no physical forward model involved. This instead inverts one
-unknown parameter of an existing differentiable physical forward model
-against real reference data -- a different problem (parameter estimation,
-not surrogate regression), sharing only the general "JAX autodiff" toolset,
-not any code, with learning/.
-
-calibrate_adam was factored out of that notebook's own calibration loop and
-its calibrate() comparison helper, which were the same optax optimizer/
-schedule/history bookkeeping hand-copied twice -- one always ran a fixed
-step budget, the other stopped early once a loss tolerance was reached; both
-are now the one `loss_tol` argument below. calibrate_newton was added
-alongside it once the Adam trajectory's oscillation turned out to be worth
-an actual fix rather than just a smaller learning rate.
+calibrate_adam   : first order, any gradient source, scalar or array; its
+                   fixed-size steps oscillate around the minimum until the
+                   schedule damps them
+calibrate_newton : second order, scalar only; converges in a few steps
+                   without oscillation on a smooth convex loss
 """
 
 from collections.abc import Callable
@@ -56,27 +27,21 @@ def calibrate_adam(
     print_every: int = 10,
 ) -> tuple[float, list[tuple[float, float]]]:
     """
+    Adam with exponential learning-rate decay.
+
     Parameters
     ----------
-    value_and_grad_fn : param -> (loss, grad), e.g.
-                         jax.jit(lambda p: (loss(p), jax.jacfwd(loss)(p)))
-    param_init        : initial parameter value (scalar or array)
-    max_steps         : hard cap on optimizer steps
-    loss_tol          : stop as soon as loss < loss_tol, without taking that
-                         step's update -- None (default) always runs the
-                         full max_steps, e.g. to inspect the whole
-                         convergence history rather than stop at a target
-    init_lr, transition_steps, decay_rate : optax.exponential_decay schedule
-                         feeding optax.adam -- this project's calibration
-                         notebook's own tuned values as the defaults
-    verbose           : print progress every print_every steps
-    print_every       : see verbose
+    value_and_grad_fn : param -> (loss, grad)
+    param_init        : initial value
+    max_steps         : step cap
+    loss_tol          : stop once loss < loss_tol (None = run all steps)
+    init_lr, transition_steps, decay_rate : decay schedule
+    verbose, print_every : progress output
 
     Returns
     -------
-    param   : float -- final calibrated parameter
-    history : list[(float, float)] -- (param, loss) at the start of every
-              step actually taken; len(history) is the iteration count
+    param   : final value
+    history : (param, loss) per step taken
     """
     schedule = optax.exponential_decay(
         init_value=init_lr, transition_steps=transition_steps, decay_rate=decay_rate,
@@ -109,38 +74,11 @@ def calibrate_newton(
     print_every: int = 5,
 ) -> tuple[float, list[tuple[float, float]]]:
     """
-    Scalar Newton's method: param -= grad(loss)(param) / hessian(loss)(param)
-    each step, both from jax.grad (differentiating loss_fn twice via
-    autodiff, not finite differences) -- exact in one step on an exact
-    quadratic, and a handful of steps on anything smooth and locally convex
-    near the minimum. No learning-rate schedule to tune, because there's no
-    fixed-size step to begin with: each step already accounts for the loss's
-    local curvature.
+    Scalar Newton: ``param -= grad / (hessian + damping)``, both by autodiff of loss_fn.
 
-    Only for a SCALAR param -- a vector Newton step needs the full Hessian
-    matrix and a linear solve, out of scope for what "simple" means here.
-    Reach for calibrate_adam (or a proper second-order optimizer, e.g.
-    optax's LBFGS) once there's more than one unknown.
-
-    Parameters
-    ----------
-    loss_fn   : param -> scalar loss (plain, not a value_and_grad_fn --
-                Newton needs curvature too, so this always differentiates
-                loss_fn itself via jax.grad twice rather than accepting a
-                pluggable gradient source the way calibrate_adam does)
-    param_init : initial parameter value (scalar)
-    max_steps : hard cap on Newton iterations
-    loss_tol  : stop as soon as loss < loss_tol, without taking that step's
-                update -- None (default) always runs the full max_steps
-    damping   : added to the Hessian before dividing (Levenberg-Marquardt
-                style) -- 0 (default) is pure Newton; raise it if the loss
-                is only weakly convex near the current point and pure
-                Newton's raw 1/hessian step overshoots
-    verbose, print_every : see calibrate_adam
-
-    Returns
-    -------
-    param, history -- same shape as calibrate_adam
+    Scalar only (a vector step needs the Hessian matrix); use calibrate_adam
+    or LBFGS for more unknowns. ``damping`` > 0 tames overshoot on a weakly
+    convex loss. Other arguments and returns as calibrate_adam.
     """
     grad_fn = jax.grad(loss_fn)
     hess_fn = jax.grad(grad_fn)

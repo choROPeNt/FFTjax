@@ -1,51 +1,10 @@
 """
-Thin wiring layer for the mechanical (elasticity) problem: pick a
-formulation, build C(x), pick a reference medium (lippmann_schwinger) or a
-mixed-BC control mask (displacement), solve, return the fields.
+Mechanical (elasticity) problem: build C(x), pick a formulation, solve.
 
-Scope of this first pass, matching what's actually built on the operators/
-and solvers/ stacks so far:
-- Reference-medium averaging (lippmann_schwinger only) is a plain arithmetic
-  mean of the materials' Lame parameters (matches what
-  notebooks/mechanics/lin-elastic_strain.ipynb already does by hand). This is a
-  placeholder for materialmodels/averaging.py's VoxelAveraging ABC, which
-  doesn't exist yet either -- swap it in here once built, this function's
-  signature shouldn't need to change.
-- Builds a solver (LippmannSchwingerSolver or DisplacementBasedSolver, both
-  ElasticitySolver) and calls .solve() -- not the plain solve_* functions --
-  so the ABC actually gets exercised by its real callers.
-- ``control`` (mixed macroscopic strain/stress BC) only has meaning for
-  formulation="displacement" -- lippmann_schwinger's reference-medium
-  approach can't do stress-controlled macroscopic directions, so a nonzero
-  control there raises a clear error rather than silently ignoring it.
-- One public entry point, ``solve_mechanics``: its ``stepping`` argument
-  picks a single full-eps_bar solve or a load-stepped one (Abaqus-*STATIC
-  style, via problems.incremental) -- it always returns list[IncrementResult]
-  regardless of ``stepping``, so callers (including a jax.vmap/jax.jit'd
-  one, see notebooks/mechanics/lin-elastic_strain_vmap.ipynb) have one consistent
-  return shape and don't need to special-case "single" against the two
-  load-stepped modes.
-
-``solve_displacement_based_nonlinear`` (bottom of this file) is a second,
-separate entry point: a Newton-outer/CG-inner driver for a nonlinear local
-constitutive law (e.g. materialmodels.inelastic.plasticity_j2.J2Plasticity),
-where the tangent depends on the unknown strain and can't be assembled once
-up front the way solve_mechanics's C_field is. It lives here rather than in
-solvers/ for the same reason problems.fracture's staggered loop does (see
-that module's docstring): it's an iterative scheme built by repeatedly
-calling solvers/ primitives (here, one linear CG solve per Newton
-iteration), not itself a reusable numerical algorithm the way
-solvers.krylov.cg.cg_solve is -- keeping it here keeps solvers/ to its usual
-habit (operate on prepared arrays, no outer-loop control flow of its own).
-Unlike solve_mechanics, it does NOT go through materialmodels.assembly
-(the caller's own ``local_update`` callable already resolves materials/phase
-into a per-voxel stress+tangent). It supports the same mixed strain/stress
-``control``/``stress_goal`` convention as solve_displacement_based, ported
-into the Newton loop: the macroscopic strain on stress-controlled
-directions is its own Newton unknown (``eps_bar_free``), accumulated across
-iterations separately from the fluctuation ``delta`` -- see
-solve_displacement_based_nonlinear's own docstring for why that separation
-matters.
+``solve_mechanics`` is the entry point (single or load-stepped, always a list
+of IncrementResult). ``solve_displacement_based_nonlinear`` is the
+Newton-CG driver for nonlinear local laws (e.g. plasticity); it takes the
+caller's ``local_update`` instead of assembling materials.
 """
 
 import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on TPU, no GPU prealloc)
@@ -90,53 +49,22 @@ def _solve_mechanics_step(
     maxiter:     int = 1000,
     n_devices: int | None = None,
 ) -> ElasticitySolution:
-    """
-    One mechanical equilibrium solve at a fixed macroscopic strain (no
-    load-stepping) -- the per-increment building block solve_mechanics
-    closes over as its ``solve_fn``. See solve_mechanics's docstring for
-    all parameters.
-    """
+    """One solve at a fixed macroscopic strain; parameters as ``solve_mechanics``."""
     control_nonzero = any(any(row) for row in control)
 
-    # n=n opts assemble_C_field into building C_field directly as x-slabs
-    # when n_devices resolves to >1, instead of materializing the full
-    # (3,3,3,3,Nv) tensor on one device first -- this project's single
-    # largest per-voxel array, and what OOMs first on a large grid
-    # regardless of formulation (see assemble_C_field's own docstring and
-    # benchmark/benchmark_3/elastic_solve.py's investigation). Every
-    # formulation below resolves the identical device count from this same
-    # (n, n_devices) pair via its own choose_device_count call, so this
-    # stays in lockstep with whichever solver consumes C_field next.
     C_field = assemble_C_field(materials, phase, n=n, n_devices=n_devices)
 
     if formulation == "lippmann_schwinger":
-        # Reference medium + Green's operator: see module docstring for why
-        # this isn't materialmodels/averaging.py yet. n_devices=n_devices
-        # shards green_op.G's own construction the same way C_field's is
-        # above -- an equally large (3,3,3,3,Nv) tensor that OOMed on its
-        # own once C_field no longer did (benchmark_3's weave grids).
         green_op = build_reference_green_operator(n, L, materials, scheme=scheme, n_devices=n_devices)
 
-        # Every branch here ultimately calls operators.projection.Gamma0Operator
-        # for its FFT-heavy inner apply, which auto-decomposes across
-        # jax.local_device_count() devices on its own -- n_devices only
-        # caps that auto-detection, it doesn't opt in/out of a separate
-        # formulation; on a single-device machine (n_devices=None, the
-        # default) this is the exact original single-device solve.
         if control_nonzero:
             solver = LippmannSchwingerMixedBCSolver(
                 n, green_op, control, toler_lin, maxiter, n_devices=n_devices,
             )
             return solver.solve(C_field, eps_bar, stress_goal)
         else:
-            # stress_goal here (if given) is in LippmannSchwingerMixedBCSolver's
-            # macroscopic (3,3) convention, NOT the plain LippmannSchwingerSolver's
-            # unrelated per-voxel (3,3,Nv) one -- forwarding it unconditionally
-            # would either silently mean something different or (differing shape)
-            # crash inside solve_lippmann_schwinger's broadcasting. With no active
-            # stress-controlled direction there's nothing for it to apply to
-            # anyway, so it's correctly ignored here, matching
-            # problems.fracture._staggered_loop's equivalent dispatch.
+            # Not forwarded: here stress_goal is the mixed-BC (3, 3) target,
+            # while LippmannSchwingerSolver expects a (3, 3, Nv) field.
             solver = LippmannSchwingerSolver(n, green_op, toler_lin, maxiter, n_devices=n_devices)
             return solver.solve(C_field, eps_bar)
     elif formulation == "displacement":
@@ -182,98 +110,37 @@ def solve_mechanics(
     on_increment: Callable[[IncrementResult, float], None] | None = None,
 ) -> list[IncrementResult]:
     """
-    Solve the mechanical equilibrium problem on a phase-labelled periodic
-    voxel grid under a prescribed macroscopic strain (and, for
-    formulation="displacement", optionally mixed strain/stress control),
-    optionally load-stepped up to eps_bar (Abaqus-*STATIC style).
+    Mechanical equilibrium on a phase-labelled periodic grid under a
+    macroscopic strain, optionally with mixed strain/stress control and load stepping.
 
     Parameters
     ----------
-    n, L        : grid shape and physical domain size
-    phase       : (Nv,) int      phase index per voxel (0-based)
-    materials   : list           each implements .elastic_stiffness_tensor(), .lam, .mu
-                  (see materialmodels.elastic.isotropic.LinearElasticIsotropic)
-    eps_bar     : (3, 3)         macroscopic strain at t=1 (the full load);
-                  entries where ``control == 1`` are ignored (solved for
-                  instead)
-    stepping    : "single"    -- one solve at the full eps_bar (default).
-                  "fixed"     -- equal load-fraction increments of size ``dt``
-                                 (problems.incremental.solve_fixed).
-                  "automatic" -- adaptive load-fraction step, grown on
-                                 convergence, cut back and retried on
-                                 non-convergence (problems.incremental.
-                                 solve_automatic; dt_init/_min/_max,
-                                 factor_inc/_dec, max_cutbacks, max_steps all
-                                 forwarded to it).
-    formulation : "lippmann_schwinger" (reference-medium; mixed BC via an
-                  outer iterative correction, Michel et al 1999, see
-                  solvers.elliptic.vector.lippmann_schwinger.
-                  solve_lippmann_schwinger_mixed_bc and notes/controll.md),
-                  "displacement" (true heterogeneous tangent, supports mixed
-                  BC via a bordered CG system), or "fourier_galerkin"
-                  (Vondrejc et al 2014 -- no reference medium, supports mixed
-                  BC via the DC-bin identity scheme, Lucarini & Segurado
-                  2019a; see operators.galerkin.GalerkinProjector and
-                  solvers.elliptic.vector.mixed_bc)
-    scheme      : "standard" (GreenOperatorBasic / GalerkinProjector, standard) or
-                  "rotated" (GreenOperatorWillot / GalerkinProjector, rotated)
-                  -- used by formulation="lippmann_schwinger" and "fourier_galerkin"
-    control     : (3, 3) 0/1 mask, 1 = stress-controlled, 0 = strain-controlled.
-                  None (default) = pure strain BC (all zero). Supported by
-                  all three formulations.
-    stress_goal : formulation-specific -- see ElasticitySolver.solve's
-                  docstring. lippmann_schwinger (control all-zero only):
-                  (3, 3, Nv) per-voxel target stress field or None (zero).
-                  Otherwise (any formulation with nonzero ``control``,
-                  displacement, fourier_galerkin): (3, 3) macroscopic target
-                  stress, used only on ``control``-marked entries.
-    toler_lin, maxiter : CG tolerance / iteration cap
-    n_devices : caps the device count every formulation auto-detects for
-                  domain-decomposing its FFT calls -- "lippmann_schwinger"
-                  (any control) and "fourier_galerkin" via
-                  operators.projection.Gamma0Operator, "displacement" via
-                  operators.fft_distributed.distributed_fft_flat (see
-                  solvers.elliptic.vector.displacement_based). None
-                  (default) uses whatever jax.local_device_count() reports;
-                  on a single-device machine (the common case) this is a
-                  no-op, the exact original single-device solve for every
-                  formulation.
+    n, L        : grid shape and domain size
+    phase       : (Nv,) int phase index
+    materials   : material per phase
+    eps_bar     : (3, 3) macroscopic strain at t = 1; stress-controlled entries ignored
+    stepping    : "single" (one solve), "fixed" (increments of ``dt``) or
+                  "automatic" (adaptive with cutbacks, see problems.incremental)
+    formulation : "lippmann_schwinger" (reference medium; mixed BC by outer
+                  correction), "displacement" (true tangent, bordered CG) or
+                  "fourier_galerkin" (no reference medium, DC-identity mixed BC)
+    scheme      : "standard" or "rotated" (lippmann_schwinger, fourier_galerkin)
+    control     : (3, 3) 0/1 mask, 1 = stress-controlled (None = pure strain)
+    stress_goal : (3, 3) macroscopic target with ``control``; (3, 3, Nv) field
+                  for pure-strain lippmann_schwinger
+    toler_lin, maxiter : CG tolerance and iteration cap
+    n_devices   : device cap for domain decomposition (None = all)
     dt, dt_init, dt_min, dt_max, factor_inc, factor_dec, max_cutbacks, max_steps :
-                  load-stepping controls, forwarded to solve_fixed/
-                  solve_automatic -- see problems.incremental. ``dt`` is
-                  required for stepping="fixed"; the rest are only used by
-                  stepping="automatic".
-    writer        : if given, gets one write_increment(step, fields, time=t)
-                  call per *accepted* increment (never for a failed cutback
-                  attempt -- see problems.incremental's on_increment docs) --
-                  strain/stress/von_mises/displacement, plus phase (and
-                  orientation, if given). This is the only part of this
-                  function that knows about XDMF/HDF5 output; the caller
-                  still owns opening/closing the writer (its file path is a
-                  script/config concern, not this problem-wiring layer's).
-    orientation   : (3, Nv) float, only used for the ``writer`` output
-                  (constant across increments); pass None to omit it from
-                  the fields.
-    on_increment  : an additional, caller-supplied callback
-                  ``(result, write_time) -> None`` invoked once per accepted
-                  increment (after the writer, if any) -- e.g. a print/log
-                  callback, so progress is reported live as each increment
-                  converges rather than only after the whole solve returns.
-                  ``write_time`` is the wall-clock seconds spent in this
-                  function's own post-processing + write_increment call (0.0
-                  if ``writer`` is None) -- kept separate from
-                  ``result.wall_time`` (which is the solve alone, measured
-                  in problems.incremental) so a caller can tell solve cost
-                  and write cost apart instead of only seeing their sum.
+                  load-stepping controls (``dt`` required for "fixed")
+    writer      : IncrementalWriter, gets strain/stress/von_mises/displacement/
+                  phase (and orientation) per accepted increment
+    orientation : (3, Nv) written with the fields if given
+    on_increment: callback ``(result, write_time)`` per accepted increment;
+                  write_time is kept separate from result.wall_time (solve only)
 
     Returns
     -------
-    list[IncrementResult] -- always a list, even for stepping="single" (one
-    element, t=1.0), so callers have one consistent return shape regardless
-    of the stepping choice. Each element's ``.solution`` is an
-    ElasticitySolution; its ``.eps_bar`` is None unless
-    formulation="displacement", in which case it's the macroscopic strain
-    with any stress-controlled entries filled in.
+    list[IncrementResult], one per increment; ``.solution`` is an ElasticitySolution
     """
     control = control if control is not None else _ZERO_CONTROL
 
@@ -293,14 +160,8 @@ def solve_mechanics(
             eps_grid   = field_to_grid(sol.eps, n)
             sigma_grid = field_to_grid(sol.sigma, n)
             sigma_vm   = von_mises(sigma_grid)
-            # sol.eps_bar (displacement formulation only) is the *solved*
-            # macroscopic strain -- stress-controlled entries filled in with
-            # their actual result, e.g. Poisson contraction under a free
-            # lateral surface. The prescribed eps_bar has zeros there instead,
-            # so falling back to it would silently drop that contraction from
-            # the displacement field's macroscopic part (sol.eps itself is
-            # unaffected -- the solver embeds the true mean directly in its
-            # DC frequency mode, so stress/modulus are correct either way).
+            # The solved eps_bar, not the prescribed one: that has zeros on
+            # stress-controlled entries and would drop e.g. Poisson contraction.
             eps_bar_u  = sol.eps_bar if sol.eps_bar is not None else result.t * eps_bar
             u_grid     = compute_displacement(sol.eps, eps_bar_u, n, L)
             fields = {
@@ -359,112 +220,44 @@ def solve_displacement_based_nonlinear(
     n_devices:       int | None = None,
 ):
     """
-    Newton-outer / CG-inner solve for a nonlinear local constitutive law:
-    div(sigma(eps)) = 0 on a periodic voxel grid, prescribed macroscopic
-    strain ``eps_bar``, optionally with mixed strain/stress macroscopic BC
-    via ``control``/``stress_goal`` (same convention as
-    solve_displacement_based); ``control`` omitted or all-zero (default) is
-    pure strain BC.
+    Newton-CG solve of div(sigma(eps)) = 0 for a nonlinear local law, with
+    optional mixed strain/stress BC (as solve_displacement_based).
 
-    Same FFT-based grad/div machinery as solve_displacement_based (frequency
-    grid, Nyquist-safe xi, strain-from-fluctuation via the DC-bin trick),
-    reused directly rather than re-derived, to avoid a second, possibly
-    inconsistent implementation of the same operator. The difference is what
-    drives each linear CG solve: solve_displacement_based solves once
-    against a FIXED C_field; this solves repeatedly, at each outer (Newton)
-    iteration evaluating the actual nonlinear stress and its tangent at the
-    CURRENT trial strain via ``local_update``, using CG only for the
-    *linearized correction* -- true Newton, not a fixed-point/secant scheme.
-    Mixed BC folds in the same way solve_displacement_based's bordered
-    system does: the CG unknown at each Newton iteration is
-    ``pack(du, sv)`` (fluctuation correction, macroscopic-stress-controlled
-    strain correction), solved jointly against the current tangent.
-
-    ``local_update(eps_field, state) -> (sigma_field, C_tan_field, new_state)``
-    is any per-voxel nonlinear stress/tangent/state map, already
-    vmapped/materials-resolved by the caller (e.g. a per-phase combination of
-    materialmodels.inelastic.plasticity_j2.J2Plasticity.stress_and_tangent_field
-    for a plastic phase and a plain einsum against a constant elastic C for
-    others -- see notebooks/mechanics/in-elastic_J2.ipynb, section 4). ``state`` is
-    caller-defined; this driver only carries it from iteration to iteration.
+    Each Newton iteration evaluates stress and tangent at the current strain
+    via ``local_update`` and solves the linearized correction by CG (true
+    Newton). With mixed BC the CG unknown is ``pack(du, sv)``.
 
     Parameters
     ----------
-    n            : grid shape (nx, ny, nz)
-    xi_flat      : (3, Nv)  angular-frequency grid (operators.green.build_freq_grid)
-    eps_bar      : (3, 3)   prescribed macroscopic strain; entries where
-                   ``control == 1`` are ignored (solved for instead)
-    local_update : eps_field (3,3,Nv), state -> (sigma_field (3,3,Nv),
-                   C_tan_field (3,3,3,3,Nv), new_state)
-    state_init   : initial per-voxel state (caller-defined; e.g. (eps_p, alpha)
-                   from the end of the previous load increment)
-    toler_lin, maxiter_lin : CG tolerance/cap for each Newton iteration's
-                   linearized correction
-    toler_nr, maxiter_nr   : Newton relative-residual tolerance and iteration cap
-    delta_init   : (3,3,Nv) or None -- initial strain-fluctuation guess (i.e.
-                   eps - eps_bar broadcast). None starts from zero fluctuation
-                   (a uniform-strain guess) -- fine for a single, isolated
-                   solve, but a genuinely bad starting point once far enough
-                   into load-stepping that the true fluctuation field is
-                   large (e.g. deep in a plastic regime): Newton then needs
-                   many more iterations, or fails to converge in maxiter_nr,
-                   purely from a poor initial guess, not a solver defect.
-                   Load-stepping callers should warm-start each step with the
-                   PREVIOUS step's converged full strain field minus this
-                   step's new eps_bar broadcast -- see
-                   notebooks/mechanics/in-elastic_J2.ipynb, section 4, for the pattern.
-                   Projected to zero mean internally regardless of what's
-                   passed in (see below) -- the macroscopic strain is always
-                   carried by eps0 + eps_bar_free, never by delta.
-    C0           : (3,3,3,3) or None -- fixed reference stiffness for the CG
-                   preconditioner; None re-derives it from the CURRENT tangent
-                   field every Newton iteration (voxel-mean of C_tan), matching
-                   solve_displacement_based's default. Passing a fixed elastic
-                   C0 avoids rebuilding/inverting the preconditioner each
-                   iteration -- standard practice for FFT-based Newton-Krylov
-                   plasticity, not yet benchmarked either way in this project.
-    control      : (3, 3) 0/1 mask, 1 = stress-controlled, 0 = strain-controlled.
-                   None (default) = pure strain BC (all zero), reproducing
-                   this function's original behavior exactly -- every
-                   pack/unpack/sv helper below degenerates to a no-op when
-                   there are no active (i, j) pairs, so this is a strict
-                   superset of the pure-strain code, not a separate path.
-    stress_goal  : (3, 3) macroscopic target stress; only entries where
-                   ``control == 1`` are used. None = zeros.
-    eps_bar_free_init : (3, 3) or None -- initial guess for the macroscopic
-                   strain correction on stress-controlled directions (i.e.
-                   the ``sv``/``deps_bar_free`` unknown, accumulated across
-                   Newton iterations the same way ``delta`` accumulates its
-                   own correction -- see below). None starts from zero.
-                   Warm-starting this across load steps is the mixed-BC
-                   analogue of ``delta_init`` (e.g. the previous, smaller
-                   load level's converged lateral contraction is a much
-                   better starting guess than 0 for the next level).
-    n_devices  : caps the device count every FFT call in this driver
-                   auto-detects for domain decomposition (see
-                   operators.fft_distributed.distributed_fft_flat, same
-                   mechanism solve_displacement_based uses) -- None
-                   (default) uses whatever jax.local_device_count() reports;
-                   on a single-device machine this is a no-op, the exact
-                   original single-device solve. ``local_update`` itself
-                   needs no changes either way -- it's already a per-voxel
-                   map with no cross-voxel reduction.
+    n            : grid shape
+    xi_flat      : (3, Nv) frequencies
+    eps_bar      : (3, 3) macroscopic strain; stress-controlled entries ignored
+    local_update : (eps_field, state) -> (sigma_field, C_tan_field, new_state)
+    state_init   : state at the last converged increment
+    toler_lin, maxiter_lin : CG tolerance and cap per Newton iteration
+    toler_nr, maxiter_nr   : Newton relative tolerance and cap
+    C0           : (3, 3, 3, 3) fixed preconditioner stiffness; None = mean
+                   of the current tangent each iteration
+    delta_init   : (3, 3, Nv) initial fluctuation; warm-start load steps with
+                   the previous converged strain minus the new eps_bar (a zero
+                   start deep in plasticity can fail to converge)
+    control      : (3, 3) 0/1 mask, 1 = stress-controlled (None = pure strain)
+    stress_goal  : (3, 3) target stress, stress-controlled entries only (None = 0)
+    eps_bar_free_init : (3, 3) initial stress-controlled strain correction,
+                   for warm starts like delta_init
+    n_devices    : device cap for the FFTs (None = all)
 
     Returns
     -------
-    eps       : (3, 3, Nv)
-    sigma     : (3, 3, Nv)
-    state     : final per-voxel state
-    converged : bool -- True if the Newton residual met toler_nr within maxiter_nr
-    n_iter    : int  -- Newton iterations actually run
+    eps, sigma : (3, 3, Nv)
+    state      : final state (the last converged one if not converged)
+    converged  : bool
+    n_iter     : Newton iterations run
 
-    The resolved macroscopic strain (only meaningful when ``control`` has
-    active entries) is recoverable as ``jnp.mean(eps, axis=-1)`` -- not
-    returned separately, to keep this function's return signature identical
-    for every existing pure-strain caller.
+    The solved macroscopic strain is ``jnp.mean(eps, axis=-1)``.
     """
     Nv = prod(n)
-    iq = 1j * nyquist_safe_xi(xi_flat, n)  # (3, Nv)
+    iq = 1j * nyquist_safe_xi(xi_flat, n)
 
     control = control if control is not None else _ZERO_CONTROL
     pairs = _active_pairs(control)
@@ -478,27 +271,18 @@ def solve_displacement_based_nonlinear(
         return distributed_ifft_flat(x, n, n_devices=n_devices)
 
     def div_of(sigma_field):
-        """div(sigma), (3,3,Nv) -> (3,Nv)."""
+        """div(sigma): (3, 3, Nv) -> (3, Nv)."""
         sigma_hat = fft_(sigma_field)
         return ifft_(jnp.einsum("ijm,jm->im", sigma_hat, iq))
 
     def strain_from_correction(dU):
-        """Pure-fluctuation strain from a displacement-like unknown -- zero
-        mean (DC bin) unconditionally. Used to extract delta's own update
-        from a Newton correction's du block: the macroscopic-strain update
-        (mixed BC) is carried entirely by eps_bar_free instead (see
-        strain_from_u below), so this stays exactly as before regardless of
-        whether control is active -- delta's zero-mean invariant is
-        untouched by turning mixed BC on."""
+        """Zero-mean symmetric gradient of dU; the mean is carried by eps_bar_free."""
         dU_hat   = fft_(dU)
         grad_hat = jnp.einsum("im,jm->ijm", dU_hat, iq)
         eps_hat  = 0.5 * (grad_hat + jnp.transpose(grad_hat, (1, 0, 2)))
         eps_hat  = eps_hat.at[:, :, 0].set(0.0)
         return ifft_(eps_hat)
 
-    # ── mixed-BC bookkeeping, same convention as solve_displacement_based
-    #    (shared implementation, see solvers.elliptic.vector.mixed_bc) --
-    #    pairs=() (pure strain) makes every one of these a no-op.
     sv2sm = partial(_sv2sm, pairs=pairs)
     sm2sv = partial(_sm2sv, pairs=pairs)
 
@@ -511,12 +295,7 @@ def solve_displacement_based_nonlinear(
         return jnp.concatenate([du.reshape(-1), sv])
 
     def strain_from_u(du, deps_bar_free):
-        """Like strain_from_correction, but embeds deps_bar_free into the DC
-        bin instead of zeroing it -- used only inside a Newton iteration's
-        own linearized CG sub-solve, where the fluctuation and macroscopic
-        corrections are coupled through the same tangent and must be solved
-        for jointly. Reduces to strain_from_correction exactly when
-        deps_bar_free is zero (in particular whenever pairs=())."""
+        """Symmetric gradient of du with ``deps_bar_free`` in the DC bin (inside the CG solve)."""
         du_hat   = fft_(du)
         grad_hat = jnp.einsum("im,jm->ijm", du_hat, iq)
         eps_hat  = 0.5 * (grad_hat + jnp.transpose(grad_hat, (1, 0, 2)))
@@ -526,19 +305,9 @@ def solve_displacement_based_nonlinear(
     eps0  = jnp.ones((3, 3, Nv)) * (eps_bar * (1.0 - control_arr))[:, :, None]
     delta = jnp.zeros((3, 3, Nv)) if delta_init is None else delta_init
     eps_bar_free = jnp.zeros((3, 3), dtype=eps_bar.dtype) if eps_bar_free_init is None else eps_bar_free_init
-    # The macroscopic strain is carried entirely by eps0 (strain-controlled
-    # directions) + eps_bar_free (stress-controlled directions, solved for);
-    # delta must be a zero-mean fluctuation on top of that, or the true
-    # average strain silently drifts away from eps_bar. Newton's own
-    # corrections are always zero-mean by construction (strain_from_correction
-    # zeros the DC bin below), but a caller-supplied delta_init has no such
-    # guarantee -- e.g. a naive load-stepping warm start using the previous
-    # step's full field minus THIS step's new baseline has a nonzero mean
-    # whenever eps_bar changed, and in the worst case that alone can satisfy
-    # div(sigma)=0 trivially (e.g. at eps=0) well short of the actual target
-    # strain, reporting false convergence. Project unconditionally rather
-    # than trusting the caller to have gotten this right. jit-wrapped for the
-    # same reason as _residual/_cg_correction below -- see that comment.
+
+    # delta must have zero mean or the average strain drifts from eps_bar; a
+    # caller's warm start often doesn't, and can even fake convergence at eps = 0.
     @jit
     def _zero_mean_strain(eps_field):
         eps_hat = fft_(eps_field)
@@ -550,27 +319,15 @@ def solve_displacement_based_nonlinear(
     converged = False
     n_iter = 0
 
-    # Every nested jax.pmap call inside fft_/ifft_ (n_devices > 1) needs to be
-    # reached through tracers from an enclosing jax.jit, not concrete,
-    # already-device-committed arrays -- true of every OTHER distributed
-    # solver in this project (solve_displacement_based, solve_thermal_conduction,
-    # solve_damage_helmholtz_cg, all @jax.jit-wrapped as a whole), but this
-    # driver's outer Newton loop needs real Python control flow (the toler_nr
-    # early-exit `break` below) and so can't be jit-compiled as one piece.
-    # Pushing jit down to just the two FFT-heavy per-iteration pieces -- the
-    # residual evaluation and the CG correction -- gives pmap the trace
-    # boundary it needs without touching the outer loop's control flow.
-    # Reproduces and fixes a real 2-GPU failure: a bare eager jax.pmap call
-    # here raises "Sharding passed to jit does not match the sharding on the
-    # respective arg" against JAX's default multi-device mesh, since the
-    # array flowing into it is already committed to a (replicated) sharding
-    # rather than an abstract jit tracer pmap can shard itself.
+    # The outer loop needs Python control flow, so jit wraps only the
+    # FFT-heavy pieces: an eager pmap on committed arrays failed on 2 GPUs
+    # ("Sharding passed to jit does not match").
     @jit
     def _residual(eps_k, state):
         sigma_k, C_tan_k, new_state = local_update(eps_k, state)
-        residual_div   = div_of(sigma_k)                   # (3, Nv) -- want 0
-        sigma_sum      = jnp.real(fft_(sigma_k)[:, :, 0])   # DC bin = sum over voxels
-        residual_extra = sm2sv(sigma_sum) - Nv * sm2sv(stress_goal)  # want 0
+        residual_div   = div_of(sigma_k)
+        sigma_sum      = jnp.real(fft_(sigma_k)[:, :, 0])
+        residual_extra = sm2sv(sigma_sum) - Nv * sm2sv(stress_goal)
         resid_norm = jnp.sqrt(jnp.sum(residual_div ** 2) + jnp.sum(residual_extra ** 2))
         ref_norm   = jnp.linalg.norm(sigma_k) + 1e-30
         return sigma_k, C_tan_k, new_state, residual_div, residual_extra, resid_norm, ref_norm
@@ -583,22 +340,9 @@ def solve_displacement_based_nonlinear(
             sigma_trial = jnp.einsum("ijklm,klm->ijm", C_tan_k, eps_trial)
             sigma_hat   = fft_(sigma_trial)
             div_flat    = ifft_(jnp.einsum("ijm,jm->im", sigma_hat, iq))
-            # Negated, exactly as solve_displacement_based's A_op does it --
-            # the minus is what makes the bordered operator SYMMETRIC, not a
-            # convention that can be re-derived per solver. div_of is -B^H
-            # (the symmetric-gradient's adjoint, up to sign), so the du row's
-            # coupling to sv is -B^H C S while the sv row's coupling to du is
-            # +/- S^H C B; only the negated form is that block's transpose.
-            # Unnegated, the operator is asymmetric (2e-1 relative on a 4^3
-            # test grid, against 2e-16 negated) and its symmetric part gains
-            # one positive eigenvalue per stress-controlled pair, i.e. turns
-            # indefinite -- both of the assumptions cg_solve rests on. The
-            # SOLUTION is unaffected either way (negating a row together with
-            # its RHS entry is an identity, see bb below), so this is purely
-            # about whether CG can find it: unnegated, check 6's load ramp
-            # diverges outright at toler_lin=1e-8 (sigma33 -> -4.8e3 after 50
-            # Newton iterations) and only finishes at 1e-6/300; negated, the
-            # same ramp converges at 1e-8 in 6 Newton iterations.
+            # Negated so the bordered operator is symmetric (div is minus the
+            # gradient's adjoint). Unnegated it is asymmetric and indefinite,
+            # and check 6's load ramp diverges; the solution is the same.
             extra_out   = -sm2sv(jnp.real(sigma_hat[:, :, 0]))
             return pack(div_flat, extra_out)
 
@@ -608,12 +352,6 @@ def solve_displacement_based_nonlinear(
         K0_hat  = jnp.where(null_pt[None, None, :], jnp.eye(3)[:, :, None], K0_hat)
         K0_inv  = jnp.moveaxis(jnp.linalg.inv(jnp.moveaxis(K0_hat, -1, 0)), 0, -1)
 
-        # "extra" block preconditioner: self-coupling of the macroscopic-
-        # strain unknowns at the reference medium, sign-matched to A_op's
-        # extra_out above (same as solve_displacement_based's own P_extra) --
-        # keeping M positive definite against a negative definite A, which is
-        # the pairing that makes preconditioned CG on this system equivalent
-        # to CG on an SPD one.
         if pairs:
             basis   = jnp.eye(len(pairs), dtype=eps_bar.dtype)
             P_extra = jnp.stack([
@@ -632,12 +370,6 @@ def solve_displacement_based_nonlinear(
         x0 = jnp.zeros_like(bb)
         x_flat, cg_converged = cg_solve(A_op, bb, x0, toler_lin, maxiter_lin, M=M)
 
-        # Folded in here (rather than left for the caller, as the pre-fix
-        # code did) so this FFT call also runs inside this jit trace: du_sol's
-        # symmetric gradient IS delta's own update (strain_from_correction),
-        # same as A_op's own eps_trial above; sv_sol is the macroscopic-strain
-        # correction, applied by the caller via sv2sm (that part has no FFT
-        # in it, safe to stay outside).
         du_sol, sv_sol = unpack(x_flat)
         delta_update = strain_from_correction(du_sol)
         return delta_update, sv_sol, cg_converged
@@ -656,39 +388,16 @@ def solve_displacement_based_nonlinear(
             state = new_state
             break
 
-        # The extra block enters as +residual_extra, not -: A_op's extra row
-        # is negated (see above), so its RHS is negated with it, which leaves
-        # the equation it encodes -- mean(sigma_k + C_tan : deps) = stress_goal
-        # -- exactly as it was.
+        # +residual_extra: the extra row of A_op is negated, so its RHS is too.
         bb = pack((-residual_div).reshape(-1), residual_extra)
         delta_update, sv_sol, _cg_converged = _cg_correction(C_tan_k, bb)
 
         delta = delta + delta_update
         eps_bar_free = eps_bar_free + sv2sm(sv_sol)
-        # ``state`` is deliberately NOT advanced here. It is the state at the
-        # last CONVERGED load increment, and a return mapping is defined
-        # relative to exactly that -- it must stay frozen for every Newton
-        # iteration of this increment, with only ``delta``/``eps_bar_free``
-        # (the unknowns) moving. Advancing it per iteration instead makes
-        # each iteration's return start from the previous iterate's
-        # already-updated plastic strain, so plastic flow ratchets up once
-        # per iteration and sigma drifts under Newton's feet. Hardening
-        # masks it -- the drift self-limits as sigma_y grows, so the residual
-        # still falls, just to a stalled ~1e-7 floor instead of ~1e-10, at a
-        # fixed ~10 iterations per step regardless of the load. Push the load
-        # far enough (a confined DP matrix past eps_11 ~ 0.03) and it stops
-        # being masked: Newton descends about five iterations, turns around
-        # and diverges geometrically to a garbage fixed point, with the inner
-        # CG reporting success throughout and the step size making no
-        # difference. Verified on a 152^3 tangled-fibre RVE -- freezing state
-        # here took that step from divergence to convergence in 8 iterations,
-        # and cut every earlier step from ~10 to ~6 (see
-        # test/test_problems_mechanics_nonlinear.py, check 4).
+        # ``state`` stays at the last converged increment: the return mapping
+        # is defined relative to it. Advancing it per iteration ratchets
+        # plastic flow; on a 152^3 RVE that made Newton diverge (check 4).
     else:
-        # loop exhausted maxiter_nr without an early break -- converged stays
-        # False and ``state`` is still the last converged increment's, so a
-        # caller that ignores the flag resumes from a consistent state rather
-        # than from a half-converged iterate's.
         pass
 
     eps_bar_free_bcast = jnp.ones((3, 3, Nv)) * eps_bar_free[:, :, None]

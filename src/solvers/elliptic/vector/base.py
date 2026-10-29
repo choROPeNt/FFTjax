@@ -1,6 +1,4 @@
-"""
-Abstract elasticity-solver interface for solvers/elliptic/vector/.
-"""
+"""Abstract elasticity-solver interface."""
 
 from __future__ import annotations
 
@@ -12,13 +10,7 @@ from solvers.solution import ElasticitySolution
 
 
 class ElasticitySolver(ABC):
-    """
-    Common interface for elasticity solvers (Lippmann-Schwinger,
-    displacement-based, ...). Formulation-specific setup (reference-medium
-    Green's operator, boundary conditions, preconditioner, ...) belongs in
-    each concrete solver's ``__init__``; ``solve`` takes only what's common
-    to every formulation.
-    """
+    """Elasticity solver; formulation-specific setup goes in ``__init__``."""
 
     @abstractmethod
     def solve(
@@ -28,12 +20,10 @@ class ElasticitySolver(ABC):
         stress_goal: jnp.ndarray | None = None,
     ) -> ElasticitySolution:
         """
-        ``stress_goal``'s shape and meaning are formulation-specific -- see
-        each concrete solver: ``LippmannSchwingerSolver`` (pure strain BC
-        only, no ``control``) takes a per-voxel ``(3, 3, Nv)`` target stress
-        field (None = zero); ``DisplacementBasedSolver``,
-        ``FourierGalerkinSolver``, and ``LippmannSchwingerMixedBCSolver``
-        take a macroscopic ``(3, 3)`` target, used only on the entries their
-        ``control`` marks stress-controlled.
+        Solve for one macroscopic load.
+
+        ``stress_goal`` differs by solver: (3, 3, Nv) field for
+        LippmannSchwingerSolver, (3, 3) macroscopic target (stress-controlled
+        entries only) for the mixed-BC solvers.
         """
         ...

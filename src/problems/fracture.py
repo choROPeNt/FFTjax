@@ -1,33 +1,9 @@
 """
-Wiring layer AND staggered driver for the fracture problem: mechanics +
-AT2 phase-field damage on a phase-labelled periodic voxel grid, for one
-prescribed macroscopic strain (one time increment).
+Fracture problem: mechanics plus AT2 phase-field damage, solved by a
+staggered loop for one prescribed macroscopic strain (one increment).
 
-The staggered fixed-point loop lives here rather than in solvers/ -- it's
-not itself a reusable numerical algorithm the way solvers.krylov.cg.cg_solve
-or solve_lippmann_schwinger are; it's specific composition of *this*
-problem's physics choices (AT2 degradation, Amor split, hybrid
-irreversibility). Keeping it here keeps solvers/ to its usual habit
-(operate on prepared C_field/elastic_op/xi_flat arrays, no materialmodels
-imports, no knowledge of "which degradation law" or "which energy split")
-and keeps materialmodels/ imports confined to the one layer that's already
-allowed to know about them.
-
-Scope of this first pass, matching what's actually built on the
-materialmodels/ and solvers/ stacks so far:
-- Amor driving-force split, AT2 degradation, hybrid irreversibility --
-  the two single-notch-plate benchmarks' scheme (Schneider & Kaestner 2025,
-  doi:10.1111/ffe.14553). Gc may be homogeneous (a scalar, or a uniform
-  per-material gather) or heterogeneous (a genuinely varying per-voxel
-  field); solvers.elliptic.scalar.solve_damage_helmholtz_cg takes either
-  (scalar: Gc*lap(d); field: div(Gc grad d)).
-- Damage/history (d, H) are carried across increments by the *caller*
-  (this function takes d_init/H_init and returns d/H, it doesn't own the
-  time-stepping loop) -- same division of responsibility as solve_mechanics
-  not owning load-stepping either.
-- ``control`` (mixed macroscopic strain/stress BC) only has meaning for
-  formulation="displacement", mirroring problems/mechanics.py -- see that
-  module's docstring for why lippmann_schwinger can't do it.
+Amor split, AT2 degradation and hybrid irreversibility (Schneider & Kaestner
+2025). The caller carries (d, H) across increments.
 """
 
 import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on TPU, no GPU prealloc)
@@ -81,83 +57,37 @@ def solve_fracture(
     maxiter_st:   int = 200,
 ) -> FractureSolution:
     """
-    Solve one staggered mechanics<->phase-field increment under a
-    prescribed macroscopic strain (and, for formulation="displacement",
-    optionally mixed strain/stress control).
+    One staggered mechanics/phase-field increment.
 
-    Per staggered iteration
-    ------------------------
-        1. Degraded tangent:   C_eff = pff_local_update(eps_prev, d) -- per-
-                                material stress/tangent (materialmodels.
-                                assembly.assemble_pff_local_update), evaluated
-                                at the PREVIOUS iteration's eps (frozen-
-                                tangent scheme -- see _staggered_loop's
-                                docstring for why)
-        2. Mechanical solve:   (eps, sigma) = solve_lippmann_schwinger(C_eff, ...),
-                                solve_fourier_galerkin(C_eff, ...), or
-                                solve_displacement_based(C_eff, ...)
-        3. Driving force:      psi+ from the undegraded Amor split
-        4. History update:     hybrid irreversibility (Steinke & Kaliske 2019)
-        5. Damage solve:       d = solve_damage_helmholtz_cg(H, ...)
-        6. Converged?          max|d_new - d_old| < toler_st_abs (or relative)
+    Per iteration: degraded tangent at the previous strain, mechanical solve,
+    driving force psi+ (Amor), history update (hybrid), damage solve, then
+    stop when max|d_new - d_old| < toler_st_abs (or relative).
 
     Parameters
     ----------
-    n, L        : grid shape and physical domain size
-    phase       : (Nv,) int      phase index per voxel (0-based)
-    materials   : list           each implements .elastic_stiffness_tensor(), .lam, .mu
-                  (see materialmodels.elastic.isotropic.LinearElasticIsotropic)
-    eps_bar     : (3, 3)         prescribed macroscopic strain for this increment;
-                  entries where ``control == 1`` are ignored (solved for instead)
+    n, L        : grid shape and domain size
+    phase       : (Nv,) int phase index
+    materials   : material per phase
+    eps_bar     : (3, 3) macroscopic strain; stress-controlled entries ignored
     l0          : phase-field length scale
-    Gc          : critical energy release rate. None gathers each material's
-                  own .Gc per-phase (see materialmodels.phasefield.
-                  degradation.Gc_field -- raises if any present material's
-                  .Gc is unset). Pass a scalar to use one value for every
-                  phase, or an explicit (Nv,) array for a field not tied to
-                  materials (e.g. a smoothly-varying one). A uniform Gc
-                  (scalar, or an array/gather that happens to be uniform)
-                  is passed on as a scalar -- the cheaper exact-Laplacian
-                  damage solve; a genuinely varying one uses the divergence
-                  form (see solve_damage_helmholtz_cg).
-    d_init      : (Nv,)          damage carried in from the previous increment
-    H_init      : (Nv,)          history variable carried in from the previous increment
-    formulation : "lippmann_schwinger" (reference-medium; mixed BC via an
-                  outer iterative correction, Michel et al 1999, see
-                  solvers.elliptic.vector.lippmann_schwinger.
-                  solve_lippmann_schwinger_mixed_bc and notes/controll.md),
-                  "displacement" (true heterogeneous tangent, supports mixed
-                  BC via a bordered CG system), or "fourier_galerkin"
-                  (Vondrejc et al 2014 -- no reference medium, supports mixed
-                  BC via the DC-bin identity scheme, Lucarini & Segurado
-                  2019a; see operators.galerkin.GalerkinProjector and
-                  solvers.elliptic.vector.mixed_bc)
-    scheme      : "standard" (GreenOperatorBasic / GalerkinProjector, standard) or
-                  "rotated" (GreenOperatorWillot / GalerkinProjector, rotated)
-                  -- used by formulation="lippmann_schwinger" and "fourier_galerkin"
-    control     : (3, 3) 0/1 mask, 1 = stress-controlled, 0 = strain-controlled.
-                  None (default) = pure strain BC (all zero). Supported by
-                  all three formulations.
-    stress_goal : (3, 3) macroscopic target stress, used only on
-                  ``control``-marked entries
-    toler_lin, maxiter_cg     : mechanical CG tolerance / iteration cap
-    toler_helm, maxiter_helm  : damage CG tolerance / iteration cap
-    eta, dt                  : viscous regularisation of the damage equation
-    d_thres                  : hybrid irreversibility threshold
-    k_res                    : AT2 residual stiffness. None (default) gathers
-                                each material's own .k_res per-phase (see
-                                materialmodels.phasefield.degradation.k_res_field
-                                -- e.g. LinearElasticIsotropic(..., k_res=1.0)
-                                for a damage-immune phase). Pass a scalar or an
-                                explicit (Nv,) array to override the per-phase
-                                gather entirely (e.g. a smoothly-varying field).
-    toler_st_abs, toler_st_rel, maxiter_st : staggered fixed-point convergence
+    Gc          : None gathers each material's Gc; a scalar or (Nv,) overrides.
+                  A uniform Gc is passed on as a scalar (exact-Laplacian solve)
+    d_init, H_init : (Nv,) damage and history from the previous increment
+    formulation : "lippmann_schwinger", "displacement" or "fourier_galerkin"
+                  (see solve_mechanics)
+    scheme      : "standard" or "rotated"
+    control     : (3, 3) 0/1 mask, 1 = stress-controlled (None = pure strain)
+    stress_goal : (3, 3) target stress, stress-controlled entries only
+    toler_lin, maxiter_cg    : mechanical CG tolerance and cap
+    toler_helm, maxiter_helm : damage CG tolerance and cap
+    eta, dt     : viscous regularization of the damage equation
+    d_thres     : hybrid irreversibility threshold
+    k_res       : residual stiffness; None gathers each material's k_res
+    toler_st_abs, toler_st_rel, maxiter_st : staggered convergence
 
     Returns
     -------
-    FractureSolution(eps, sigma, delta, d, H, psi_pos, converged_mech,
-    converged_helm, converged_staggered, iter_staggered, err_abs, err_rel,
-    eps_bar)
+    FractureSolution
     """
     if formulation not in ("lippmann_schwinger", "displacement", "fourier_galerkin"):
         raise ValueError(
@@ -175,9 +105,6 @@ def solve_fracture(
 
     if Gc is None:
         Gc = Gc_field(materials, phase)
-    # A per-voxel Gc that happens to be uniform collapses to a scalar, which
-    # solve_damage_helmholtz_cg solves with the cheaper exact Laplacian --
-    # only a genuinely varying Gc needs its divergence form.
     if jnp.ndim(Gc) > 0:
         Gc_min, Gc_max = float(jnp.min(Gc)), float(jnp.max(Gc))
         if Gc_min == Gc_max:
@@ -211,34 +138,14 @@ def _staggered_loop(
     toler_st_abs, toler_st_rel, maxiter_st, early_exit: bool,
 ) -> FractureSolution:
     """
-    The mechanics<->damage staggered fixed-point loop shared by solve_fracture
-    (early_exit=True: Python-level break on convergence, err_abs/err_rel/
-    converged_staggered as concrete Python float/bool -- exactly
-    solve_fracture's original inline behaviour, moved here unchanged) and
-    solve_fracture_fixed (early_exit=False: always runs exactly maxiter_st
-    iterations, err_abs/err_rel/converged_staggered kept as JAX arrays
-    throughout -- no float()/bool() concretization, no data-dependent Python
-    control flow, so this path is safe under jax.vmap/jax.jit).
+    Staggered loop shared by solve_fracture (``early_exit=True``: Python break,
+    float results) and solve_fracture_fixed (always ``maxiter_st`` iterations,
+    array results, vmap/jit-safe).
 
-    Frozen-tangent mechanical sub-solve: ``pff_local_update``
-    (materialmodels.assembly.assemble_pff_local_update) is evaluated at
-    ``eps_prev`` -- the PREVIOUS staggered iteration's converged strain,
-    seeded from eps_bar before the first iteration -- rather than the
-    current, still-unknown ``eps``. A PhaseFieldIsotropic material's stress
-    is nonlinear in eps even at fixed d (the Amor split), so a fully
-    consistent tangent would need eps itself, which only the mechanical
-    solve about to run produces; freezing it at the previous iterate keeps
-    this loop's linear CG solvers (solve_lippmann_schwinger/
-    solve_fourier_galerkin/solve_displacement_based) usable unchanged instead
-    of a nonlinear
-    Newton-CG mechanical sub-solve, exactly mirroring how ``d`` is already
-    frozen within one mechanical solve and only updated once per staggered
-    iteration. ``eps_prev`` is refreshed every iteration, so the loop still
-    converges to the fully self-consistent solution at staggered
-    convergence (eps_prev == eps there). Materials without ``psi_split``
-    (plain LinearElasticIsotropic) ignore eps_prev entirely in
-    ``pff_local_update``'s fallback branch, so this changes nothing for an
-    all-elastic ``materials`` list.
+    The tangent is frozen at the previous iteration's strain: the Amor split
+    makes stress nonlinear in eps even at fixed d, and freezing it keeps the
+    linear CG solvers usable. It converges to the consistent solution because
+    eps_prev equals eps at staggered convergence.
     """
     d_st = d_init
     H_st = H_init
@@ -268,7 +175,7 @@ def _staggered_loop(
                 n, C_eff, elastic_op, eps_bar, control, stress_goal_arr,
                 toler_lin=toler_lin, maxiter=maxiter_cg,
             )
-        else:  # "displacement"
+        else:
             eps, sigma, delta, eps_bar_cur, converged_mech = solve_displacement_based(
                 n, C_eff, xi_flat, eps_bar, control, stress_goal_arr,
                 toler_lin=toler_lin, maxiter=maxiter_cg,
@@ -285,18 +192,13 @@ def _staggered_loop(
 
         diff = jnp.max(jnp.abs(d_st - d_prev_st))
         if early_exit:
-            # concrete Python float/bool -- fine outside vmap/jit (eager),
-            # which is the only context solve_fracture is ever called in.
             err_abs = float(diff)
             err_rel = float(diff / (jnp.max(jnp.abs(d_st)) + 1e-30))
             staggered_converged = err_abs < toler_st_abs or err_rel < toler_st_rel
             if staggered_converged:
                 break
         else:
-            # stay array-valued -- float()/bool() on a batched/traced value
-            # would raise under vmap; every batch lane must run the same
-            # (here: all maxiter_st) iterations regardless of its own
-            # convergence, so there's nothing to break out of anyway.
+            # float()/bool() would fail under vmap; every lane runs maxiter_st.
             err_abs = diff
             err_rel = diff / (jnp.max(jnp.abs(d_st)) + 1e-30)
             staggered_converged = jnp.logical_or(err_abs < toler_st_abs, err_rel < toler_st_rel)
@@ -337,21 +239,9 @@ def solve_fracture_fixed(
     maxiter_st:   int = 200,
 ) -> FractureSolution:
     """
-    vmap/jit-safe counterpart to solve_fracture: identical physics and
-    parameters, but the staggered loop always runs exactly maxiter_st
-    iterations -- no early break on convergence -- so every batch lane
-    under jax.vmap takes the same, data-independent control flow (no
-    per-lane Python bool()/float() concretization either). Trades some
-    wasted staggered iterations (every increment always runs to
-    maxiter_st) for actually being traceable/batchable.
-
-    Convergence is NOT enforced or checked here -- inspect the returned
-    FractureSolution's .converged_staggered/.converged_mech/.converged_helm
-    yourself (per batch lane, after leaving vmap) instead of relying on a
-    driver to raise for you.
-
-    See solve_fracture's docstring for every parameter's meaning; unlike it,
-    there's no early-exit path, so there's nothing else different here.
+    vmap/jit-safe solve_fracture: always ``maxiter_st`` staggered iterations,
+    no early exit and no convergence check. Inspect ``converged_staggered``
+    per batch lane yourself. Parameters as solve_fracture.
     """
     if formulation not in ("lippmann_schwinger", "displacement", "fourier_galerkin"):
         raise ValueError(
@@ -367,16 +257,13 @@ def solve_fracture_fixed(
     xi_flat = build_freq_grid(n, L)
     k_res_arr = k_res_field(materials, phase) if k_res is None else k_res
 
-    # Uniformity is decided WITHOUT inspecting any array derived from `phase`
-    # (float()/bool() on it breaks under jax.vmap, which batches over phase):
-    # for Gc=None it is a static property of `materials`. An explicit array Gc
-    # is used as given (no collapse-if-uniform, unlike solve_fracture) -- pass
-    # a scalar for the cheaper exact-Laplacian damage solve.
+    # Uniformity comes from the materials, not the phase-derived array: a
+    # float() on that breaks under vmap. An explicit array Gc is used as given.
     if Gc is None:
-        Gc = Gc_field(materials, phase)  # raises if a present phase has no Gc
+        Gc = Gc_field(materials, phase)
         Gc_values = {float(m.Gc) for m in materials if m.Gc is not None}
         if len(Gc_values) == 1:
-            Gc = Gc_values.pop()  # uniform -> scalar: the exact-Laplacian damage solve
+            Gc = Gc_values.pop()
 
     if formulation == "lippmann_schwinger":
         elastic_op = build_reference_green_operator(n, L, materials, scheme=scheme)
@@ -425,28 +312,14 @@ def solve_fracture_incremental_fixed(
     maxiter_st:   int = 200,
 ) -> list[FractureSolution]:
     """
-    vmap/jit-safe counterpart to solve_fracture_incremental(stepping="fixed"),
-    built on solve_fracture_fixed instead of solve_fracture -- so both the
-    staggered loop AND the load-stepping loop are free of data-dependent
-    Python control flow (no bool()/float() on a convergence value, no break,
-    no cutback, no raise-on-non-convergence). ``n_steps = round(1/dt_step)``
-    is a static Python int, identical for every batch lane, so the whole
-    thing unrolls to one fixed, uniform computation graph -- this is the
-    function to jax.vmap over multiple RVE realizations (batch ``phase``,
-    keep n/L/materials/eps_bar/... shared via in_axes=None), e.g. to sample
-    several random-seed realizations at the same fibre volume fraction.
+    vmap/jit-safe solve_fracture_incremental(stepping="fixed"), built on
+    solve_fracture_fixed: a static number of steps, no cutbacks, never raises.
+    Use it to vmap over RVE realizations (batch ``phase``).
 
-    Convergence is never checked or enforced -- unlike solve_fixed, this
-    NEVER raises; a non-converged increment just keeps going with whatever
-    (possibly still-transient) d/H it produced. Inspect each returned
-    FractureSolution's .converged_staggered yourself, per batch lane, after
-    leaving vmap.
-
-    Returns list[FractureSolution], one per fixed step -- NOT
-    list[IncrementResult] like solve_fracture_incremental: there's no
-    wall-clock/writer/on_increment bookkeeping here, none of which make
-    sense once this runs inside a jax.vmap batch. See solve_fracture's
-    docstring for every other parameter's meaning.
+    Returns
+    -------
+    list[FractureSolution], one per step (no IncrementResult bookkeeping);
+    check ``converged_staggered`` per lane yourself
     """
     if not (0.0 < dt_step <= 1.0):
         raise ValueError(f"dt_step must be in (0, 1], got {dt_step}")
@@ -508,45 +381,22 @@ def solve_fracture_incremental(
     on_increment: Callable[[IncrementResult, float], None] | None = None,
 ) -> list[IncrementResult]:
     """
-    solve_fracture, load-stepped up to the target eps_bar (Abaqus-*STATIC
-    style) via problems.incremental -- same pattern as
-    problems.mechanics.solve_mechanics, with one addition: the
-    damage/history state (d, H) is path-dependent, so it must be threaded
-    from one accepted increment to the next rather than recomputed per call.
+    solve_fracture, load-stepped via problems.incremental (as solve_mechanics).
 
-    That threading is done via a plain mutable closure over ``_state``,
-    updated *only* inside ``on_increment`` -- which problems.incremental
-    already guarantees fires exactly once per *accepted* increment, never
-    on a rejected cutback attempt (see solve_automatic's docstring). This
-    means solve_fn itself must stay read-only with respect to ``_state``:
-    solve_automatic may call solve_fn several times per increment (one per
-    cutback attempt) before accepting one, all of which must start from the
-    same last-accepted (d, H), not from whatever a previous, rejected,
-    too-large-dt attempt produced.
+    (d, H) and t_prev are updated only in ``on_increment``, which fires once
+    per accepted increment: cutback attempts must all start from the last
+    accepted state. The damage viscosity step is the actual increment
+    ``t - t_prev``, not ``dt_step`` (the last fixed step and every automatic
+    step differ from it).
 
-    ``dt_step`` is the load-stepping *target* increment size (problems.
-    incremental's ``dt`` argument to solve_fixed) -- named differently here
-    because solve_fracture's own ``dt`` parameter means something else (the
-    damage equation's viscous-regularisation timestep). This function does
-    not take that ``dt`` directly: it derives the *actual* per-increment
-    value itself, as ``t - t_prev`` (the real gap between this increment's
-    cumulative load fraction and the last *accepted* one), and passes that
-    to solve_fracture. This matters because the real step size isn't always
-    dt_step -- solve_fixed's last step can be shorter, and solve_automatic's
-    varies every increment by construction -- so a fixed viscosity timestep
-    would silently apply the wrong eta/dt strength on any increment whose
-    real size differs from whatever value happened to be passed in.
-    ``t_prev`` is tracked the same read-in-solve_fn/write-in-on_increment
-    way as ``d``/``H``, for the same cutback-safety reason.
-
-    ``stepping``, ``writer``, ``orientation``, ``on_increment`` -- see
-    problems.mechanics.solve_mechanics's docstring; the only difference is
-    the extra "damage" field written per increment here.
-    All other parameters are solve_fracture's own.
+    Parameters as solve_fracture plus the load-stepping, writer and callback
+    arguments of solve_mechanics; ``dt_step`` is the load increment (``dt``
+    here means the viscosity step). The writer also gets "damage" and
+    "strain_energy_pos".
 
     Returns
     -------
-    list[IncrementResult] -- .solution is a FractureSolution per increment.
+    list[IncrementResult] with FractureSolution results
     """
     _state = {"d": d_init, "H": H_init, "t_prev": 0.0}
 

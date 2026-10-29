@@ -1,68 +1,30 @@
-"""
-Tensor utilities for FFTjax
-Provides identity tensors and permutation tensor in JAX form.
-
-Author: FFTjax
-"""
+"""Tensor contractions, identity tensors and the permutation tensor."""
 
 import jax
 import jax.numpy as jnp
 
 
-# ---------------------------------------
-# Tensor contractions
-# ---------------------------------------
-
 @jax.jit
 def ddot42(A: jnp.ndarray, B: jnp.ndarray) -> jnp.ndarray:
-    """
-    Double contraction  C_ijm = A_ijklm B_klm.
-
-    Shapes: (3,3,3,3,Nv) × (3,3,Nv) → (3,3,Nv)
-    Used for  σ = C : ε  and  Γ : σ  in the FFT solver.
-    """
+    """``C_ijm = A_ijklm B_klm``: (3,3,3,3,Nv) x (3,3,Nv) -> (3,3,Nv), e.g. sigma = C : eps."""
     return jnp.einsum('ijklm,klm->ijm', A, B)
 
 
 @jax.jit
 def odot11(A: jnp.ndarray, B: jnp.ndarray) -> jnp.ndarray:
-    """
-    Dyadic product  C_ijm = A_im B_jm.
-
-    Shapes: (3,Nv) × (3,Nv) → (3,3,Nv)
-    Used to build the (unsymmetrized) Fourier-space displacement gradient
-    ``odot11(u_hat, iξ)`` in the displacement-based FFT solver.
-    """
+    """``C_ijm = A_im B_jm``: (3,Nv) x (3,Nv) -> (3,3,Nv), e.g. grad u_hat = u_hat (x) i xi."""
     return jnp.einsum('im,jm->ijm', A, B)
 
 
 @jax.jit
 def dot21(A: jnp.ndarray, B: jnp.ndarray) -> jnp.ndarray:
-    """
-    Contraction  c_im = A_ijm B_jm.
-
-    Shapes: (3,3,Nv) × (3,Nv) → (3,Nv)
-    Used to take the Fourier-space divergence of a stress field,
-    ``dot21(σ_hat, iξ)``, in the displacement-based FFT solver.
-    """
+    """``c_im = A_ijm B_jm``: (3,3,Nv) x (3,Nv) -> (3,Nv), e.g. div sigma_hat."""
     return jnp.einsum('ijm,jm->im', A, B)
 
 
-# ---------------------------------------
-# 3D Identity Tensors
-# ---------------------------------------
-
 @jax.jit
 def identity_tensors_3d(dtype=jnp.float32):
-    """
-    Returns:
-        I2   : 2nd-order identity (3x3)
-        I4   : 4th-order identity δik δjl
-        I4t  : transpose identity δil δjk
-        I4s  : symmetric projector
-        IxI  : outer product I ⊗ I
-        I4d  : deviatoric symmetric projector
-    """
+    """3-D identities: ``I2, I4 (d_ik d_jl), I4t (d_il d_jk), I4s, IxI, I4d`` (deviatoric)."""
     I2 = jnp.eye(3, dtype=dtype)
 
     I4  = jnp.einsum("ik,jl->ijkl", I2, I2)
@@ -75,19 +37,9 @@ def identity_tensors_3d(dtype=jnp.float32):
     return I2, I4, I4t, I4s, IxI, I4d
 
 
-# ---------------------------------------
-# 2D Identity Tensors
-# ---------------------------------------
-
 @jax.jit
 def identity_tensors_2d(dtype=jnp.float32):
-    """
-    Returns:
-        I2   : 2x2 identity
-        I4   : 4th-order identity
-        I4t  : transpose identity
-        I4s  : symmetric projector
-    """
+    """2-D identities: ``I2, I4, I4t, I4s``."""
     I2 = jnp.eye(2, dtype=dtype)
 
     I4  = jnp.einsum("ik,jl->ijkl", I2, I2)
@@ -97,16 +49,9 @@ def identity_tensors_2d(dtype=jnp.float32):
     return I2, I4, I4t, I4s
 
 
-# ---------------------------------------
-# Levi-Civita permutation tensor (3D)
-# ---------------------------------------
-
 @jax.jit
 def levi_civita_3d(dtype=jnp.float32):
-    """
-    Returns:
-        ε_ijk permutation tensor
-    """
+    """Permutation tensor ``eps_ijk``."""
     eps = jnp.zeros((3, 3, 3), dtype=dtype)
 
     eps = eps.at[0, 1, 2].set( 1)

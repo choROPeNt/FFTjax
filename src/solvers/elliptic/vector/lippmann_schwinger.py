@@ -1,3 +1,5 @@
+"""Lippmann-Schwinger (reference-medium) elastic solves and their mixed-BC variants."""
+
 import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on TPU, no GPU prealloc)
 
 from typing import Tuple
@@ -34,61 +36,26 @@ def solve_lippmann_schwinger(
     n_devices: int | None = None,
 ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
-    Inner CG solve for one Newton step of the variational FFT elastic solver
-    (small strains, Vondrejc / Lucarini-Segurado formulation) -- same
-    Krylov-based Lippmann-Schwinger scheme as ``strain_nw_cg.dstrain_nw_cg``,
-    rewired onto the operators/ LinearOperator stack (GreenOperatorBasic/
-    Willot + Gamma0Operator) instead of a hand-rolled FFT/einsum A_op.
-    Verified bit-identical to ``dstrain_nw_cg`` in
-    ``test/test_elliptic_vector_lippmann_schwinger.py``.
+    Krylov Lippmann-Schwinger CG solve (pure strain BC):
 
-    Solves the linear system
-        A(Δε) = b
-    where
-        A(v)  = Gamma0(C:v)                     [Green-stiffness operator]
-        b     = -Gamma0(C:ε₀ - σ_goal)          [projected residual]
-        ε₀    = eps_bar broadcast to all voxels [uniform initial guess]
+        A(d_eps) = Gamma0(C : d_eps),   b = -Gamma0(C : eps0 - sigma_goal),   eps0 = eps_bar
+
+    Shards the whole CG across devices when more than one is available.
 
     Parameters
     ----------
     n           : grid shape (nx, ny, nz)
-    C_field     : (3, 3, 3, 3, Nv)      per-voxel stiffness (or tangent)
-    green_op    : LinearOperator        GreenOperatorBasic or GreenOperatorWillot,
-                  already built for this grid and reference medium
-    eps_bar     : (3, 3)                prescribed macroscopic strain
-    stress_goal : (3, 3, Nv) or None target stress field (None = zero, strain BC)
-    toler_lin   : relative CG residual tolerance
-    maxiter     : maximum CG iterations
-    n_devices : caps the device count Gamma0Operator auto-detects for its
-                  domain decomposition (see operators.projection.Gamma0Operator)
-                  -- None (default) uses whatever jax.local_device_count()
-                  reports; on a single-device machine this is a no-op, the
-                  exact original single-device solve.
+    C_field     : (3, 3, 3, 3, Nv) stiffness or tangent
+    green_op    : GreenOperatorBasic or GreenOperatorWillot for this grid
+    eps_bar     : (3, 3) macroscopic strain
+    stress_goal : (3, 3, Nv) target stress field (None = 0)
+    toler_lin, maxiter : CG tolerance and iteration cap
+    n_devices   : device cap for domain decomposition (None = all)
 
     Returns
     -------
-    eps        : (3, 3, Nv)   updated local strain  ε = ε₀ + Δε
-    sigma      : (3, 3, Nv)   updated local stress  σ = C : ε
-    delta      : (3, 3, Nv)   strain correction     Δε
-    converged  : bool array   True if residual tolerance met
-
-    Not yet JIT-compiled at this level (unlike dstrain_nw_cg): green_op is a
-    plain Python object, not a registered JAX pytree, so it can't be passed
-    as a jax.jit argument without either being marked static (which would
-    embed its G array as a compile-time constant, recompiling on every new
-    instance) or registering LinearOperator subclasses as pytrees -- left as
-    a follow-up, since ddot42 and cg_solve's internal while_loop are already
-    individually JIT-compiled.
-
-    At more than one auto-detected device, dispatches to
-    ``_solve_lippmann_schwinger_sharded`` instead of the single-device body
-    below -- a genuinely memory-scaling implementation (``C_field``/``G``
-    and every CG state vector stay sharded for the whole iterative solve,
-    never gathered until the final answer) rather than ``Gamma0Operator``'s
-    default per-call split/pmap/gather. Both paths solve the identical
-    system; this function's public signature/behavior is otherwise
-    unchanged, so every caller (``LippmannSchwingerSolver``,
-    ``solve_mechanics``) gets this for free.
+    eps, sigma, delta : (3, 3, Nv) strain, stress, strain correction
+    converged         : bool
     """
     Nv = prod(n)
     resolved_n_devices = choose_device_count(n, n_devices)
@@ -99,19 +66,16 @@ def solve_lippmann_schwinger(
 
     gamma0 = Gamma0Operator(n, green_op, n_devices=1)
 
-    # ── Linear operator  A(v) = Gamma0(C:v) ─────────────────────────────────
     def A_op(v_flat):
         v = v_flat.reshape(3, 3, Nv)
         Cv = ddot42(C_field, v)
         return gamma0(Cv).reshape(-1)
 
-    # ── RHS  b = -Gamma0(C:ε₀ − σ_goal) ──────────────────────────────────────
     sg     = jnp.zeros((3, 3, Nv)) if stress_goal is None else stress_goal
     eps0   = jnp.ones((3, 3, Nv)) * eps_bar[:, :, None]
     sigma0 = ddot42(C_field, eps0)
     bb     = -gamma0(sigma0 - sg).reshape(-1)
 
-    # ── CG solve ──────────────────────────────────────────────────────────────
     x0 = jnp.zeros_like(bb)
     delta_flat, converged = cg_solve(A_op, bb, x0, toler_lin, maxiter)
 
@@ -132,24 +96,7 @@ def _solve_lippmann_schwinger_sharded(
     maxiter:     int,
     n_devices:   int,
 ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    """
-    Fully domain-decomposed counterpart of ``solve_lippmann_schwinger``'s CG
-    solve, for ``n_devices > 1``. Solves the identical system (``A(v) =
-    Gamma0(C:v)``, ``b = -Gamma0(C:eps0 - sigma_goal)``) but ``C_field``,
-    ``green_op.G``, and every CG state vector (``x``, ``r``, ``p``, ``Ap``)
-    stay sharded across ``n_devices`` (``n[0] % n_devices == 0`` and
-    ``n[1] % n_devices == 0``, guaranteed by ``choose_device_count``) for
-    the ENTIRE iterative solve -- run under one ``jax.shard_map``; already-
-    sharded inputs (``assemble_C_field(n=...)``, ``shard_voxel_tensor``) are
-    used in place, and the returned fields stay sharded too. ``cg_solve_pmap`` (``solvers.krylov.cg``) supplies the
-    ``jax.lax.psum``-based dot products/norms that make this correct:
-    every device computes the same scalar step size each iteration without
-    ever assembling a full vector.
-
-    Not a public entry point -- called only from ``solve_lippmann_schwinger``
-    when ``choose_device_count`` resolves to more than 1; use that function
-    (or ``LippmannSchwingerSolver``/``solve_mechanics``) instead.
-    """
+    """``n_devices > 1`` body of solve_lippmann_schwinger: one ``shard_map``, fields kept sharded."""
     n_local = (n[0] // n_devices, n[1], n[2])
 
     C_sharded = shard_x_slabs(C_field, n_devices)
@@ -194,19 +141,7 @@ def _solve_lippmann_schwinger_sharded(
 
 
 class LippmannSchwingerSolver(ElasticitySolver):
-    """
-    ElasticitySolver wrapping solve_lippmann_schwinger: strain-based,
-    periodic. Formulation-specific setup (grid shape, Green's operator, CG
-    tolerance) lives here in __init__; solve() takes only what's common to
-    every ElasticitySolver.
-
-    Automatically domain-decomposes across jax.local_device_count() devices
-    when more than one is available (see operators.projection.Gamma0Operator)
-    -- no separate solver class or formulation needed; on a single-device
-    machine this is exactly the original single-device solve. ``n_devices``
-    caps the auto-detected count (mainly for tests forcing the single-device
-    fallback on a multi-device machine).
-    """
+    """ElasticitySolver for ``solve_lippmann_schwinger`` (pure strain BC)."""
 
     def __init__(
         self,
@@ -247,19 +182,9 @@ def solve_lippmann_schwinger_dc(
     n_devices:       int | None = None,
 ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
-    Kabel et al (2016) single-CG-solve mixed strain/stress macroscopic-BC
-    route for Lippmann-Schwinger -- the same DC-bin identity patch
-    solve_fourier_galerkin uses, applied to a reference-medium operator
-    (GreenOperatorBasic/Willot) instead of a reference-medium-free Galerkin
-    projector; see solvers.elliptic.vector.mixed_bc.
-    solve_mixed_bc_dc_identity for the shared derivation, which is
-    genuinely operator-agnostic between the two.
-
-    Secondary to solve_lippmann_schwinger_mixed_bc (the Michel et al 1999
-    outer-loop route, primary for this formulation since it leaves
-    solve_lippmann_schwinger itself completely untouched) -- kept here as an
-    independent, single-CG-solve cross-check on the same physics rather than
-    the production entry point. See notes/controll.md.
+    Mixed BC in one CG solve via the DC-bin identity (Kabel et al 2016); see
+    ``solve_mixed_bc_dc_identity``. A cross-check for the primary route,
+    ``solve_lippmann_schwinger_mixed_bc``.
     """
     control = control if control is not None else _ZERO_CONTROL
     macro_stress_goal = jnp.zeros((3, 3)) if macro_stress_goal is None else macro_stress_goal
@@ -284,68 +209,31 @@ def solve_lippmann_schwinger_mixed_bc(
     n_devices:       int | None = None,
 ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, int]:
     """
-    Michel et al (1999) outer iterative correction for mixed strain/stress
-    macroscopic BC: repeatedly calls the UNCHANGED solve_lippmann_schwinger,
-    correcting ``eps_bar`` between calls until the mean stress on
-    stress-controlled directions matches ``macro_stress_goal``. Primary
-    mixed-BC route for this formulation -- zero risk to the existing
-    reference-medium CG solve/preconditioner, at the cost of needing several
-    outer iterations (each a full inner CG solve) rather than
-    solve_lippmann_schwinger_dc's single one. See notes/controll.md.
+    Mixed strain/stress BC by outer correction of ``eps_bar`` (Michel et al 1999).
 
-    The correction is a Newton-like step built from a small (K, K) (K <= 6)
-    system: ``M_active = <C0>_active`` restricted to the active
-    stress-controlled (i, j) pairs (``_active_pairs``), the exact sensitivity
-    of mean stress to a uniform macroscopic strain perturbation for a
-    homogeneous material with reference stiffness ``C0`` (default: the true
-    voxel-mean ``jnp.mean(C_field, axis=-1)``, not an isotropized reference
-    medium -- see the C0_ref line below for why) -- for a homogeneous
-    C_field this converges in a single outer iteration (the sensitivity is
-    then exact, not approximate); for a heterogeneous one it's the standard
-    fixed-point correction (Michel et al 1999's own algorithm, eq 106),
-    converging over several outer iterations. This is an UNDAMPED fixed-point
-    step (no line search/trust region) -- a poor enough ``C0`` approximation
-    of the true sensitivity (e.g. an isotropized ``C0`` against a genuinely
-    anisotropic material) can make it diverge rather than merely converge
-    slowly; pass a better ``C0`` (or a genuinely anisotropic material's own
-    voxel-mean, the default) if you see ``eps_bar`` blow up instead of settle.
-
-    control=all-zero degenerates to exactly one call of the unchanged
-    solve_lippmann_schwinger (n_iter_outer=1), returning eps_bar_guess as
-    eps_bar_out unchanged -- no outer-loop overhead in the pure-strain case.
+    Repeats ``solve_lippmann_schwinger`` and corrects the stress-controlled
+    entries with ``M dx = sigma_goal - <sigma>``, where M is ``C0`` restricted
+    to those entries. The step is undamped: a poor ``C0`` can diverge rather
+    than converge slowly. All-zero ``control`` is a single plain solve.
 
     Parameters
     ----------
-    n, C_field, green_op   : see solve_lippmann_schwinger
-    control                : (3, 3) 0/1 mask, 1 = stress-controlled
-    eps_bar_guess           : (3, 3) initial macroscopic strain guess; entries
-                              where ``control == 1`` are corrected by the
-                              outer loop, entries where ``control == 0`` stay
-                              fixed at this value throughout
-    macro_stress_goal       : (3, 3) target macroscopic stress; only entries
-                              where ``control == 1`` are used
-    toler_lin, maxiter      : inner CG tolerance / iteration cap, forwarded
-                              unchanged to every solve_lippmann_schwinger call
-    toler_outer, maxiter_outer : outer-loop relative-residual tolerance and
-                              iteration cap
-    C0                      : (3, 3, 3, 3) or None -- reference stiffness for
-                              the outer-loop correction's sensitivity matrix;
-                              None (default) uses the true (anisotropic)
-                              voxel-mean ``jnp.mean(C_field, axis=-1)``, NOT
-                              green_op's own isotropized reference medium --
-                              see the C0_ref line's comment for why (a poor
-                              Jacobian approximation for an anisotropic
-                              material can make this undamped correction
-                              diverge, not just converge slowly)
+    n, C_field, green_op : as solve_lippmann_schwinger
+    control              : (3, 3) 0/1 mask, 1 = stress-controlled
+    eps_bar_guess        : (3, 3) start; strain-controlled entries stay fixed
+    macro_stress_goal    : (3, 3) target, stress-controlled entries only
+    toler_lin, maxiter   : inner CG tolerance and iteration cap
+    toler_outer, maxiter_outer : outer relative tolerance and iteration cap
+    C0                   : (3, 3, 3, 3) stiffness for M; default the
+                           anisotropic voxel mean of C_field
+    n_devices            : device cap for domain decomposition (None = all)
 
     Returns
     -------
-    eps, sigma, delta   : from the last inner solve_lippmann_schwinger call
-    eps_bar_out         : (3, 3) macroscopic strain, stress-controlled
-                          entries filled in by the outer loop
-    converged           : bool -- inner CG converged AND outer residual
-                          within toler_outer
-    n_iter_outer        : int -- outer iterations actually run
+    eps, sigma, delta : from the last inner solve
+    eps_bar_out       : (3, 3) macroscopic strain, stress-controlled entries solved
+    converged         : inner CG and outer residual both converged
+    n_iter_outer      : outer iterations run
     """
     pairs = _active_pairs(control)
 
@@ -356,17 +244,8 @@ def solve_lippmann_schwinger_mixed_bc(
         )
         return eps, sigma, delta, eps_bar_guess, converged, 1
 
-    # True (anisotropic) voxel-mean stiffness by default, NOT green_op's own
-    # isotropized reference medium (_isotropic_stiffness(green_op.lam0,
-    # green_op.mu0)) -- same default solve_displacement_based's own
-    # preconditioner uses (jnp.mean(C_field, axis=-1) if C0 is None else C0).
-    # Isotropizing away a genuinely anisotropic material's directional
-    # stiffness (e.g. a transversely isotropic fibre, E_L/E_T ~ 15x here)
-    # makes M a poor enough Jacobian approximation for this UNDAMPED
-    # correction step that the outer loop can diverge geometrically instead
-    # of just converging slowly -- reproduced on a carbon-fibre/epoxy RVE
-    # under mixed BC: eps_bar blew up to ~1e21 within maxiter_outer using the
-    # isotropized C0_ref, while the same case converges cleanly with this one.
+    # The anisotropic voxel mean, not green_op's isotropized reference medium:
+    # with that, this undamped step diverged (eps_bar ~1e21) on a carbon/epoxy RVE.
     C0_ref = jnp.mean(C_field, axis=-1) if C0 is None else C0
     basis = jnp.eye(len(pairs), dtype=eps_bar_guess.dtype)
     M = jnp.stack(
@@ -385,17 +264,8 @@ def solve_lippmann_schwinger_mixed_bc(
         )
         sigma_mean = jnp.mean(sigma, axis=-1)
         resid = sm2sv(macro_stress_goal - sigma_mean, pairs)
-        # Scale by the CURRENT overall mean-stress norm, not macro_stress_goal's
-        # own norm: a free-surface/traction-free target (macro_stress_goal == 0
-        # on the controlled directions, e.g. lateral surfaces in a uniaxial
-        # tension test) makes the target norm itself exactly zero, which would
-        # collapse a goal-based relative tolerance to an unreachable floor even
-        # once resid has reached floating-point noise -- the overall stress
-        # tensor (dominated by whatever's on the strain-controlled directions,
-        # e.g. the prescribed axial stress) is always a meaningful nonzero
-        # scale instead. Same pattern as e.g. problems.fracture's staggered
-        # loop, which scales its own convergence check by the current field's
-        # magnitude, not a (possibly zero) target's.
+        # Relative to the current mean stress, not the target: a traction-free
+        # target has norm 0, which would make the tolerance unreachable.
         scale = jnp.linalg.norm(sigma_mean) + 1e-30
         if float(jnp.linalg.norm(resid)) < toler_outer * float(scale):
             converged_outer = True
@@ -406,15 +276,7 @@ def solve_lippmann_schwinger_mixed_bc(
 
 
 class LippmannSchwingerMixedBCSolver(ElasticitySolver):
-    """
-    ElasticitySolver wrapping solve_lippmann_schwinger_mixed_bc: an outer
-    iterative correction (Michel et al 1999) around the UNCHANGED
-    solve_lippmann_schwinger, supporting mixed strain/stress macroscopic BC
-    via ``control`` (same convention as DisplacementBasedSolver/
-    FourierGalerkinSolver) without touching the reference-medium CG solve
-    itself. For the alternative single-CG-solve route (Kabel et al 2016),
-    call solve_lippmann_schwinger_dc directly instead.
-    """
+    """ElasticitySolver for ``solve_lippmann_schwinger_mixed_bc``; mixed BC via ``control``."""
 
     def __init__(
         self,

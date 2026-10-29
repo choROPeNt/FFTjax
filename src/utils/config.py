@@ -1,20 +1,12 @@
 """
-YAML configuration loader with ``{variable}`` interpolation.
-
-Supports referencing other keys and Path attributes::
+YAML config loader with ``{variable}`` interpolation:
 
     input:   output/preprocessed/rve.xdmf
-    jobname: "{input.stem}"          # → "rve"
-    output:  "output/simulation/{jobname}"   # → "output/simulation/rve"
+    jobname: "{input.stem}"                   # -> "rve"
+    output:  "output/simulation/{jobname}"    # -> "output/simulation/rve"
 
-Resolution rules
-----------------
-- ``{key}``        replace with the value of ``key`` in the same config
-- ``{key.attr}``   resolve ``key`` first, wrap in Path, apply ``.attr``
-                   (stem, name, parent, suffix, …)
-- ``{a.b.c}``      walk nested dicts  a → b → c
-- Chained references are resolved in up to 5 passes, so
-  ``{c}`` where c = ``"{b}"`` where b = ``"{a}"`` resolves correctly.
+``{key}`` is another value, ``{key.attr}`` a Path attribute (stem, name,
+parent, ...), ``{a.b.c}`` a nested key; chains resolve in up to 5 passes.
 """
 
 from __future__ import annotations
@@ -29,21 +21,14 @@ _VAR = re.compile(r'\{([^}]+)\}')
 
 
 def _resolve_expr(expr: str, ctx: dict) -> str:
-    """
-    Resolve a single {expr} token against ctx.
-
-    Supports:
-      key           → ctx[key]
-      key.attr      → getattr(Path(ctx[key]), attr)
-      a.b.c         → ctx[a][b][c]  (nested dict walk)
-    """
+    """One ``{expr}`` token: ``key``, ``key.attr`` (Path attribute) or ``a.b.c``; unresolved stays as is."""
     parts = expr.split(".")
     val: Any = ctx
 
     for part in parts:
         if isinstance(val, dict):
             if part not in val:
-                return "{" + expr + "}"   # leave unresolved
+                return "{" + expr + "}"
             val = val[part]
         elif isinstance(val, (str, Path)):
             p = Path(str(val))
@@ -74,16 +59,9 @@ def _walk(node: Any, ctx: dict) -> Any:
 
 def field_write_mode(raw: Any) -> str:
     """
-    Normalize a ``write_fields`` config value to "all" | "increments" | "none".
-
-    Per-voxel field output is the dominant cost of a large run -- at 152^3 one
-    increment is ~0.4 GB and writes slower than the solve itself runs -- so
-    both simulation drivers let a config switch it off when the deliverable is
-    the homogenized response. "increments" additionally drops the step-0
-    reference increment, which is the same zero field in every case of a sweep.
-
-    Accepts booleans as well as the strings, so `write_fields: false` in YAML
-    means what it looks like.
+    ``write_fields`` value -> "all", "increments" (skips the step-0 zero field)
+    or "none"; booleans accepted. Field output dominates large runs (~0.4 GB
+    per increment at 152^3).
     """
     if isinstance(raw, bool):
         return "all" if raw else "none"
@@ -98,21 +76,10 @@ def field_write_mode(raw: Any) -> str:
 
 
 def load_config(path: str | Path) -> dict:
-    """
-    Load a YAML file and resolve all ``{variable}`` references.
-
-    Parameters
-    ----------
-    path : path to the .yaml / .yml file
-
-    Returns
-    -------
-    dict with all string values interpolated
-    """
+    """YAML config with every ``{variable}`` reference resolved."""
     with open(path) as f:
         cfg: dict = yaml.safe_load(f)
 
-    # Up to 5 passes — handles chains like {c} → {b} → {a} → literal
     for _ in range(5):
         cfg = _walk(cfg, cfg)   # type: ignore[assignment]
 

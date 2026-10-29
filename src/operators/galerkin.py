@@ -1,11 +1,9 @@
 """
-Reference-medium-free Fourier-space projector for the Fourier-Galerkin
-elastic scheme (Vondrejc et al 2014; see Lucarini, Upadhyay & Segurado 2022,
-doi:10.1088/1361-651X/ac34e1, sec. 3.3). A sibling to green.py's
-GreenOperatorBasic/Willot, not a special case of it: build_green_operator's
-Kinv = (delta - c*n_hat n_hat)/mu0 ansatz cannot reproduce this operator's
-required coefficients at any (lam0, mu0) -- verified numerically before
-writing this module, see notes/FOURIER_GALERKIN.md.
+Reference-medium-free compatibility projector for the Fourier-Galerkin scheme
+(Vondrejc et al 2014; Lucarini, Upadhyay & Segurado 2022, sec. 3.3).
+
+Not a special case of operators.green: no (lam0, mu0) reproduces it with that
+operator's ansatz (see notes/FOURIER_GALERKIN.md).
 """
 
 import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on TPU, no GPU prealloc)
@@ -26,32 +24,19 @@ def build_galerkin_projection_operator(
     dx:      tuple[float, ...] | None = None,
 ) -> jnp.ndarray:
     """
-    Symmetric compatibility projector Ĝₛ_ijkl -- projects an arbitrary
-    symmetric 2nd-order tensor field onto its compatible (curl-free) part.
-    Purely geometric: depends only on the frequency direction n̂ = ξ/|ξ|, no
-    reference medium, no materials.
+    Symmetric projector onto compatible (curl-free) fields; depends only on n = xi/|xi|:
 
-        Ĝₛ_ijkl = ½(δik n̂j n̂l + δil n̂j n̂k + δjk n̂i n̂l + δjl n̂i n̂k) − n̂i n̂j n̂k n̂l
-
-    Verified (plain numpy, before this module was written): major- and
-    minor-symmetric, idempotent (Ĝₛ:Ĝₛ = Ĝₛ, a true projector), fixes any
-    compatible field sym(n̂⊗v) exactly, annihilates any n̂-orthogonal
-    (incompatible) field, trace 3 (rank-3 projector on the 6-dim symmetric-
-    tensor space) -- see test/test_operators_green_galerkin.py.
-
-    Same 'standard'/'rotated' scheme dispatch and zero-at-DC convention as
-    build_green_operator (operators.green); only uses even powers of ξ (ξξ,
-    ξξξξ), same as that operator, so no nyquist_safe_xi needed either.
+        G_ijkl = 1/2 (d_ik n_j n_l + d_il n_j n_k + d_jk n_i n_l + d_jl n_i n_k) - n_i n_j n_k n_l
 
     Parameters
     ----------
-    xi_flat : (3, Nv)              angular-frequency grid from build_freq_grid
-    scheme  : 'standard'|'rotated' discretisation scheme (default 'standard')
-    dx      : (3,) tuple or None   voxel spacing -- required for scheme='rotated'
+    xi_flat : (3, Nv) frequencies from build_freq_grid
+    scheme  : 'standard' or 'rotated' (as build_green_operator)
+    dx      : voxel spacing, required for 'rotated'
 
     Returns
     -------
-    G : (3, 3, 3, 3, Nv)  projector; zero at ξ = 0.
+    G : (3, 3, 3, 3, Nv), zero at xi = 0
     """
     if scheme == 'rotated':
         if dx is None:
@@ -60,10 +45,10 @@ def build_galerkin_projection_operator(
     else:
         xi = xi_flat
 
-    xi_sq = jnp.sum(xi ** 2, axis=0)                  # (Nv,)
+    xi_sq = jnp.sum(xi ** 2, axis=0)
     safe  = xi_sq > 0
     xi_s  = jnp.where(safe, xi_sq, 1.0)
-    n_hat = xi / jnp.sqrt(xi_s)[None, :]              # (3, Nv)
+    n_hat = xi / jnp.sqrt(xi_s)[None, :]
 
     d  = jnp.eye(3)
     nn = jnp.einsum('iN,jN->ijN', n_hat, n_hat)
@@ -77,11 +62,7 @@ def build_galerkin_projection_operator(
 
 
 class GalerkinProjector(LinearOperator):
-    """
-    Ĝₛ symmetric compatibility projector -- no reference medium, no
-    materials, unlike GreenOperatorBasic/Willot. Self-adjoint
-    (major-symmetric: Ĝₛ_ijkl = Ĝₛ_klij), so ``.T`` returns self.
-    """
+    """Compatibility projector (no reference medium). Self-adjoint."""
 
     def __init__(
         self, n: tuple[int, ...], L: tuple[float, ...], scheme: str = 'rotated',
@@ -101,7 +82,7 @@ class GalerkinProjector(LinearOperator):
         return build_galerkin_projection_operator(xi_flat, scheme=self.scheme, dx=dx)
 
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
-        """x, result: (3, 3, Nv) -- e.g. a strain or stress field in Fourier space."""
+        """x, result: (3, 3, Nv) Fourier-space field."""
         return ddot42(self.G, x)
 
     @property
@@ -116,26 +97,14 @@ def build_galerkin_projector(
     n_devices: int | None = None,
 ) -> GalerkinProjector:
     """
-    Build a GalerkinProjector for a grid -- the materials-free counterpart
-    to operators.green.build_reference_green_operator, so
-    problems.mechanics's formulation="fourier_galerkin" branch reads in
-    parallel to its formulation="lippmann_schwinger" branch, minus the
-    reference-medium averaging step (there is none here).
+    GalerkinProjector for a grid; the materials-free counterpart of
+    build_reference_green_operator.
 
     Parameters
     ----------
-    n, L      : grid shape and physical domain size
+    n, L      : grid shape and domain size
     scheme    : 'standard' or 'rotated'
-    n_devices : caps the device count GalerkinProjector auto-detects for
-                sharding its own G tensor's construction (see
-                operators.fft_distributed.shard_voxel_tensor) -- None
-                (default) uses whatever jax.local_device_count() reports;
-                on a single-device machine this is a no-op, the exact
-                original single-device construction.
-
-    Returns
-    -------
-    galerkin_op : GalerkinProjector
+    n_devices : device cap for building ``G`` sharded (None = all)
     """
     if scheme not in ('standard', 'rotated'):
         raise ValueError(f"unknown scheme {scheme!r}, expected 'standard' or 'rotated'")

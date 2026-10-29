@@ -1,5 +1,8 @@
-"""Generic plotting helpers: grids of imshow field slices, and homogenized
-(volume-averaged) response curves."""
+"""
+Plotting helpers and the project style: plasma, DIN 461 axes (label
+"quantity ->", unit in place of the second-to-last tick). Write labels as
+"quantity [unit]"; ``save_figure``/``axis_style`` convert them.
+"""
 
 import re
 from dataclasses import dataclass
@@ -18,7 +21,7 @@ from matplotlib.layout_engine import PlaceHolderLayoutEngine
 
 STYLE = Path(__file__).with_name("fftjax.mplstyle")
 SEQUENTIAL_CMAP = "plasma"
-DIVERGING_CMAP = "PuOr_r"  # signed fields; pair with a symmetric vmin/vmax
+DIVERGING_CMAP = "PuOr_r"
 
 
 def use_style() -> None:
@@ -27,16 +30,10 @@ def use_style() -> None:
 
 
 def plasma_colors(n: int, stop: float = 0.85) -> list[str]:
-    """``n`` line colors sampled evenly from plasma on ``[0, stop]`` -- for
-    more series than the style's 5-color cycle, or ordered sweeps (e.g. one
-    line per load level). ``stop < 1`` skips the yellow end, too light on white."""
+    """``n`` plasma colors on ``[0, stop]`` for sweeps or more than 5 series; ``stop < 1`` skips the pale yellow end."""
     cmap = colormaps[SEQUENTIAL_CMAP]
     return [to_hex(cmap(t)) for t in np.linspace(0.0, stop, n)]
 
-
-# ── Axis convention (DIN 461) ──────────────────────────────────────────────────
-# Label "quantity ->", unit printed in place of the second-to-last visible tick.
-# Plots keep writing labels as "quantity [unit]"; axis_style() converts them.
 
 _LABEL_RE = re.compile(r"^(?P<var>.*?)\s*\[(?P<unit>[^\]]*)\]\s*(?P<rest>.*)$", re.S)
 DIMENSIONLESS = "–"
@@ -60,11 +57,11 @@ class UnitTickFormatter(mticker.Formatter):
         return self.base(x, pos)
 
     def get_offset(self):
-        return ""  # folded into the unit tick
+        return ""
 
     def format_ticks(self, values):
         labels = list(self.base.format_ticks(values))
-        if self.axis is None:  # typed Optional; matplotlib attaches it before formatting
+        if self.axis is None:  # typed Optional, always set when formatting
             return labels
         lo, hi = sorted(self.axis.get_view_interval())
         tol = 1e-9 * max(hi - lo, 1e-300)
@@ -81,9 +78,9 @@ def axis_label(text: str) -> tuple[str, str]:
     m = _LABEL_RE.match(text)
     var, unit = (m["var"] + (" " + m["rest"] if m["rest"] else ""), m["unit"]) if m else (text, "")
     var, unit = var.strip(), unit.strip()
-    if re.fullmatch(r"[A-Za-z]", var):  # quantity symbol -> italic math
+    if re.fullmatch(r"[A-Za-z]", var):
         var = f"${var}$"
-    if var.endswith("$"):  # arrow joins the trailing math segment
+    if var.endswith("$"):
         label = var[:-1] + r"\,\rightarrow$"
     else:
         label = rf"{var}$\,\rightarrow$"
@@ -91,10 +88,11 @@ def axis_label(text: str) -> tuple[str, str]:
 
 
 def axis_style(fig_or_ax: Figure | Axes) -> int:
-    """Convert every labelled numeric axis (colorbars included) of a figure to
-    the DIN 461 axis convention. Idempotent; call once the labels are set, before
-    savefig. Category axes (text tick labels) are left unchanged. Returns the
-    number of axes converted."""
+    """
+    Convert every labelled numeric axis (colorbars too) to the DIN 461
+    convention; category axes are skipped. Idempotent. Returns the number of
+    axes converted.
+    """
     fig = fig_or_ax if isinstance(fig_or_ax, Figure) else fig_or_ax.figure
     converted = 0
     for ax in fig.axes:
@@ -119,15 +117,12 @@ def save_figure(fig: Figure, path, **kwargs) -> None:
     for ax in fig.axes:
         if ax.images:
             ax.grid(False)
-    # A tight_layout() run before the conversion measured the old labels
-    # (the unit tick is wider); redo it.
+    # A tight_layout() before the conversion measured the narrower old labels.
     if axis_style(fig) and isinstance(fig.get_layout_engine(), PlaceHolderLayoutEngine):
         fig.tight_layout()
     fig.savefig(path, **kwargs)
 
-# Match colorbar height to a square imshow panel -- without this, fig.colorbar
-# sizes to the axes' unshrunk bounding box, not the square image imshow
-# actually renders inside it, so it comes out much taller.
+# Colorbar as tall as a square image; the default follows the axes box and is taller.
 _CBAR_KW: dict[str, Any] = dict(fraction=0.046, pad=0.04)
 
 
@@ -156,10 +151,10 @@ def imshow_panel(
     over; use it directly to drop a field panel into an axes shared with
     other (non-field) plots.
     """
-    x0, x1, y0, y1 = extent  # any 4-sequence in; imshow's stub wants exactly a 4-tuple
+    x0, x1, y0, y1 = extent  # imshow's type stub wants exactly a 4-tuple
     im = ax.imshow(np.asarray(panel.field).T, origin="lower", cmap=panel.cmap,
                     extent=(x0, x1, y0, y1), vmin=panel.vmin, vmax=panel.vmax)
-    ax.grid(False)  # the style's grid is for line plots, not field images
+    ax.grid(False)
     ax.set_title(panel.title)
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
@@ -250,7 +245,7 @@ def plot_homogenized_response(
             y = np.concatenate([[0.0], y])
         ax.plot(x, y, curve.marker, label=curve.label)
 
-    ax.locator_params(nbins=6)  # strain ticks (0.0025 steps) otherwise collide
+    ax.locator_params(nbins=6)  # 0.0025-step strain ticks collide otherwise
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
     if title:

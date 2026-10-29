@@ -1,34 +1,7 @@
 """
-Thin wiring layer for the thermal (steady-state heat conduction) problem:
-build K(x), pick a mixed gradient/flux macroscopic BC, solve, return the
-fields -- the scalar analogue of problems.mechanics, mirrored structurally
-rather than re-derived (see that module's own docstring for the reasoning
-this one shares).
-
-Scope of this first pass, matching what's actually built on the
-materialmodels/ and solvers/ stacks so far:
-- Only one formulation: solvers.elliptic.scalar.solve_thermal_conduction, a
-  true heterogeneous-conductivity direct CG solve, no reference-medium fixed
-  point. Unlike problems.mechanics there is no ``formulation`` switch to
-  make -- no reference-medium Lippmann-Schwinger analogue exists for this
-  equation in either this project or the FFTMAD reference implementation's
-  own diffusion module (both treat heterogeneous div(k grad) as a direct CG
-  solve).
-- Only isotropic conductivity (materialmodels.thermal.isotropic.
-  ThermalConductivityIsotropic) has been built; materialmodels.assembly.
-  assemble_K_field is generic over any ConductivityModel, so an anisotropic
-  one plugs in unchanged once it exists.
-- No absolute-temperature-field reconstruction (writes the periodic
-  fluctuation T', not T(x) -- see solvers.solution.ThermalSolution's own
-  note on why, the same gauge-freedom reasoning problems.mechanics's
-  post.fields.compute_displacement exists to handle on the elasticity side,
-  just not built here yet).
-
-One public entry point, ``solve_thermal``: its ``stepping`` argument picks a
-single full-grad_T_bar solve or a load-stepped one (Abaqus-*STATIC style,
-via problems.incremental -- reused verbatim, it's genuinely solver-agnostic)
--- always returns list[IncrementResult] regardless of ``stepping``, same
-reason solve_mechanics does.
+Thermal (steady-state conduction) problem: build K(x), solve with mixed
+gradient/flux BC. One formulation, a direct CG solve (no reference-medium
+scheme exists for this equation). Writes the periodic fluctuation T', not T.
 """
 
 import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on TPU, no GPU prealloc)
@@ -61,12 +34,7 @@ def _solve_thermal_step(
     toler_lin:  float = 1e-6,
     maxiter:    int = 1000,
 ) -> ThermalSolution:
-    """
-    One thermal equilibrium solve at a fixed macroscopic gradient (no
-    load-stepping) -- the per-increment building block solve_thermal closes
-    over as its ``solve_fn``. See solve_thermal's docstring for all
-    parameters.
-    """
+    """One solve at a fixed macroscopic gradient; parameters as ``solve_thermal``."""
     K_field = assemble_K_field(materials, phase)
     xi_flat = build_freq_grid(n, L)
     grad_T, flux, T_prime, delta, grad_T_bar_out, converged = solve_thermal_conduction(
@@ -99,66 +67,28 @@ def solve_thermal(
     on_increment: Callable[[IncrementResult, float], None] | None = None,
 ) -> list[IncrementResult]:
     """
-    Solve the thermal equilibrium problem on a phase-labelled periodic voxel
-    grid under a prescribed macroscopic temperature gradient (optionally
-    mixed gradient/flux control), optionally load-stepped up to grad_T_bar
-    (Abaqus-*STATIC style).
+    Steady-state conduction on a phase-labelled periodic grid under a
+    macroscopic gradient, optionally with mixed gradient/flux control and
+    load stepping (as solve_mechanics; for linear conduction "single" suffices).
 
     Parameters
     ----------
-    n, L        : grid shape and physical domain size
-    phase       : (Nv,) int      phase index per voxel (0-based)
-    materials   : list           each implements .conductivity_tensor()
-                  (see materialmodels.thermal.isotropic.ThermalConductivityIsotropic)
-    grad_T_bar  : (3,)           macroscopic temperature gradient at t=1 (the
-                  full load); entries where ``control == 1`` are ignored
-                  (solved for instead)
-    stepping    : "single"    -- one solve at the full grad_T_bar (default).
-                  "fixed"     -- equal load-fraction increments of size ``dt``
-                                 (problems.incremental.solve_fixed).
-                  "automatic" -- adaptive load-fraction step, grown on
-                                 convergence, cut back and retried on
-                                 non-convergence (problems.incremental.
-                                 solve_automatic; dt_init/_min/_max,
-                                 factor_inc/_dec, max_cutbacks, max_steps all
-                                 forwarded to it). For linear conduction
-                                 (constant-in-T conductivity, the only kind
-                                 built so far) an intermediate increment
-                                 carries no information a scale factor
-                                 doesn't -- "single" is the natural default,
-                                 "fixed"/"automatic" exist for parity with
-                                 solve_mechanics and for a future
-                                 temperature-dependent conductivity.
-    control     : (3,) 0/1 mask, 1 = flux-controlled, 0 = gradient-controlled.
-                  None (default) = pure gradient BC (all zero).
-    flux_goal   : (3,) macroscopic target flux, used only on
-                  ``control``-marked entries. None (default) = zero.
-    toler_lin, maxiter : CG tolerance / iteration cap
+    n, L        : grid shape and domain size
+    phase       : (Nv,) int phase index
+    materials   : ConductivityModel per phase
+    grad_T_bar  : (3,) macroscopic gradient at t = 1; flux-controlled entries ignored
+    stepping    : "single", "fixed" or "automatic"
+    control     : (3,) 0/1 mask, 1 = flux-controlled (None = pure gradient)
+    flux_goal   : (3,) target flux, flux-controlled entries only (None = 0)
+    toler_lin, maxiter : CG tolerance and iteration cap
     dt, dt_init, dt_min, dt_max, factor_inc, factor_dec, max_cutbacks, max_steps :
-                  load-stepping controls, forwarded to solve_fixed/
-                  solve_automatic -- see problems.incremental. ``dt`` is
-                  required for stepping="fixed"; the rest are only used by
-                  stepping="automatic".
-    writer        : if given, gets one write_increment(step, fields, time=t)
-                  call per *accepted* increment (never for a failed cutback
-                  attempt -- see problems.incremental's on_increment docs) --
-                  phase, gradient, flux, and the periodic temperature
-                  fluctuation T' (not the absolute temperature field, see
-                  this module's own docstring). The caller still owns
-                  opening/closing the writer.
-    on_increment  : an additional, caller-supplied callback
-                  ``(result, write_time) -> None`` invoked once per accepted
-                  increment (after the writer, if any) -- see
-                  solve_mechanics's identically-shaped parameter for the
-                  full reasoning.
+                  load-stepping controls
+    writer      : IncrementalWriter for phase, gradient, flux and T'
+    on_increment: callback ``(result, write_time)`` per accepted increment
 
     Returns
     -------
-    list[IncrementResult] -- always a list, even for stepping="single" (one
-    element, t=1.0), so callers have one consistent return shape regardless
-    of the stepping choice. Each element's ``.solution`` is a
-    ThermalSolution; its ``.grad_T_bar`` is the macroscopic gradient with
-    any flux-controlled entries filled in.
+    list[IncrementResult] with ThermalSolution results
     """
     control = control if control is not None else _ZERO_CONTROL
 

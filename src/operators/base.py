@@ -1,7 +1,4 @@
-"""
-Abstract linear-operator interface for operators/ (Green's operators,
-differential operators, and their compositions).
-"""
+"""Abstract linear-operator interface (Green's operators and their compositions)."""
 
 from __future__ import annotations
 
@@ -12,12 +9,9 @@ import jax.numpy as jnp
 
 class LinearOperator(ABC):
     """
-    A linear map acting on per-voxel tensor fields (real or Fourier space).
+    Linear map on per-voxel tensor fields (real or Fourier space).
 
-    Concrete operators implement ``__call__`` and ``.T``. Composition via ``@``
-    builds a new ``LinearOperator`` without evaluating either side, and ``.T``
-    returns the adjoint — so e.g. ``Gamma0 = G0 @ grad`` is itself a
-    ``LinearOperator`` that can be further composed or transposed.
+    ``A @ B`` composes lazily; ``.T`` is the adjoint.
     """
 
     @abstractmethod
@@ -26,10 +20,8 @@ class LinearOperator(ABC):
 
     @property
     def T(self) -> "LinearOperator":
-        # No self-adjoint default: a forgotten override on a non-self-adjoint
-        # operator (e.g. grad, whose adjoint is -div) would silently give the
-        # wrong adjoint instead of failing loudly. Self-adjoint operators
-        # (e.g. GreenOperatorBasic) must return `self` explicitly.
+        # No self-adjoint default: a forgotten override (e.g. grad, adjoint -div)
+        # must fail loudly, not return a wrong adjoint.
         raise NotImplementedError(
             f"{type(self).__name__} does not define its adjoint (.T)"
         )
@@ -39,7 +31,7 @@ class LinearOperator(ABC):
 
 
 class _Composed(LinearOperator):
-    """``(A @ B)(x) = A(B(x))``; adjoint is ``B.T @ A.T``."""
+    """``(A @ B)(x) = A(B(x))``; adjoint ``B.T @ A.T``."""
 
     def __init__(self, a: LinearOperator, b: LinearOperator):
         self._a = a

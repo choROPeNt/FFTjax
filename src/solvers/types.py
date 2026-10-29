@@ -1,3 +1,4 @@
+"""State and settings of the variational Newton-CG elastic solver."""
 
 from __future__ import annotations
 
@@ -11,86 +12,81 @@ import jax.numpy as jnp
 
 class SolveState(NamedTuple):
     """
-    Evolving state for one variational NW-CG elastic solve.
+    Evolving state of one Newton-CG elastic solve (a pytree). Static operators
+    (G, C_field) are passed separately.
 
-    A NamedTuple so it is automatically a JAX pytree — safe to pass
-    through jax.jit, lax.while_loop, lax.scan, etc.
-
-    Precomputed operators (G_glob, C_field) are intentionally excluded;
-    they are static and should be passed as separate arguments to the solver.
+    Attributes
+    ----------
+    strain_loc, stress_loc : (3, 3, Nv) local strain and stress
+    tangent_glob           : (3, 3, 3, 3, Nv) tangent d sigma / d eps
+    strain_ave, stress_ave : (3, 3) macroscopic averages
+    strain_ave_inc_goal, stress_ave_inc_goal : (3, 3) increment targets
+    Deltastrain_loc        : (3, 3, Nv) trial strain increment
+    Deltastress_loc        : (3, 3, Nv) trial stress target
+    stress_loc_goal        : (3, 3, Nv) stress target of the increment
+    deltastrain_loc        : (3, 3, Nv) last CG correction
+    time, dtime            : pseudo-time and step size
+    kinc, kstep            : increment counter and 1-based load step
+    iter_nw, iter_cg       : Newton and last CG iteration counts
+    info                   : CG exit flag, 0 = converged
+    bb0n                   : initial residual norm, for the adaptive CG tolerance
+    pnewdt                 : step-size reduction request, 1.0 = none
     """
 
-    # ── per-voxel fields ──────────────────────────────────────────────
-    strain_loc:    jnp.ndarray  # (3, 3, Nv)      local strain  ε
-    stress_loc:    jnp.ndarray  # (3, 3, Nv)      local stress  σ
-    tangent_glob:  jnp.ndarray  # (3, 3, 3, 3, Nv) material tangent ∂σ/∂ε
-                                #   equals C_field for linear elastic,
-                                #   updated each Newton step for nonlinear
+    strain_loc:    jnp.ndarray
+    stress_loc:    jnp.ndarray
+    tangent_glob:  jnp.ndarray
 
-    # ── macroscopic averages ──────────────────────────────────────────
-    strain_ave:    jnp.ndarray  # (3, 3)   〈ε〉
-    stress_ave:    jnp.ndarray  # (3, 3)   〈σ〉
+    strain_ave:    jnp.ndarray
+    stress_ave:    jnp.ndarray
 
-    # ── current increment bookkeeping ─────────────────────────────────
-    strain_ave_inc_goal:  jnp.ndarray  # (3, 3)      Δ〈ε〉 per time increment
-    stress_ave_inc_goal:  jnp.ndarray  # (3, 3)      Δ〈σ〉 per time increment
-    Deltastrain_loc:      jnp.ndarray  # (3, 3, Nv)  initial trial ε increment
-    Deltastress_loc:      jnp.ndarray  # (3, 3, Nv)  initial trial σ target
-    stress_loc_goal:      jnp.ndarray  # (3, 3, Nv)  target σ for current increment
+    strain_ave_inc_goal:  jnp.ndarray
+    stress_ave_inc_goal:  jnp.ndarray
+    Deltastrain_loc:      jnp.ndarray
+    Deltastress_loc:      jnp.ndarray
+    stress_loc_goal:      jnp.ndarray
 
-    # ── Newton correction (output of the inner CG solve) ──────────────
-    deltastrain_loc:  jnp.ndarray  # (3, 3, Nv)  Δε from last CG solve
+    deltastrain_loc:  jnp.ndarray
 
-    # ── scalar state ──────────────────────────────────────────────────
-    time:     float  # current pseudo-time
-    dtime:    float  # current time step size
-    kinc:     int    # increment counter within the current step
-    kstep:    int    # load-step index (1-based, matches rsteps)
-    iter_nw:  int    # Newton iterations consumed in current increment
-    iter_cg:  int    # CG iterations consumed in last inner solve
-    info:     int    # CG exit flag — 0 = converged, nonzero = failure
-    bb0n:     float  # ‖r₀‖ at Newton iter 0; used for adaptive CG tolerance
-                     #   tol = max(toler_lin * bb0n / ‖rₙ‖, toler_lin)
-    pnewdt:   float  # time-step reduction request; 1.0 = no reduction
+    time:     float
+    dtime:    float
+    kinc:     int
+    kstep:    int
+    iter_nw:  int
+    iter_cg:  int
+    info:     int
+    bb0n:     float
+    pnewdt:   float
 
 
 @dataclass
 class SolverSettings:
     """
-    Static configuration for the variational NW-CG elastic solver.
+    Static settings of the Newton-CG elastic solver; add load steps with ``add_load_step``.
 
-    Passed once at setup; nothing here changes during iteration.
-    Load steps are accumulated by calling add_load_step().
+    Per load step i: ``control[i]`` (3, 3) mask (1 = stress-controlled),
+    ``strain_ave_goal[i]``/``stress_ave_goal[i]`` (3, 3) targets and
+    ``timer[i]`` = (dt_init, t_end, dt_min, dt_max).
     """
 
-    # ── domain ────────────────────────────────────────────────────────
     ndim:  int
-    n:     tuple[int, ...]    # voxel counts per dimension, e.g. (nx, ny, nz)
-    L:     tuple[float, ...]  # physical domain lengths per dimension
+    n:     tuple[int, ...]
+    L:     tuple[float, ...]
 
-    # ── tolerances ────────────────────────────────────────────────────
-    toler_lin: float = 1e-7   # CG relative residual tolerance
-    toler_nw:  float = 1e-7   # Newton convergence: |Δε|∞ / |〈ε〉|
+    toler_lin: float = 1e-7
+    toler_nw:  float = 1e-7
 
-    # ── iteration caps ────────────────────────────────────────────────
     maxiter_cg: int = 1000
     maxiter_nw: int = 6
 
-    # ── load steps ────────────────────────────────────────────────────
-    # control[i]         : (3, 3) int mask — 1 = stress-controlled, 0 = strain
-    # strain_ave_goal[i] : (3, 3) target macroscopic strain for step i
-    # stress_ave_goal[i] : (3, 3) target macroscopic stress for step i
-    # timer[i]           : (dt_init, t_end, dt_min, dt_max)
     control:          list[jnp.ndarray]               = field(default_factory=list)
     strain_ave_goal:  list[jnp.ndarray]               = field(default_factory=list)
     stress_ave_goal:  list[jnp.ndarray]               = field(default_factory=list)
     timer:            list[tuple[float, float, float, float]] = field(default_factory=list)
 
-    # ── output ────────────────────────────────────────────────────────
     jobname: str = ""
     output:  str = ""
 
-    # ── derived ───────────────────────────────────────────────────────
     @property
     def nvoxels(self) -> int:
         from math import prod
@@ -102,7 +98,7 @@ class SolverSettings:
 
     @property
     def rsteps(self) -> range:
-        """1-based step range matching the reference solver convention."""
+        """1-based step range (reference-solver convention)."""
         return range(1, self.nsteps + 1)
 
     def add_load_step(

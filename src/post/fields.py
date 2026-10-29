@@ -1,9 +1,6 @@
 """
-Post-processing field utilities for FFTjax.
-
-All functions accept the solver's native layout — fields with shape
-``(3, 3, Nv)`` or ``(3, 3, 3, 3, Nv)`` — and return arrays reshaped to
-``(*grid_n, ...)`` suitable for ParaView export via ``utils.io.xdmf_writer``.
+Post-processing of solver fields: solver layout (3, 3, Nv) in, grid layout
+(*n, ...) out, ready for utils.io.xdmf_writer. Voigt order 11, 22, 33, 12, 13, 23.
 """
 
 from typing import Mapping, Sequence
@@ -14,28 +11,14 @@ from jax.typing import ArrayLike
 
 from operators.green import build_freq_grid
 
-# Voigt index pairs — Abaqus convention: [11, 22, 33, 12, 13, 23]
 _VOIGT_IJ = ((0, 0), (1, 1), (2, 2), (0, 1), (0, 2), (1, 2))
 
 
 def to_voigt(tensor: np.ndarray, mandel: bool = False) -> np.ndarray:
     """
-    Convert a symmetric 3×3 tensor field to Voigt notation.
+    Symmetric (..., 3, 3) -> Voigt (..., 6), order 11, 22, 33, 12, 13, 23.
 
-    Parameters
-    ----------
-    tensor : array (..., 3, 3)
-        Full tensor field. Leading dimensions are arbitrary (grid voxels).
-    mandel : bool
-        If True, apply Mandel scaling (√2 on shear components).
-        Use this when you need energy-consistent norm preservation,
-        e.g. for strain fields used in further computation.
-        For stress fields, keep mandel=False.
-
-    Returns
-    -------
-    array (..., 6)
-        Voigt vector. Index order: [σ11, σ22, σ33, σ12, σ13, σ23]  (Abaqus convention)
+    ``mandel=True`` scales shears by sqrt(2) (norm-preserving); keep False for stress.
     """
     tensor = np.asarray(tensor)
     if tensor.shape[-2:] != (3, 3):
@@ -50,20 +33,7 @@ def to_voigt(tensor: np.ndarray, mandel: bool = False) -> np.ndarray:
 
 
 def from_voigt(voigt: np.ndarray, mandel: bool = False) -> np.ndarray:
-    """
-    Convert a Voigt-notation field back to a full symmetric 3×3 tensor.
-
-    Parameters
-    ----------
-    voigt : array (..., 6)
-        Voigt field. Index order: [xx, yy, zz, yz, xz, xy]  (11,22,33,23,13,12)
-    mandel : bool
-        If True, undo Mandel scaling (divide shear by √2).
-
-    Returns
-    -------
-    array (..., 3, 3)
-    """
+    """Voigt (..., 6), order 11, 22, 33, 12, 13, 23 -> symmetric (..., 3, 3); inverse of to_voigt."""
     voigt = np.asarray(voigt, dtype=float)
     if voigt.shape[-1] != 6:
         raise ValueError(f"Expected (..., 6), got {voigt.shape}")
@@ -75,24 +45,13 @@ def from_voigt(voigt: np.ndarray, mandel: bool = False) -> np.ndarray:
     out = np.zeros(voigt.shape[:-1] + (3, 3), dtype=voigt.dtype)
     for k, (i, j) in enumerate(_VOIGT_IJ):
         out[..., i, j] = voigt[..., k]
-        out[..., j, i] = voigt[..., k]  # symmetry
+        out[..., j, i] = voigt[..., k]
 
     return out
 
 
 def field_to_grid(arr_33_nv: jnp.ndarray, grid_n: tuple) -> np.ndarray:
-    """
-    Reshape a 2nd-order tensor field from solver layout to grid layout.
-
-    Parameters
-    ----------
-    arr_33_nv : (3, 3, Nv)   JAX or numpy array (solver layout)
-    grid_n    : tuple          grid shape, e.g. (nx, ny, nz)
-
-    Returns
-    -------
-    out : (*grid_n, 3, 3) numpy array
-    """
+    """(3, 3, Nv) -> (*grid_n, 3, 3)."""
     ndim = len(grid_n)
     return (np.asarray(arr_33_nv)
             .reshape(3, 3, *grid_n)
@@ -100,20 +59,7 @@ def field_to_grid(arr_33_nv: jnp.ndarray, grid_n: tuple) -> np.ndarray:
 
 
 def vector_field_to_grid(arr_3_nv: jnp.ndarray, grid_n: tuple) -> np.ndarray:
-    """
-    Reshape a 1st-order (vector) field from solver layout to grid layout --
-    the ``field_to_grid`` counterpart for a plain 3-vector (e.g. a thermal
-    gradient/flux field) rather than a 2nd-order tensor.
-
-    Parameters
-    ----------
-    arr_3_nv : (3, Nv)   JAX or numpy array (solver layout)
-    grid_n   : tuple       grid shape, e.g. (nx, ny, nz)
-
-    Returns
-    -------
-    out : (*grid_n, 3) numpy array
-    """
+    """(3, Nv) -> (*grid_n, 3)."""
     ndim = len(grid_n)
     return (np.asarray(arr_3_nv)
             .reshape(3, *grid_n)
@@ -121,17 +67,7 @@ def vector_field_to_grid(arr_3_nv: jnp.ndarray, grid_n: tuple) -> np.ndarray:
 
 
 def von_mises(sigma_grid: np.ndarray) -> np.ndarray:
-    """
-    Von Mises equivalent stress.
-
-    Parameters
-    ----------
-    sigma_grid : ``(*n, 3, 3)``   stress tensor field on the grid
-
-    Returns
-    -------
-    sigma_vm : (*n,)   von Mises stress, same leading shape as sigma_grid
-    """
+    """Von Mises stress of a (..., 3, 3) field -> (...)."""
     s = sigma_grid
     return np.sqrt(0.5 * (
         (s[..., 0, 0] - s[..., 1, 1]) ** 2 +
@@ -142,22 +78,7 @@ def von_mises(sigma_grid: np.ndarray) -> np.ndarray:
 
 
 def homogenize(eps: jnp.ndarray, sigma: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
-    """
-    Volume-averaged (homogenized) macroscopic strain and stress:
-    eps_bar = mean_voxel(eps), sigma_bar = mean_voxel(sigma) -- exact for a
-    uniform periodic voxel grid, where every voxel has equal volume (true
-    throughout this project). Works for either formulation, unlike
-    ElasticitySolution.eps_bar (displacement-only, None for
-    lippmann_schwinger) -- for a converged solve the two agree.
-
-    Parameters
-    ----------
-    eps, sigma : (3, 3, Nv)   local strain/stress fields (solver layout)
-
-    Returns
-    -------
-    eps_bar, sigma_bar : (3, 3)
-    """
+    """Voxel means of (3, 3, Nv) strain and stress (equal voxel volumes) -> (3, 3) each."""
     return jnp.mean(eps, axis=-1), jnp.mean(sigma, axis=-1)
 
 
@@ -169,31 +90,20 @@ def macroscopic_response(
     tensors: Mapping[str, ArrayLike] | None = None,
 ) -> dict[str, np.ndarray]:
     """
-    Package one increment's macroscopic response into the flat, named dict
-    used for every solve_*.py script's per-increment stats row and
-    scripts/postprocessing/homogenize.py's post-hoc CSV -- the single place
-    the von Mises formula, the pressure sign convention and the Voigt order
-    are defined, so "live" (during the solve) and "after the fact" (reading
-    a written .h5) homogenization can't drift apart.
+    One increment's macroscopic response as a flat dict; shared by the live
+    stats rows and post.homogenize so the two cannot drift apart.
 
     Parameters
     ----------
-    eps_bar, sigma_bar : (3, 3)   volume-averaged strain/stress, e.g. from
-        ``homogenize(eps, sigma)`` (solver layout (3, 3, Nv)) or
-        ``field.reshape(-1, 3, 3).mean(axis=0)`` (grid layout, reading an
-        already-written .h5 back with ``from_voigt``).
-    scalars : optional ``{name: per-voxel array}`` -- any layout, reported
-        as ``{name}_mean``/``{name}_max`` (e.g. accumulated plastic strain
-        alpha, phase-field damage d).
-    tensors : optional ``{name: (3, 3) already volume-averaged tensor}`` --
-        reported as ``{name}_bar`` (Voigt 6) and ``{name}_vol`` (its trace,
-        e.g. tr(eps_p_bar), the macroscopic plastic volume change).
+    eps_bar, sigma_bar : (3, 3) averaged strain and stress
+    scalars : ``{name: per-voxel array}`` -> ``{name}_mean``, ``{name}_max``
+    tensors : ``{name: (3, 3) averaged tensor}`` -> ``{name}_bar`` (Voigt)
+              and ``{name}_vol`` (trace)
 
     Returns
     -------
-    dict with "eps_bar", "sigma_bar" (Voigt 6 each, order [11,22,33,12,13,23]),
-    "mises_stress", "pressure" (p = tr(sigma_bar)/3, p > 0 = hydrostatic
-    tension), plus the scalar/tensor extras above.
+    dict with "eps_bar", "sigma_bar" (Voigt), "mises_stress", "pressure"
+    (tr(sigma)/3, > 0 in tension) and the extras
     """
     eps_v   = to_voigt(np.asarray(eps_bar))
     sigma_v = to_voigt(np.asarray(sigma_bar))
@@ -221,25 +131,12 @@ def macroscopic_thermal_response(
     scalars: dict[str, np.ndarray] | None = None,
 ) -> dict[str, np.ndarray]:
     """
-    Vector analogue of ``macroscopic_response`` for a thermal conduction
-    solve: a temperature gradient/flux pair is a plain 3-vector, not a
-    symmetric 2nd-order tensor, so there is no Voigt-6 form to report --
-    ``to_voigt``/``from_voigt`` are strain/stress-specific (see their own
-    docstrings) and don't apply here.
-
-    Parameters
-    ----------
-    grad_T_bar, flux_bar : (3,)   volume-averaged gradient/flux, e.g. from
-        ``jnp.mean(grad_T, axis=-1)``/``jnp.mean(flux, axis=-1)`` (solver
-        layout (3, Nv)).
-    scalars : optional ``{name: per-voxel array}`` -- any layout, reported
-        as ``{name}_mean``/``{name}_max`` (e.g. a per-voxel temperature field).
+    Thermal analogue of ``macroscopic_response`` (vectors, no Voigt form).
 
     Returns
     -------
-    dict with "grad_T_bar", "flux_bar" (plain (3,) arrays), "flux_magnitude"
-    (Euclidean norm |flux_bar| -- the vector equivalent of ``mises_stress``
-    as a single-number summary), plus the scalar extras above.
+    dict with "grad_T_bar", "flux_bar" (3,), "flux_magnitude" |flux_bar| and
+    ``{name}_mean``/``{name}_max`` per scalar
     """
     grad_v  = np.asarray(grad_T_bar)
     flux_v  = np.asarray(flux_bar)
@@ -260,26 +157,18 @@ def homogenize_response(
     component: tuple[int, int] = (0, 0),
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-    Volume-averaged (eps_bar, sigma_bar) history for one tensor component,
-    across a sequence of load-stepped solutions -- e.g. the ``list[IncrementResult]``
-    returned by ``solve_mechanics``/``solve_fracture`` (reads each element's
-    ``.solution``), or a plain sequence of solutions/``(eps, sigma)`` pairs.
+    Averaged (eps, sigma) history of one component over load-stepped results.
 
-    For a converged, purely strain-controlled load path this matches the
-    prescribed macroscopic strain exactly (``homogenize``'s DC-nullspace
-    guarantee); unlike reading the prescribed load directly, this also works
-    for stress-controlled/mixed-BC components, where the macroscopic strain
-    is solved for rather than prescribed.
+    Works for stress-controlled components too, where the strain is solved.
 
     Parameters
     ----------
-    results   : sequence of IncrementResult (or anything with an ``.eps``/``.sigma``
-                pair directly, or via a ``.solution`` attribute)
-    component : (i, j) tensor index, e.g. (0, 0) for the 11 direction
+    results   : IncrementResults, or objects with ``.eps``/``.sigma``
+    component : (i, j), e.g. (0, 0)
 
     Returns
     -------
-    eps_bar, sigma_bar : (len(results),) volume-averaged history for that component
+    eps_bar, sigma_bar : (len(results),)
     """
     i, j = component
     solutions = [getattr(r, "solution", r) for r in results]
@@ -295,36 +184,23 @@ def compute_displacement(
     grid_L: tuple,
 ) -> np.ndarray:
     """
-    Recover the displacement field from a compatible strain field via Fourier
-    integration.
+    Displacement from a compatible strain field by Fourier integration:
 
-    Exact inversion of ``ε̂_ij = (iξ_j û_i + iξ_i û_j) / 2`` for ξ ≠ 0:
+        u_i = -2i/|xi|^2 E'_ij xi_j + i xi_i (xi_j E'_jk xi_k) / |xi|^4
 
-    ::
-
-        û_i = -2i/|ξ|² Σ_j Ê'_ij ξ_j  +  i ξ_i (Σ_{jk} ξ_j Ê'_jk ξ_k) / |ξ|⁴
-
-    The second (longitudinal correction) term is zero for divergence-free
-    (incompressible) fields; it is required for the compressible elastic case.
-
-    Total displacement  =  macroscopic part (ε̄_ij x_j)  +  periodic fluctuation.
-
-    Takes ``(n, L)``, matching the convention used everywhere else in this
-    project (``GreenOperatorBasic``/``Willot``, ``solve_mechanics``, ...)
-    rather than ``(n, dx)`` -- builds its own frequency grid and voxel
-    spacing internally, so there's nothing to gain by pushing either
-    construction onto every caller.
+    (the second term vanishes only for incompressible fields), plus the
+    macroscopic part eps_bar . x at voxel centers.
 
     Parameters
     ----------
-    eps     : (3, 3, Nv)   total strain field (solver layout)
-    eps_bar : (3, 3)        macroscopic strain tensor
-    grid_n  : tuple          grid shape (nx, ny, nz)
-    grid_L  : tuple          physical domain size per dimension  [µm]
+    eps     : (3, 3, Nv) total strain
+    eps_bar : (3, 3) macroscopic strain
+    grid_n  : grid shape
+    grid_L  : domain size
 
     Returns
     -------
-    u : (*grid_n, 3)   displacement field in physical units (same as grid_L)
+    u : (*grid_n, 3), in the units of grid_L
     """
     ndim     = len(grid_n)
     fft_axes = tuple(range(-ndim, 0))
@@ -337,14 +213,13 @@ def compute_displacement(
     safe  = xi_sq > 0
     xi_s  = jnp.where(safe, xi_sq, 1.0)
 
-    # Strain fluctuation and its DFT
     eps_fluct = eps - eps_bar[:, :, None]
     eps_hat   = jnp.fft.fftn(
         eps_fluct.reshape(3, 3, *grid_n), axes=fft_axes
     ).reshape(3, 3, Nv)
 
-    eps_xi    = jnp.einsum('ijm,jm->im',    eps_hat, xi_flat)           # (3, Nv)
-    xi_eps_xi = jnp.einsum('jm,jkm,km->m', xi_flat, eps_hat, xi_flat)  # (Nv,)
+    eps_xi    = jnp.einsum('ijm,jm->im',    eps_hat, xi_flat)
+    xi_eps_xi = jnp.einsum('jm,jkm,km->m', xi_flat, eps_hat, xi_flat)
 
     u_hat = (-2j * eps_xi / xi_s[None, :]
              + 1j * xi_flat * xi_eps_xi[None, :] / xi_s[None, :] ** 2)
@@ -354,7 +229,6 @@ def compute_displacement(
         u_hat.reshape(3, *grid_n), axes=fft_axes
     ).real.reshape(3, Nv)
 
-    # Macroscopic contribution: u_i^macro = ε̄_ij x_j  at voxel centres
     x_c     = [jnp.arange(grid_n[k]) * grid_dx[k] + grid_dx[k] / 2
                for k in range(ndim)]
     X       = jnp.stack([g.ravel() for g in jnp.meshgrid(*x_c, indexing='ij')])

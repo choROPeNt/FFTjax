@@ -1,13 +1,9 @@
 """
-Gamma0 fixed-point operator for the Lippmann-Schwinger scheme.
+Gamma0 operator for the Lippmann-Schwinger scheme: the Green tensor applied in
+Fourier space to a real-space field.
 
-Note on scope: Gamma0 = sym(grad) : G0 : sym(grad) is a real composition, but
-G0's contribution is already fully baked into GreenOperatorBasic/Willot's `G`
-tensor via n_hat = xi/|xi| (see the comment at build_green_operator's n_hat
-step in green.py) -- Gamma0 is degree-0 homogeneous in xi, so there is no
-separate raw-gradient LinearOperator to compose here. What remains is purely
-mechanical: apply the (already-composed) Green operator in Fourier space to a
-real-space per-voxel tensor field.
+G0 is already folded into the Green operator's ``G`` (via n_hat = xi/|xi|), so
+there is no separate gradient operator to compose.
 """
 
 from __future__ import annotations
@@ -22,29 +18,11 @@ from operators.general_functions import ddot42
 
 class Gamma0Operator(LinearOperator):
     """
-    x -> ifftn(green_op(fftn(x))), on a per-voxel (3, 3, Nv) tensor field
-    defined over a periodic grid of shape ``n``.
+    ``x -> ifftn(green_op(fftn(x)))`` on a (3, 3, Nv) field over grid ``n``. Self-adjoint.
 
-    Automatically domain-decomposes across ``jax.local_device_count()``
-    devices (a slab-decomposed distributed FFT, see operators.fft_distributed)
-    whenever more than one is available and the grid divides evenly --
-    transparently, no separate class or call needed. On a single-device
-    machine (the common case, and every existing caller's test environment)
-    this takes exactly the original single-device jnp.fft.fftn/ifftn path,
-    unchanged. ``n_devices`` caps the auto-detected count -- mainly for
-    forcing the single-device path on a multi-device machine (e.g. in tests);
-    production callers leave it at ``None``.
-
-    The distributed path needs ``green_op.G`` -- the cached (3,3,3,3,Nv)
-    Fourier-space tensor every current green_op (GreenOperatorBasic/Willot,
-    GalerkinProjector, mixed_bc._PatchedOperator) already has, all using the
-    same ``ddot42(self.G, x)`` calling convention -- so it can be split into
-    per-device slabs once, up front, instead of re-applying ``green_op``
-    itself per call (which would need the *full*, unsharded ``G``).
-
-    Self-adjoint: ``green_op`` is self-adjoint in Fourier space, and forward/
-    inverse DFT are adjoints of each other on real fields, so the composition
-    is self-adjoint on real fields too.
+    Splits across ``jax.local_device_count()`` devices when more than one is
+    available (``n_devices`` caps it); one device is the plain ``jnp.fft`` path.
+    The distributed path slices ``green_op.G`` once up front.
     """
 
     def __init__(self, n: tuple[int, ...], green_op: LinearOperator, n_devices: int | None = None):
@@ -64,7 +42,7 @@ class Gamma0Operator(LinearOperator):
         return jnp.fft.ifftn(x.reshape(s[:-1] + self.n), axes=(-3, -2, -1)).real.reshape(s)
 
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
-        """x, result: (3, 3, Nv) real-space tensor field, e.g. a strain field."""
+        """x, result: (3, 3, Nv) real-space field."""
         if self.n_devices == 1:
             return self._ifft(self.green_op(self._fft(x)))
 

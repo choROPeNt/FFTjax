@@ -1,11 +1,4 @@
-"""
-Property extractors: (phase, materials, n, L) -> a scalar structure-property
-value, via one in-process FFT solve. Structure-property sweeps and
-surrogate-fitting workflows (e.g. notebooks/structure_property/structure-property_phi-sweep.ipynb)
-call one of these instead of each hand-rolling its own boundary-condition
-and homogenization arithmetic -- see learning.surrogates.GPSurrogate for the
-matching surrogate-fitting half.
-"""
+"""Structure-property extractors: (phase, materials, n, L) -> one scalar property via one FFT solve."""
 
 import jax.numpy as jnp
 
@@ -23,31 +16,22 @@ def effective_modulus(
     maxiter: int = 200,
 ) -> tuple[float, dict[int, float], bool]:
     """
-    Effective engineering modulus E_ii and the associated transverse
-    Poisson's ratios, from one mixed-BC displacement solve: direction `i`
-    strain-controlled to `eps0`, every other diagonal direction stress-
-    controlled to zero (free lateral surfaces) -- a real uniaxial tensile
-    test, not the stiffer constrained coefficient a pure-strain BC would
-    give. Same convention as notebooks/mechanics/lin-elastic_mixed-BC.ipynb.
+    Engineering modulus E_ii and Poisson's ratios from one uniaxial test:
+    eps_ii = eps0, the other normal stresses zero (free surfaces), unlike
+    the stiffer pure-strain coefficient.
 
     Parameters
     ----------
-    phase, materials, n, L : see problems.mechanics.solve_mechanics
-    component : (i, i) diagonal index to load -- only i == j is supported;
-                a shear/off-diagonal probe has no free-surface Poisson's-
-                ratio pair to report, use solve_mechanics directly for that
-    eps0      : probe strain magnitude on the loaded direction
-    toler_lin, maxiter : mechanical CG tolerance / iteration cap
+    phase, materials, n, L : as solve_mechanics
+    component : (i, i); shear is not supported
+    eps0      : applied strain
+    toler_lin, maxiter : CG tolerance and cap
 
     Returns
     -------
-    E         : float -- sigma_ii / eps_ii at the loaded direction
-    nu        : dict[int, float] -- {j: -eps_jj / eps_ii} for every other
-                diagonal j (e.g. {1: nu_12, 2: nu_13} when component=(0, 0))
-    converged : bool -- the mechanical CG solve's own convergence flag;
-                NOT checked here, since a one-shot property extractor used
-                inside a sweep shouldn't raise mid-loop -- callers that care
-                (e.g. a surrogate fit) should filter on it themselves
+    E         : sigma_ii / eps_ii
+    nu        : {j: -eps_jj / eps_ii} for the other directions
+    converged : not checked here, so a sweep doesn't stop mid-loop
     """
     i, j = component
     if i != j:

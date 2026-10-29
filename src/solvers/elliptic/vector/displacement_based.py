@@ -1,18 +1,9 @@
 """
-Displacement-based Newton-CG solve for the variational FFT elastic solver,
-supporting mixed strain/stress macroscopic boundary conditions.
+Displacement-based Newton-CG elastic solve with mixed strain/stress BC.
 
-Unlike the strain-based ``solve_lippmann_schwinger`` (fixed reference-medium
-Green's operator), this solves directly for a periodic displacement
-fluctuation field via the true (possibly heterogeneous) tangent stiffness
-``C_field``, with no reference-medium approximation. The macroscopic-average
-strain correction for stress-controlled directions is solved for jointly
-with the displacement fluctuation, by embedding it in the (otherwise
-physically meaningless) zero-frequency mode of the Fourier-space strain
-field.
-
-Ported fresh from this project's earlier (pre-refactor) ``ddisp_nw_cg``,
-itself a port of FFTMAD's ``displacement_nw_cg_small`` / ``du_loc_nw_CG``.
+Solves for the periodic displacement fluctuation with the true tangent
+``C_field`` (no reference medium). The macroscopic strain of stress-controlled
+directions is solved jointly, carried in the zero-frequency mode of the strain.
 """
 
 import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on TPU, no GPU prealloc)
@@ -51,39 +42,27 @@ def solve_displacement_based(
     n_devices: int | None = None,
 ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
+    Displacement-based solve; shards the whole CG across devices when more than one is available.
+
     Parameters
     ----------
-    n           : grid shape (nx, ny, nz) -- must be static for JIT
-    C_field     : (3, 3, 3, 3, Nv)  per-voxel tangent stiffness
-    xi_flat     : (3, Nv)           angular-frequency grid (``operators.green.build_freq_grid``)
-    eps_bar     : (3, 3)  prescribed macroscopic strain; entries where
-                  ``control == 1`` are ignored (solved for instead)
-    control     : (3, 3) static 0/1 mask, 1 = stress-controlled, 0 = strain-controlled
-    stress_goal : (3, 3)  target macroscopic stress; only entries where
-                  ``control == 1`` are used
-    toler_lin   : relative CG residual tolerance
-    maxiter     : maximum CG iterations -- must be static for JIT
-    C0          : (3, 3, 3, 3) or None  reference stiffness used to build a
-                  frequency-domain preconditioner ``(ξ·C0·ξ)⁻¹``. Without a
-                  preconditioner CG needs O(10²-10³) iterations for realistic
-                  (high-contrast) composites; default is the voxel-average of
-                  ``C_field``.
-    n_devices : caps the auto-detected device count
-                  (``choose_device_count``). At > 1 the whole CG runs under
-                  one ``jax.shard_map`` (``_solve_displacement_based_sharded``):
-                  ``C_field`` and every CG vector stay x-slab sharded, never
-                  gathered; returned fields stay sharded too. None (default)
-                  uses jax.local_device_count(); at 1 this is the original
-                  single-device solve.
+    n           : grid shape (static)
+    C_field     : (3, 3, 3, 3, Nv) tangent stiffness
+    xi_flat     : (3, Nv) frequencies (operators.green.build_freq_grid)
+    eps_bar     : (3, 3) macroscopic strain; stress-controlled entries ignored
+    control     : (3, 3) static 0/1 mask, 1 = stress-controlled
+    stress_goal : (3, 3) target stress, stress-controlled entries only
+    toler_lin   : CG relative tolerance
+    maxiter     : CG iteration cap (static)
+    C0          : (3, 3, 3, 3) reference stiffness for the preconditioner
+                  (xi.C0.xi)^-1; default: voxel mean of C_field
+    n_devices   : device cap for domain decomposition (None = all)
 
     Returns
     -------
-    eps        : (3, 3, Nv)   updated local strain
-    sigma      : (3, 3, Nv)   updated local stress  σ = C : ε
-    delta      : (3, 3, Nv)   strain correction (fluctuation + macroscopic part)
-    eps_bar_out: (3, 3)       macroscopic strain, with stress-controlled
-                 entries filled in by the solve
-    converged  : bool array   True if residual tolerance met
+    eps, sigma, delta : (3, 3, Nv) strain, stress, strain correction
+    eps_bar_out       : (3, 3) macroscopic strain, stress-controlled entries solved
+    converged         : bool
     """
     resolved_n_devices = choose_device_count(n, n_devices)
     if resolved_n_devices > 1:
@@ -103,14 +82,11 @@ def _solve_displacement_based_local(n, C_field, xi_flat, eps_bar, control, stres
     Nv = prod(n)
     pairs = _active_pairs(control)
     control_arr = jnp.asarray(control, dtype=eps_bar.dtype)
-    # pack/unpack the macroscopic-strain correction (stress-controlled only) --
-    # shared implementation, see solvers.elliptic.vector.mixed_bc.
     sv2sm = partial(_sv2sm, pairs=pairs)
     sm2sv = partial(_sm2sv, pairs=pairs)
 
-    iq = 1j * nyquist_safe_xi(xi_flat, n)  # (3, Nv)
+    iq = 1j * nyquist_safe_xi(xi_flat, n)
 
-    # ── FFT helpers ───────────────────────────────────────────────────────────
     def fft_(x):
         s = x.shape
         return jnp.fft.fftn(x.reshape(s[:-1] + n), axes=(-3, -2, -1)).reshape(s)
@@ -127,8 +103,6 @@ def _solve_displacement_based_local(n, C_field, xi_flat, eps_bar, control, stres
     def pack(du, sv):
         return jnp.concatenate([du.reshape(-1), sv])
 
-    # ── strain from a displacement field, with macroscopic part embedded in
-    #    the zero-frequency (DC) mode:  mean(eps_pert) = deps_bar_free ────────
     def strain_from_u(du, deps_bar_free):
         du_hat   = fft_(du)
         grad_hat = jnp.einsum("im,jm->ijm", du_hat, iq)
@@ -136,7 +110,6 @@ def _solve_displacement_based_local(n, C_field, xi_flat, eps_bar, control, stres
         eps_hat  = eps_hat.at[:, :, 0].set(Nv * deps_bar_free.astype(eps_hat.dtype))
         return ifft_(eps_hat)
 
-    # ── Linear operator  A(du, dsv) = (div residual, mean-stress residual) ───
     def A_op(x_flat):
         du, sv        = unpack(x_flat)
         eps_trial     = strain_from_u(du, sv2sm(sv))
@@ -146,7 +119,6 @@ def _solve_displacement_based_local(n, C_field, xi_flat, eps_bar, control, stres
         extra_out     = -sm2sv(jnp.real(sigma_hat[:, :, 0]))
         return pack(div_flat, extra_out)
 
-    # ── RHS from the prescribed (strain-controlled) baseline strain ─────────
     eps0      = jnp.ones((3, 3, Nv)) * (eps_bar * (1.0 - control_arr))[:, :, None]
     sigma0    = jnp.einsum("ijklm,klm->ijm", C_field, eps0)
     sigma0_hat = fft_(sigma0)
@@ -154,13 +126,8 @@ def _solve_displacement_based_local(n, C_field, xi_flat, eps_bar, control, stres
     bb_extra  = sm2sv(jnp.real(sigma0_hat[:, :, 0])) - Nv * sm2sv(stress_goal)
     bb        = pack(bb_div, bb_extra)
 
-    # ── Preconditioner  M ≈ A⁻¹, built from a reference (homogeneous) medium ──
-    # "du" block: per-frequency acoustic tensor  K0(ξ) = ξ·C0·ξ  (3,3,Nv),
-    # inverted pointwise. ξ=0 at the true DC bin *and* at every point where a
-    # Nyquist-zeroed dimension (see operators.green.nyquist_safe_xi) makes all components
-    # vanish simultaneously -- K0 is singular there and must be regularized;
-    # these are exactly the directions the operator itself is blind to
-    # (a rigid-body-translation-like gauge freedom), so any regular value works.
+    # K0 = xi.C0.xi is singular where all (Nyquist-zeroed) xi vanish; the
+    # operator is blind there too (a translation gauge), so any regular value works.
     C0_ref  = jnp.mean(C_field, axis=-1) if C0 is None else C0
     K0_hat  = jnp.einsum("jm,ijkl,lm->ikm", iq.imag, C0_ref, iq.imag)
     null_pt = jnp.all(iq.imag == 0.0, axis=0)
@@ -172,9 +139,6 @@ def _solve_displacement_based_local(n, C_field, xi_flat, eps_bar, control, stres
         z_hat = jnp.einsum("ikm,km->im", K0_inv, r_hat)
         return ifft_(z_hat)
 
-    # "extra" block: self-coupling of the macroscopic-strain unknowns,
-    # approximated with the same reference stiffness (-Nv * C0 : sv2sm(·)),
-    # matching the sign of A_op's extra_out.
     if pairs:
         basis   = jnp.eye(len(pairs), dtype=eps_bar.dtype)
         P_extra = jnp.stack([
@@ -187,7 +151,6 @@ def _solve_displacement_based_local(n, C_field, xi_flat, eps_bar, control, stres
         z_sv = jnp.linalg.solve(P_extra, sv) if pairs else sv
         return pack(M_du(du), z_sv)
 
-    # ── CG solve ──────────────────────────────────────────────────────────────
     x0 = jnp.zeros_like(bb)
     x_flat, converged = cg_solve(A_op, bb, x0, toler_lin, maxiter, M=M)
 
@@ -206,16 +169,12 @@ def _solve_displacement_based_local(n, C_field, xi_flat, eps_bar, control, stres
 def _solve_displacement_based_sharded(n, C_field, xi_flat, eps_bar, control, stress_goal,
                                       toler_lin, maxiter, C0, n_devices):
     """
-    ``n_devices > 1`` body of ``solve_displacement_based``: same system and
-    preconditioner as ``_solve_displacement_based_local``, with ``C_field``,
-    ``iq``, ``K0_inv`` and the CG vectors held as local x-slabs under one
-    ``jax.shard_map`` (``pfft3d_flat`` + ``cg_solve_pmap``).
+    ``n_devices > 1`` body of ``solve_displacement_based``, all under one ``shard_map``.
 
-    The global DC bin is local index 0 on device 0 (``axis_index == 0``), so
-    the macroscopic-strain injection/readout is masked to that device. The
-    K mean-strain unknowns appended to ``x`` likewise live only on device 0
-    (zeros elsewhere, which A, M and the RHS preserve exactly), so the
-    psum'd CG dot products count them once; a final psum replicates them.
+    The DC bin is local index 0 on device 0, so the macroscopic-strain
+    injection and readout are masked to that device. The mean-strain unknowns
+    also live only on device 0 (zeros elsewhere, kept by A, M and the RHS), so
+    the psum'd CG dot products count them once.
     """
     Nv = prod(n)
     n_local = (n[0] // n_devices, n[1], n[2])
@@ -224,8 +183,8 @@ def _solve_displacement_based_sharded(n, C_field, xi_flat, eps_bar, control, str
     sv2sm = partial(_sv2sm, pairs=pairs)
     sm2sv = partial(_sm2sv, pairs=pairs)
 
-    xi_safe = nyquist_safe_xi(xi_flat, n)                             # (3, Nv), sharded
-    C0_ref = jnp.mean(C_field, axis=-1) if C0 is None else C0         # cross-device mean
+    xi_safe = nyquist_safe_xi(xi_flat, n)
+    C0_ref = jnp.mean(C_field, axis=-1) if C0 is None else C0
 
     def solve_local(C_local, xi_local, C0_ref):
         Nv_local = C_local.shape[-1]
@@ -289,7 +248,7 @@ def _solve_displacement_based_sharded(n, C_field, xi_flat, eps_bar, control, str
         x_flat, converged = cg_solve_pmap(A_op, bb, x0, toler_lin, maxiter, axis_name=AXIS, M=M)
 
         du_sol, sv_sol = unpack(x_flat)
-        deps_bar_free = sv2sm(lax.psum(sv_sol, AXIS))  # nonzero only on device 0
+        deps_bar_free = sv2sm(lax.psum(sv_sol, AXIS))
         delta = strain_from_u(du_sol, deps_bar_free)
         eps   = eps0 + delta
         sigma = jnp.einsum("ijklm,klm->ijm", C_local, eps)
@@ -304,13 +263,7 @@ def _solve_displacement_based_sharded(n, C_field, xi_flat, eps_bar, control, str
 
 
 class DisplacementBasedSolver(ElasticitySolver):
-    """
-    ElasticitySolver wrapping solve_displacement_based: displacement-based,
-    periodic, supports mixed strain/stress macroscopic BC via ``control``.
-    Formulation-specific setup (grid shape, frequency grid, mixed-BC control
-    mask, CG tolerance) lives here in __init__; solve() takes only what's
-    common to every ElasticitySolver.
-    """
+    """ElasticitySolver for ``solve_displacement_based``; mixed BC via ``control``."""
 
     def __init__(
         self,

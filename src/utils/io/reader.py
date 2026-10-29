@@ -1,47 +1,21 @@
 """
-Readers for the file formats used in FFTjax.
+Readers for FFTjax file formats; all return numpy arrays in XYZ C-order.
 
-    read_xdmf  — load field arrays from an HDF5/XDMF simulation output
-                 (also accepts a bare/metadata-less .h5, given L or dx)
-    read_vtu   — load a TexGen (or generate_weave) voxel mesh
-    read_vti   — load a vtkImageData (.vti) field file
-    read_npz   — load a numpy .npz archive (e.g. preproc output)
-    read_npy   — load a bare numpy .npy phase array, given L or dx
+    read_xdmf  simulation output .h5/.xdmf (or a bare .h5, given L or dx)
+    read_vtu   TexGen / generate_weave voxel mesh
+    read_vti   vtkImageData field file
+    read_npz   numpy archive (e.g. preprocessing output)
+    read_npy   bare phase array, given L or dx
 
-Self-describing formats (.xdmf, .vtu, .vti, .npz) carry their own grid
-length -- L is read straight from the file, no extra argument needed.
-Metadata-less formats (.npy, and a bare .h5 with no n/L attrs) carry only
-the array itself, so the caller must supply exactly one of L (physical
-domain size) or dx (voxel size); the other is derived (L = n * dx).
-
-All functions return plain numpy arrays in FFTjax C-order (X slowest).
-
-Quick reference
----------------
->>> from utils.io.reader import read_xdmf, read_vtu, read_vti, read_npz, read_npy
-
-# simulation output
->>> n, L, fields = read_xdmf("output/simulation/myrun.h5")
->>> stress = fields["stress"]   # (nx, ny, nz, 6)
-
-# voxel geometry
->>> n, L, phase, orient, yarn_index, vf = read_vtu("data/200.vtu")
-
-# vtkImageData field file
->>> n, L, fields = read_vti("data/geometry.vti")
-
-# preprocessor output
->>> data = read_npz("output/preprocessed/myrun_delam_preproc.npz")
->>> d_init = data["d_init"]
-
-# bare phase array -- no embedded length, must be given
->>> n, L, phase = read_npy("output/generation/geom.npy", dx=(0.001, 0.001, 0.001))
+    >>> n, L, fields = read_xdmf("output/simulation/myrun.h5")
+    >>> n, L, phase, orient, yarn_index, vf = read_vtu("data/200.vtu")
+    >>> n, L, phase = read_npy("geom.npy", dx=(0.001, 0.001, 0.001))
 """
 
 from __future__ import annotations
 
 import warnings
-import xml.etree.ElementTree as ET  # used for VTU/VTI parsing
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import numpy as np
@@ -52,11 +26,7 @@ def _resolve_grid_length(
     L: tuple[float, ...] | None,
     dx: tuple[float, ...] | None,
 ) -> tuple[float, ...]:
-    """
-    Resolve a grid's physical length from exactly one of L or dx -- shared
-    by every metadata-less reader (read_npy, read_xdmf's bare-.h5 fallback)
-    since a bare array has no other source for it.
-    """
+    """Domain length from exactly one of L or dx (L = n dx), for formats without one."""
     if L is not None and dx is not None:
         raise ValueError(
             "specify at most one of L or dx -- they're redundant (L = n * dx)"
@@ -71,8 +41,6 @@ def _resolve_grid_length(
     )
 
 
-# ── XDMF / HDF5 ──────────────────────────────────────────────────────────────
-
 def read_xdmf(
     path: str | Path,
     increment: int = 0,
@@ -80,33 +48,21 @@ def read_xdmf(
     dx: tuple[float, ...] | None = None,
 ) -> tuple[tuple[int, int, int], tuple[float, float, float], dict[str, np.ndarray]]:
     """
-    Read field arrays from a simulation HDF5 file (companion to .xdmf), or
-    from a bare/metadata-less .h5 that just holds one dataset (no
-    IncrementalWriter increment_NNNNNN structure, no n/L root attrs).
+    Fields of one increment from IncrementalWriter output (.h5 or .xdmf path),
+    or every top-level dataset of a bare .h5.
 
-    Accepts either the ``.h5`` or ``.xdmf`` path — the HDF5 file is located
-    automatically by replacing the suffix with ``.h5``.
-
-    Arrays are stored in ZYX order in HDF5 (XDMF CoRectMesh convention).
-    This function transparently transposes them back to FFTjax C-order XYZ,
-    so the returned arrays have shape ``(nx, ny, nz)`` for scalars and
-    ``(nx, ny, nz, k)`` for k-component fields.
+    Stored ZYX (XDMF CoRectMesh), returned XYZ: (nx, ny, nz) or (nx, ny, nz, k).
 
     Parameters
     ----------
-    path      : .h5 or .xdmf file path
-    increment : increment index to read (default 0) -- only meaningful for
-                an IncrementalWriter-produced file with n/L root attrs.
-    L, dx     : only used as a fallback when the file has no n/L root
-                attrs (a bare .h5, not one of ours) -- exactly one of them,
-                see _resolve_grid_length. Ignored (with the file's own
-                value used instead) when n/L attrs are present.
+    path      : .h5 or .xdmf
+    increment : increment to read
+    L, dx     : domain length for a bare .h5 only (exactly one)
 
     Returns
     -------
-    n      : (nx, ny, nz)
-    L      : (Lx, Ly, Lz)  mm
-    fields : dict[name → numpy array in XYZ order]
+    n, L   : grid shape and length
+    fields : {name: array}
     """
     import h5py
 
@@ -116,7 +72,6 @@ def read_xdmf(
 
     fields: dict[str, np.ndarray] = {}
     with h5py.File(h5_path, "r") as f:
-        # grid metadata (stored as root attributes by IncrementalWriter / preproc)
         if "n" in f.attrs and "L" in f.attrs:
             n = tuple(int(v) for v in np.array(f.attrs["n"]))
             L_out = tuple(float(v) for v in np.array(f.attrs["L"]))
@@ -135,18 +90,13 @@ def read_xdmf(
                 ds = grp[name]
                 assert isinstance(ds, h5py.Dataset)
                 arr = np.array(ds)
-                # IncrementalWriter stores spatial dims in ZYX (XDMF
-                # CoRectMesh convention) -- transpose back to XYZ.
-                if arr.ndim == 3:                    # scalar (nz, ny, nx)
+                if arr.ndim == 3:
                     arr = arr.transpose(2, 1, 0)
-                elif arr.ndim == 4:                  # vector/tensor (nz, ny, nx, k)
+                elif arr.ndim == 4:
                     arr = arr.transpose(2, 1, 0, 3)
                 fields[name] = arr
         else:
-            # Bare .h5: no IncrementalWriter attrs/structure, so no ZYX
-            # storage convention to undo either -- each top-level dataset is
-            # taken at face value (same as read_npy), physical length
-            # supplied by the caller since the file can't carry it itself.
+            # Bare .h5: datasets taken as stored (no ZYX convention to undo).
             dataset_names = [name for name in f.keys() if isinstance(f[name], h5py.Dataset)]
             if not dataset_names:
                 raise KeyError(
@@ -161,10 +111,6 @@ def read_xdmf(
     return n, L_out, fields   # type: ignore[return-value]
 
 
-# ── VTU ──────────────────────────────────────────────────────────────────────
-
-# VTK DataArray type= string -> numpy dtype code (byte-order prefix added by
-# the caller, from the file's own <VTKFile byte_order=...>).
 _VTK_DTYPE = {
     "Int8": "i1", "UInt8": "u1",
     "Int16": "i2", "UInt16": "u2",
@@ -175,12 +121,7 @@ _VTK_DTYPE = {
 
 
 def _appended_data_start(raw: bytes) -> int:
-    """Byte offset (into ``raw``) of the first byte of actual appended
-    binary data -- the VTK XML appended-data convention marks the start of
-    the raw blob with a single ``_`` byte immediately after
-    ``<AppendedData ...>``'s closing ``>``; every DataArray's own
-    ``offset=`` attribute is relative to THIS point, not the start of the
-    file."""
+    """Start of the appended binary blob (after the ``_`` marker); DataArray offsets count from here."""
     tag_end = raw.index(b"<AppendedData")
     marker = raw.index(b"_", raw.index(b">", tag_end))
     return marker + 1
@@ -190,18 +131,7 @@ def _read_appended_array(
     raw: bytes, data_start: int, offset: int, vtk_type: str,
     header_dtype: str, byte_order: str,
 ) -> np.ndarray:
-    """One DataArray's raw appended-binary payload.
-
-    Per the VTK XML format, ``raw[data_start + offset:]`` is
-    ``[header][payload]``: a ``header_dtype``-sized unsigned length prefix
-    (its size set by ``<VTKFile header_type=...>``, e.g. 8 bytes for
-    "UInt64"), giving the payload's byte length, immediately followed by
-    that many bytes of raw ``byte_order``-endian ``vtk_type`` values.
-    Verified against a real appended-binary TexGen export: each DataArray's
-    own ``offset`` equals the previous one's ``offset + header_size +
-    payload_size`` exactly, chaining Points -> connectivity -> offsets ->
-    types -> YarnIndex -> Orientation -> VolumeFraction with no gaps.
-    """
+    """One DataArray from the appended blob: a ``header_dtype`` byte count, then the payload."""
     bo = "<" if byte_order == "LittleEndian" else ">"
     header_size = np.dtype(bo + header_dtype).itemsize
     pos = data_start + offset
@@ -210,8 +140,7 @@ def _read_appended_array(
     return np.frombuffer(raw, dtype=bo + _VTK_DTYPE[vtk_type], count=n_bytes // np.dtype(bo + _VTK_DTYPE[vtk_type]).itemsize, offset=payload_start)
 
 
-# TexGen exports vary the fiber-direction CellData array's name by version;
-# both are the same per-voxel unit tangent, so either is accepted.
+# TexGen names the fiber-direction array differently across versions.
 _ORIENTATION_FIELD_NAMES = ('YarnTangent', 'Orientation')
 
 
@@ -219,8 +148,7 @@ def _da_array(
     da: ET.Element, raw: bytes | None, data_start: int | None,
     header_dtype: str, byte_order: str,
 ) -> np.ndarray:
-    """Decode one DataArray's values, whether stored inline as ``ascii`` text
-    or out-of-line in the file's ``<AppendedData>`` binary blob."""
+    """Values of one DataArray, inline ``ascii`` or ``appended`` binary."""
     fmt = da.attrib.get('format', 'ascii')
     if fmt == 'ascii':
         return np.fromstring(da.text or "", sep=' ')
@@ -248,29 +176,18 @@ def _read_texgen_vtu(
     np.ndarray,
 ]:
     """
-    Parse a TexGen voxel VTU (UnstructuredGrid of hexahedral cells).
+    Parse a TexGen or generate_weave voxel VTU (hexahedral UnstructuredGrid).
 
-    Also accepts VTU files produced by ``generate_weave.py``; those
-    contain a ``VolumeFraction`` field with smooth SDF-based phi values.
-    Both inline-``ascii`` and out-of-line ``appended`` (raw binary)
-    DataArrays are supported -- the latter is not valid XML on its own
-    (the raw bytes can contain tokens ElementTree rejects), so only the
-    header up to ``<AppendedData>`` is parsed as XML; each DataArray's own
-    ``offset=`` is then used to decode its payload directly out of the
-    file's raw bytes.
-
-    Parameters
-    ----------
-    path : str or Path
+    Appended binary data is not valid XML, so only the header up to
+    ``<AppendedData>`` is parsed; payloads are decoded from the raw bytes.
 
     Returns
     -------
-    n              : (nx, ny, nz)
-    L              : (Lx, Ly, Lz)  mm
-    phase          : (Nv,) int      0=matrix, 1=yarn  (C-order)
-    orientations   : (3, Nv) float  YarnTangent/Orientation per voxel
-    yarn_index     : (Nv,) int      raw YarnIndex (-1=matrix, >=0=yarn number)
-    volume_fraction: (Nv,) float    smooth phi if present, binary fallback otherwise
+    n, L            : grid shape and length
+    phase           : (Nv,) int, 0 matrix, 1 yarn
+    orientations    : (3, Nv) yarn tangent
+    yarn_index      : (Nv,) int, -1 matrix, >= 0 yarn
+    volume_fraction : (Nv,) smooth phi if present, else binary
     """
     raw = Path(path).read_bytes()
     appended_tag = raw.find(b"<AppendedData")
@@ -336,7 +253,7 @@ def _read_texgen_vtu(
         vf_flat = np.where(phase_flat >= 0, 1.0, 0.0)
 
     phase        = np.where(phase_flat >= 0, 1, 0).astype(np.int32)
-    orientations = tangent_flat.T.copy()   # (3, Nv)
+    orientations = tangent_flat.T.copy()
 
     return (nx, ny, nz), (Lx, Ly, Lz), phase, orientations, phase_flat, vf_flat
 
@@ -351,44 +268,16 @@ def read_vtu(
     np.ndarray,
     np.ndarray,
 ]:
-    """
-    Read a TexGen (or generate_weave) voxel mesh.
-
-    Parameters
-    ----------
-    path : .vtu file path
-
-    Returns
-    -------
-    n              : (nx, ny, nz)
-    L              : (Lx, Ly, Lz)  mm
-    phase          : (Nv,) int      0=matrix, 1=yarn
-    orientations   : (3, Nv) float  YarnTangent per voxel
-    yarn_index     : (Nv,) int      raw YarnIndex (-1=matrix, >=0=yarn)
-    volume_fraction: (Nv,) float    smooth φ·Vf_yarn or binary fallback
-    """
+    """TexGen / generate_weave voxel mesh: ``n, L, phase, orientations, yarn_index, volume_fraction``."""
     return _read_texgen_vtu(path)
 
-
-# ── VTI ──────────────────────────────────────────────────────────────────────
 
 def _read_vti(
     path: str | Path,
 ) -> tuple[tuple[int, int, int], tuple[float, float, float], dict[str, np.ndarray]]:
     """
-    Parse a vtkImageData (.vti) file -- a regular/uniform grid, unlike the
-    unstructured hex mesh read_vtu handles, so its own physical length is
-    read straight off the file's Spacing/WholeExtent, no centroid-spacing
-    derivation needed.
-
-    Only inline ascii DataArrays are supported (no binary-appended/base64
-    payloads -- not needed for this project's own writers, and would need a
-    separate decode path if a file ever shows up using it).
-
-    CellData is preferred over PointData (one value per voxel, matching this
-    project's phase/field convention); PointData is used only as a fallback,
-    in which case n is the point-grid shape (one larger per dimension than
-    the corresponding cell grid).
+    Parse a vtkImageData file (inline ascii only). CellData is preferred;
+    with PointData only, ``n`` is the point grid (one larger per axis).
     """
     tree  = ET.parse(str(path))
     image = tree.getroot().find('ImageData')
@@ -426,9 +315,7 @@ def _read_vti(
         ncomp = int(da.attrib.get('NumberOfComponents', 1))
         raw   = np.fromstring(da.text or "", sep=' ')
 
-        # VTK ImageData orders points/cells with X fastest, then Y, then Z --
-        # same flat layout as HDF5's ZYX storage in read_xdmf, so the same
-        # reshape-then-transpose-back-to-XYZ recipe applies.
+        # X fastest, like the ZYX storage in read_xdmf.
         if ncomp == 1:
             arr = raw.reshape(nz, ny, nx).transpose(2, 1, 0)
         else:
@@ -441,50 +328,17 @@ def _read_vti(
 def read_vti(
     path: str | Path,
 ) -> tuple[tuple[int, int, int], tuple[float, float, float], dict[str, np.ndarray]]:
-    """
-    Read a vtkImageData (.vti) field file.
-
-    Self-describing like read_xdmf/read_vtu -- L comes straight from the
-    file's Spacing/WholeExtent, no separate argument needed.
-
-    Parameters
-    ----------
-    path : .vti file path
-
-    Returns
-    -------
-    n      : (nx, ny, nz)
-    L      : (Lx, Ly, Lz)  mm
-    fields : dict[name → numpy array in XYZ order]
-    """
+    """vtkImageData field file: ``n, L, fields`` (XYZ)."""
     return _read_vti(path)
 
 
-# ── NPZ ──────────────────────────────────────────────────────────────────────
-
 def read_npz(path: str | Path) -> dict[str, np.ndarray]:
     """
-    Load a numpy .npz archive (e.g. preproc_delamination output).
-
-    Returns a plain dict so arrays can be accessed by name without keeping
-    the NpzFile object open.
-
-    Common keys (preproc output)
-    ----------------------------
-    n, L, phase, orientations, yarn_index, d_init, H_init
-
-    Parameters
-    ----------
-    path : .npz file path
-
-    Returns
-    -------
-    dict[str, np.ndarray]
+    .npz archive as a plain dict (no open NpzFile); preprocessing keys include
+    n, L, phase, orientations, yarn_index, d_init, H_init.
     """
     return dict(np.load(path))
 
-
-# ── NPY ──────────────────────────────────────────────────────────────────────
 
 def read_npy(
     path: str | Path,
@@ -492,25 +346,12 @@ def read_npy(
     dx: tuple[float, ...] | None = None,
 ) -> tuple[tuple[int, ...], tuple[float, ...], np.ndarray]:
     """
-    Load a bare numpy .npy phase array.
-
-    Unlike every other reader here, a .npy file carries no physical-length
-    metadata at all -- just give exactly one of L (domain size) or dx
-    (voxel size); the other is derived (L = n * dx). n itself still comes
-    for free from the array's own shape.
-
-    Parameters
-    ----------
-    path : .npy file path
-    L    : (Lx, Ly, [Lz])  mm -- physical domain size
-    dx   : (dx, dy, [dz])  mm -- voxel size
+    Bare .npy array; it has no length, so give exactly one of L or dx.
 
     Returns
     -------
-    n     : array.shape
-    L     : physical domain size, resolved from L or dx
-    array : the loaded array, unmodified (FFTjax C-order XYZ already assumed,
-            same as any other plain numpy array in this codebase)
+    n, L  : shape and resolved length
+    array : the array as stored (XYZ)
     """
     array = np.load(path)
     n = tuple(int(v) for v in array.shape)
@@ -518,52 +359,24 @@ def read_npy(
     return n, L_out, array
 
 
-# ── Unified simulation input loader ──────────────────────────────────────────
-
 class SimulationReader:
     """
-    Load geometry + optional pre-crack state from any supported format.
+    Geometry and optional pre-crack state from any supported format, chosen by suffix.
 
-    Dispatches by file suffix — ``.vtu``/``.vti`` → read_vtu/read_vti,
-    ``.h5``/``.xdmf`` → read_xdmf, ``.npz`` → read_npz, ``.npy`` → read_npy —
-    then normalizes each format's fields into one common set of arrays.
+    ``phase_key``/``orientation_key`` name the fields in .h5/.xdmf/.vti/.npz
+    (.vtu derives both from YarnIndex/YarnTangent; .npz also accepts the
+    legacy "orientations"). L/dx only apply to .npy and bare .h5.
 
-    ``.vtu``/``.vti``/``.npz`` are self-describing (carry their own grid
-    length); ``.xdmf``/``.h5`` normally are too (IncrementalWriter output),
-    but a bare/metadata-less ``.h5`` falls back to ``L``/``dx`` like ``.npy``
-    does unconditionally — see ``L``, ``dx`` below.
+        >>> n, L, phase, orientations, yarn_index, vf, d_init, H_init = SimulationReader(path).read()
 
-    ``phase_key`` names which field in the file holds the phase array —
-    default ``"phase"``, override when a file stores it under another name
-    (e.g. a YAML run config's ``phase_key: material_id``). Only meaningful
-    for ``.xdmf``/``.h5``/``.vti``/``.npz`` (named-field formats); ``.vtu``
-    derives phase structurally from ``YarnIndex`` and ``.npy`` is a bare
-    array, so neither has a field name to look up.
-
-    ``orientation_key`` is the same idea for the per-voxel fibre orientation
-    field — default ``"orientation"`` (matching ``generation.weave``'s own
-    output), used e.g. by ``materialmodels.factory.build_material``'s
-    ``fiber_dir: from_input``. Same format restriction as ``phase_key``
-    (``.vtu`` derives orientation structurally from ``YarnTangent`` instead).
-    A ``.npz`` archive also accepts the legacy plural ``"orientations"`` as a
-    fallback if ``orientation_key`` isn't found under its exact name.
-
-    >>> n, L, phase, orientations, yarn_index, vf, d_init, H_init = (
-    ...     SimulationReader(path).read()
-    ... )
-    >>> # a bare phase array -- no embedded length, must be given
-    >>> SimulationReader("geom.npy", dx=(0.001, 0.001, 0.001)).read()
-
-    Returns (from ``.read()``)
-    ---------------------------
-    n              : (nx, ny, nz)
-    L              : (Lx, Ly, Lz)  mm
-    phase          : (Nv,) int      0=matrix, 1=yarn, 2=void/crack
-    orientations   : (3, Nv) float  nearest-yarn tangent per voxel
-    yarn_index     : (Nv,) int      raw YarnIndex (-1=matrix, >=0=yarn, -2=void)
-    volume_fraction: (Nv,) float    smooth φ·Vf or binary fallback
-    d_init         : (Nv,) float    initial damage  (zeros unless stored in npz)
-    H_init         : (Nv,) float    initial history (zeros unless stored in npz)
+    ``read()`` returns
+    ------------------
+    n, L            : grid shape and length
+    phase           : (Nv,) int, 0 matrix, 1 yarn, 2 void/crack
+    orientations    : (3, Nv)
+    yarn_index      : (Nv,) int, -1 matrix, -2 void
+    volume_fraction : (Nv,)
+    d_init, H_init  : (Nv,) zeros unless stored in a .npz
     """
 
     _DISPATCH = {
@@ -575,8 +388,7 @@ class SimulationReader:
         ".npy":  "_from_npy",
     }
 
-    # formats that always carry their own grid length -- an L/dx override
-    # would silently contradict the file, so warn instead of using it.
+    # An L/dx override would contradict the file: warn and ignore it.
     _ALWAYS_SELF_DESCRIBING = {".vtu", ".vti", ".npz"}
 
     def __init__(
@@ -613,14 +425,14 @@ class SimulationReader:
 
     @staticmethod
     def _defaults(n: tuple, phase: np.ndarray):
-        """Fallback values for optional fields."""
+        """Defaults ``orientations, yarn_index, volume_fraction, d_init, H_init``."""
         Nv = int(np.prod(n))
         return (
-            np.zeros((3, Nv)),                # orientations
-            np.full(Nv, -1, dtype=int),       # yarn_index  (-1 = matrix)
-            (phase == 1).astype(float),       # volume_fraction (binary fallback)
-            np.zeros(Nv),                     # d_init
-            np.zeros(Nv),                     # H_init
+            np.zeros((3, Nv)),
+            np.full(Nv, -1, dtype=int),
+            (phase == 1).astype(float),
+            np.zeros(Nv),
+            np.zeros(Nv),
         )
 
     def _from_vtu(self):
@@ -658,7 +470,6 @@ class SimulationReader:
 
     def _from_npy(self):
         n_raw, L_raw, array = read_npy(self.path, L=self.L, dx=self.dx)
-        # promote 2-D grids to 3-D (nz = 1), same convention as _from_npz
         n = n_raw if len(n_raw) == 3 else (*n_raw, 1)
         L = L_raw if len(L_raw) == 3 else (*L_raw, min(L_raw) / n_raw[0])
         phase = array.ravel().astype(int)
@@ -669,19 +480,15 @@ class SimulationReader:
         data  = read_npz(self.path)
         n_raw = tuple(int(v) for v in data["n"])
         L_raw = tuple(float(v) for v in data["L"])
-        # promote 2-D grids to 3-D (nz = 1)
         n = n_raw if len(n_raw) == 3 else (*n_raw, 1)
         L = L_raw if len(L_raw) == 3 else (*L_raw, min(L_raw) / n_raw[0])
         phase = data[self.phase_key].ravel().astype(int)
         ori_def, yi_def, vf_def, d_def, H_def = self._defaults(n, phase)
-        # self.orientation_key first; legacy plural "orientations" as a
-        # fallback for archives that predate orientation_key existing
         _ori = data.get(self.orientation_key)
         if _ori is None:
             _ori = data.get("orientations")
         if _ori is not None:
             arr = np.asarray(_ori)
-            # (*, 3) spatial grid → (3, Nv)
             orientations = arr.reshape(-1, 3).T.copy() if arr.shape[-1] == 3 else arr
         else:
             orientations = ori_def

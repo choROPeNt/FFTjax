@@ -1,11 +1,6 @@
 """
-Unified storage point for the per-problem solution NamedTuples returned by
-solvers/problems ``solve`` entry points across this project.
-
-Both are NamedTuples (not dataclasses) so they're automatically JAX
-pytrees -- safe to pass through jax.jit/grad/jvp/vmap, same convention as
-solvers.types.SolveState. A plain dataclass isn't a pytree without extra
-registration, which would silently break autodiff through the solve.
+Solution NamedTuples returned by the solvers. NamedTuples are JAX pytrees, so
+they pass through jit/grad/vmap.
 """
 
 from __future__ import annotations
@@ -16,97 +11,82 @@ import jax.numpy as jnp
 
 
 class ElasticitySolution(NamedTuple):
-    """Result of one elasticity solve (Lippmann-Schwinger or displacement-based)."""
+    """
+    One elasticity solve.
 
-    eps:       jnp.ndarray  # (3, 3, Nv)  local strain
-    sigma:     jnp.ndarray  # (3, 3, Nv)  local stress
-    delta:     jnp.ndarray  # (3, 3, Nv)  strain correction from the CG solve
-    converged: jnp.ndarray  # bool array
-    eps_bar:   jnp.ndarray | None = None  # (3, 3) macroscopic strain with any
-                                           # stress-controlled entries filled in
-                                           # by the solve -- None (default) for
-                                           # solvers with no mixed-BC concept
-                                           # (LippmannSchwingerSolver -- the
-                                           # plain pure-strain-only one; see
-                                           # LippmannSchwingerMixedBCSolver for
-                                           # its mixed-BC counterpart, notes/
-                                           # controll.md); populated
-                                           # unconditionally (trivially equal to
-                                           # the prescribed eps_bar under pure
-                                           # strain BC) by DisplacementBasedSolver,
-                                           # FourierGalerkinSolver, and
-                                           # LippmannSchwingerMixedBCSolver
+    Attributes
+    ----------
+    eps, sigma : (3, 3, Nv) strain and stress
+    delta      : (3, 3, Nv) strain correction from the CG solve
+    converged  : bool
+    eps_bar    : (3, 3) macroscopic strain with stress-controlled entries
+                 solved; None for the pure-strain LippmannSchwingerSolver
+    """
+
+    eps:       jnp.ndarray
+    sigma:     jnp.ndarray
+    delta:     jnp.ndarray
+    converged: jnp.ndarray
+    eps_bar:   jnp.ndarray | None = None
 
 
 class ThermalSolution(NamedTuple):
-    """Result of one steady-state thermal conduction solve."""
+    """
+    One steady-state thermal conduction solve.
 
-    grad_T:       jnp.ndarray  # (3, Nv)  local temperature gradient
-    flux:         jnp.ndarray  # (3, Nv)  local heat flux  q = -K : grad_T
-    T_prime:      jnp.ndarray  # (Nv,)    periodic temperature fluctuation (the CG
-                                #          unknown itself) -- NOT the absolute
-                                #          temperature field, which also needs the
-                                #          macroscopic linear part grad_T_bar . x;
-                                #          gauge-free (an additive constant is
-                                #          arbitrary), same reasoning
-                                #          post.fields.compute_displacement exists
-                                #          to handle on the elasticity side
-    delta:        jnp.ndarray  # (3, Nv)  gradient correction from the CG solve
-    converged:    jnp.ndarray  # bool array
-    grad_T_bar:   jnp.ndarray | None = None  # (3,) macroscopic gradient with any
-                                              # flux-controlled entries filled in
-                                              # by the solve; None only for a
-                                              # hypothetical future formulation
-                                              # with no mixed-BC concept, mirroring
-                                              # ElasticitySolution.eps_bar -- the
-                                              # one solver this project has always
-                                              # populates it
+    Attributes
+    ----------
+    grad_T     : (3, Nv) temperature gradient
+    flux       : (3, Nv) heat flux q = -K : grad_T
+    T_prime    : (Nv,) periodic temperature fluctuation; not the absolute
+                 temperature (add grad_T_bar . x) and defined up to a constant
+    delta      : (3, Nv) gradient correction from the CG solve
+    converged  : bool
+    grad_T_bar : (3,) macroscopic gradient with flux-controlled entries solved
+    """
+
+    grad_T:       jnp.ndarray
+    flux:         jnp.ndarray
+    T_prime:      jnp.ndarray
+    delta:        jnp.ndarray
+    converged:    jnp.ndarray
+    grad_T_bar:   jnp.ndarray | None = None
 
 
 class FractureSolution(NamedTuple):
     """
-    Result of one staggered mechanics<->phase-field solve (one time
-    increment, converged to the staggered tolerance or ``maxiter_st``
-    exhausted).
+    One staggered mechanics/phase-field increment.
+
+    Attributes
+    ----------
+    eps, sigma, delta   : (3, 3, Nv) degraded strain, stress, last strain correction
+    d, H                : (Nv,) damage and history variable
+    psi_pos             : (Nv,) tensile driving force (Amor split)
+    converged_mech      : bool, last mechanical CG solve
+    converged_helm      : bool, last damage CG solve
+    converged_staggered : staggered loop converged; Python bool from
+                          solve_fracture, JAX bool from solve_fracture_fixed
+    iter_staggered      : staggered iterations run
+    err_abs, err_rel    : max|d_new - d_old| and its ratio to max|d_new|
+    eps_bar             : (3, 3) macroscopic strain with stress-controlled entries
+                          solved; None for pure-strain lippmann_schwinger
     """
 
-    eps:                 jnp.ndarray  # (3, 3, Nv)  local strain (degraded solve)
-    sigma:               jnp.ndarray  # (3, 3, Nv)  local stress (degraded solve)
-    delta:               jnp.ndarray  # (3, 3, Nv)  strain correction from the last CG solve
-    d:                   jnp.ndarray  # (Nv,)       updated damage field
-    H:                   jnp.ndarray  # (Nv,)       updated history variable
-    psi_pos:             jnp.ndarray  # (Nv,)       tensile driving force (undegraded Amor split)
-    converged_mech:      jnp.ndarray  # bool -- last mechanical CG solve
-    converged_helm:      jnp.ndarray  # bool -- last damage CG solve
-    converged_staggered: bool | jnp.ndarray  # staggered fixed-point converged within
-                                              # maxiter_st -- concrete Python bool from
-                                              # solve_fracture (early_exit=True), a JAX
-                                              # bool array from solve_fracture_fixed
-                                              # (early_exit=False, vmap-safe: no bool()
-                                              # concretization -- see _staggered_loop)
-    iter_staggered:      int          # staggered iterations actually run
-    err_abs:             float | jnp.ndarray  # max|d_new - d_old| at the last iteration --
-                                               # float (early_exit=True) or array (early_exit=False)
-    err_rel:             float | jnp.ndarray  # err_abs / max|d_new| -- same float/array split
-    eps_bar:             jnp.ndarray | None = None  # (3, 3) macroscopic strain with
-                                                     # any stress-controlled entries
-                                                     # filled in -- populated for
-                                                     # formulation="displacement" or
-                                                     # "fourier_galerkin" always
-                                                     # (trivially equal to the
-                                                     # prescribed eps_bar under
-                                                     # pure strain BC); for
-                                                     # formulation=
-                                                     # "lippmann_schwinger", only
-                                                     # when ``control`` is
-                                                     # nonzero (the mixed-BC
-                                                     # outer-loop route, see
-                                                     # solve_lippmann_schwinger_
-                                                     # mixed_bc) -- None there
-                                                     # under pure strain BC
+    eps:                 jnp.ndarray
+    sigma:               jnp.ndarray
+    delta:               jnp.ndarray
+    d:                   jnp.ndarray
+    H:                   jnp.ndarray
+    psi_pos:             jnp.ndarray
+    converged_mech:      jnp.ndarray
+    converged_helm:      jnp.ndarray
+    converged_staggered: bool | jnp.ndarray
+    iter_staggered:      int
+    err_abs:             float | jnp.ndarray
+    err_rel:             float | jnp.ndarray
+    eps_bar:             jnp.ndarray | None = None
 
     @property
     def converged(self) -> bool | jnp.ndarray:
-        """Satisfies problems.incremental's Solution protocol -- the staggered
-        loop's own convergence, not the last mechanical/Helmholtz sub-solve."""
+        """Staggered-loop convergence (problems.incremental's Solution protocol)."""
         return self.converged_staggered
