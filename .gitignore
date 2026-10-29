@@ -158,3 +158,6 @@ dmypy.json
 # OS
 .DS_Store
 Thumbs.db
+
+# promo video (manim scenes, generated data, renders) -- kept out of the repo
+video/
