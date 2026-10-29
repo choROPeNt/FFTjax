@@ -559,7 +559,16 @@ class DruckerPrager(ConstitutiveModel):
             q_newton = q - psi / slope
             take = (q_newton >= lo) & (q_newton <= hi)
             q = jnp.where(take, q_newton, 0.5 * (lo + hi))
-        return q
+
+        # Tangent from one Newton step AT the root, not through the loop
+        # (implicit function theorem): value q, derivative -dPsi/dtheta /
+        # dPsi/dq. Through the loop it depended on the path -- at a converged
+        # root the Newton-vs-bisection pick hangs on the last bit, which
+        # jit+vmap batching can flip; same q, but 0.5*(lo + hi) carries the
+        # tangents of earlier iterates (196x off in check 12).
+        q = jax.lax.stop_gradient(q)
+        psi, dpsi = psi_and_slope(q)
+        return q - psi / jnp.where(jnp.abs(dpsi) > _EPS_TINY, dpsi, 1.0)
 
     def _stress_hyperbolic(
         self,
