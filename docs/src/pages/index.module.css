@@ -21,10 +21,9 @@
   inset: 0;
   pointer-events: none;
   z-index: 0;
-  /* Soft dark scrim centered on the text so it stays legible regardless of
-     where it lands on the dark-to-light-purple diagonal -- the corners still
-     show the full gradient, uncovered. */
-  background: linear-gradient(135deg, #0d0887 0%, #4c02a1 25%, #7e03a8 50%, #aa2395 75%, #cc4778 100%);
+  /* Soft dark scrim centered on the text, so it stays legible on every
+     part of the gradient; the corners still show it uncovered. */
+  background: radial-gradient(ellipse at center, rgba(13, 8, 135, 0.35) 0%, transparent 70%);
 }
 
 /* Absolutely-positioned pseudo-elements paint after static in-flow content
@@ -33,10 +32,6 @@
 .heroBanner > :global(.container) {
   position: relative;
   z-index: 1;
-}
-
-[data-theme='dark'] .heroBanner {
-  background: linear-gradient(135deg, #0d0887 0%, #4c02a1 25%, #7e03a8 50%, #aa2395 75%, #cc4778 100%);
 }
 
 @media screen and (max-width: 996px) {

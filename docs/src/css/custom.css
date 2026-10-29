@@ -1,31 +1,47 @@
 /**
- * Any CSS included here will be global. The classic template
- * bundles Infima by default. Infima is a CSS framework designed to
- * work well for content-centric websites.
+ * Global docs theme, built on matplotlib's plasma colormap -- the same one
+ * every field plot uses (src/utils/fftjax.mplstyle). Infima's shade ladder
+ * walks along plasma itself instead of tinting one color: darker shades move
+ * toward plasma's blue end, lighter ones toward its orange/yellow end.
  */
 
-/* You can override the default Infima variables here. */
-/* Deep purple, matching the palette used by the previous Material-based docs */
 :root {
-  --ifm-color-primary: #673ab7;
-  --ifm-color-primary-dark: #5e35b1;
-  --ifm-color-primary-darker: #512da8;
-  --ifm-color-primary-darkest: #4527a0;
-  --ifm-color-primary-light: #7e57c2;
-  --ifm-color-primary-lighter: #9575cd;
-  --ifm-color-primary-lightest: #b39ddb;
+  /* plasma samples, for gradients and accents */
+  --fftjax-plasma: #0d0887 0%, #6a00a8 25%, #b12a90 50%, #e16462 75%, #fca636 100%;
+
+  /* light mode: primary = plasma(0.25), 8.5:1 on white */
+  --ifm-color-primary: #7e03a8;
+  --ifm-color-primary-dark: #6a00a8;      /* plasma 0.20 */
+  --ifm-color-primary-darker: #5601a4;    /* plasma 0.15 */
+  --ifm-color-primary-darkest: #41049d;   /* plasma 0.10 */
+  --ifm-color-primary-light: #8f0da4;     /* plasma 0.30 */
+  --ifm-color-primary-lighter: #a11b9b;   /* plasma 0.35 */
+  --ifm-color-primary-lightest: #b12a90;  /* plasma 0.40 */
+
   --ifm-code-font-size: 95%;
-  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.1);
+  --docusaurus-highlighted-code-line-bg: rgba(126, 3, 168, 0.1);
 }
 
-/* For readability concerns, you should choose a lighter palette in dark mode. */
+/* dark mode: primary = plasma(0.70), 6.7:1 on the dark background */
 [data-theme='dark'] {
-  --ifm-color-primary: #b39ddb;
-  --ifm-color-primary-dark: #9575cd;
-  --ifm-color-primary-darker: #7e57c2;
-  --ifm-color-primary-darkest: #673ab7;
-  --ifm-color-primary-light: #c5b3e6;
-  --ifm-color-primary-lighter: #d1c4e9;
-  --ifm-color-primary-lightest: #ede7f6;
-  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.3);
+  --ifm-color-primary: #f2844b;
+  --ifm-color-primary-dark: #ea7457;      /* plasma 0.65 */
+  --ifm-color-primary-darker: #e16462;    /* plasma 0.60 */
+  --ifm-color-primary-darkest: #d6556d;   /* plasma 0.55 */
+  --ifm-color-primary-light: #f89540;     /* plasma 0.75 */
+  --ifm-color-primary-lighter: #fca636;   /* plasma 0.80 */
+  --ifm-color-primary-lightest: #feba2c;  /* plasma 0.85 */
+
+  --docusaurus-highlighted-code-line-bg: rgba(242, 132, 75, 0.15);
+}
+
+/* thin plasma rule under the navbar */
+.navbar {
+  border-bottom: 3px solid transparent;
+  border-image: linear-gradient(90deg, var(--fftjax-plasma)) 1;
+}
+
+/* soften the edge where a plot's white figure background meets the dark page */
+[data-theme='dark'] .markdown img {
+  border-radius: 6px;
 }
