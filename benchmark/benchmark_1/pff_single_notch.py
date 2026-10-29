@@ -77,6 +77,8 @@ import jax.numpy as jnp
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from utils.plotting import save_figure, use_style
+use_style()
 import numpy as np
 
 from materialmodels.elastic.isotropic import LinearElasticIsotropic
@@ -279,7 +281,7 @@ def plot_combined(name: str, case: dict, results: dict[str, list[dict]]) -> None
     ax.grid(True, linewidth=0.5, alpha=0.6)
     fig.tight_layout()
     plot_path = f"{output}/{case['jobname']}_comparison_all_solvers.png"
-    fig.savefig(plot_path, dpi=150)
+    save_figure(fig, plot_path, dpi=150)
     plt.close(fig)
     print(f"Written → {plot_path}")
 

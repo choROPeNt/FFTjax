@@ -261,6 +261,8 @@ def save_gpr_figure(
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    from utils.plotting import save_figure, use_style
+    use_style()
     import matplotlib.cm as cm
     from matplotlib.colors import Normalize
 
@@ -349,7 +351,7 @@ def save_gpr_figure(
     fig.suptitle(title, fontsize=13, y=1.02)
 
     fig_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    save_figure(fig, fig_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"  Figure → {fig_path}")
 

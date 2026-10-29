@@ -1,0 +1,51 @@
+# FFTjax matplotlib style -- load with utils.plotting.use_style().
+# Hex colors are written without '#': it starts a comment in .mplstyle files.
+
+# ── colormaps ────────────────────────────────────────────────────────────────
+# plasma for every sequential field (stress, strain, damage, ...). Signed
+# fields use utils.plotting.DIVERGING_CMAP (PuOr_r, plasma's purple/orange
+# ends around zero) with a symmetric vmin/vmax.
+image.cmap:          plasma
+image.origin:        lower      # matches the project's field.T + origin="lower" convention
+image.interpolation: nearest    # voxels stay voxels
+
+# Line colors: plasma at t = 0.0, 0.4, 0.75, 0.2, 0.6 -- ordered so neighbors
+# differ, and stopping short of the yellow end (too light on white).
+# More series: utils.plotting.plasma_colors(n).
+axes.prop_cycle: cycler('color', ['0d0887', 'b12a90', 'f89540', '6a00a8', 'e16462'])
+
+# ── figure / export ──────────────────────────────────────────────────────────
+figure.figsize:      5.0, 4.0
+figure.dpi:          110
+savefig.dpi:         300
+savefig.bbox:        tight
+savefig.facecolor:   white
+
+# ── text ─────────────────────────────────────────────────────────────────────
+font.size:           10
+axes.titlesize:      11
+axes.labelsize:      10
+xtick.labelsize:     9
+ytick.labelsize:     9
+legend.fontsize:     9
+mathtext.fontset:    dejavusans
+axes.formatter.use_mathtext: True
+axes.formatter.limits: -3, 4
+
+# ── axes ─────────────────────────────────────────────────────────────────────
+axes.spines.top:     True
+axes.spines.right:   True
+axes.edgecolor:      333333
+axes.linewidth:      0.8
+axes.grid:           True
+grid.color:          d9d9d9
+grid.linestyle:      -
+grid.linewidth:      0.5
+axes.axisbelow:      True
+xtick.direction:     out
+ytick.direction:     out
+
+# ── lines / legend ───────────────────────────────────────────────────────────
+lines.linewidth:     1.6
+lines.markersize:    4
+legend.frameon:      False

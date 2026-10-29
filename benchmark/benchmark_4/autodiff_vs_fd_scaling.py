@@ -64,6 +64,8 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from utils.plotting import save_figure, use_style
+use_style()
 
 from calibration.calibrate import calibrate_adam
 from generation.rve import make_random_composite_rve
@@ -396,7 +398,7 @@ def plot(results: list[dict], ref: dict, today: str) -> list[str]:
     fig.suptitle("Inverse calibration of E_matrix across RVE discretizations")
     fig.tight_layout()
     paths.append(os.path.join(OUT_DIR, f"calibration_{today}.png"))
-    fig.savefig(paths[-1], dpi=150)
+    save_figure(fig, paths[-1], dpi=150)
 
     # -- scaling ---------------------------------------------------------------
     def series(method, key):
@@ -433,7 +435,7 @@ def plot(results: list[dict], ref: dict, today: str) -> list[str]:
     fig.suptitle("Calibration cost across RVE discretizations")
     fig.tight_layout()
     paths.append(os.path.join(OUT_DIR, f"scaling_{today}.png"))
-    fig.savefig(paths[-1], dpi=150)
+    save_figure(fig, paths[-1], dpi=150)
     return paths
 
 

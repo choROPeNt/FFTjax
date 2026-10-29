@@ -35,6 +35,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import matplotlib.pyplot as plt
+from utils.plotting import plasma_colors, save_figure, use_style
+use_style()
 
 from generation.rve import make_random_composite_rve
 from materialmodels.elastic.isotropic import LinearElasticIsotropic
@@ -102,24 +104,21 @@ print("\nPASSED -- every sweep point's mixed-BC solve converged.")
 # Visualize: the GP surrogate tightening, and its answer at phi=PHI_QUERY.
 fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
 
-cmap = plt.cm.Blues
-n_snap = len(gp_snapshots)
-for i, snap in enumerate(gp_snapshots):
-    color = cmap(0.35 + 0.55 * (i + 1) / n_snap)
+colors = plasma_colors(len(gp_snapshots))
+for snap, color in zip(gp_snapshots, colors):
     axes[0].plot(phi_grid, snap["mean_grid"], "-", color=color,
                  label=f"GP after {snap['n_obs']} obs")
 
 final = gp_snapshots[-1]
 axes[0].fill_between(phi_grid, final["mean_grid"] - 2 * final["std_grid"],
                       final["mean_grid"] + 2 * final["std_grid"],
-                      color=cmap(0.9), alpha=0.15, label=r"final GP $\pm2\sigma$")
+                      color=colors[-1], alpha=0.2, label=r"final GP $\pm2\sigma$")
 axes[0].plot(phi_obs, E_obs, "o", color="black", markersize=5, label="FFT solves")
 axes[0].axvline(PHI_QUERY, color="gray", ls="--", lw=1, label=fr"query $\phi={PHI_QUERY}$")
 axes[0].set_xlabel(r"$\phi$ (fibre volume fraction)")
 axes[0].set_ylabel(r"$E_{11}$ [MPa]")
 axes[0].set_title("GP surrogate tightening with more solves")
 axes[0].legend(fontsize=8)
-axes[0].grid(True, linewidth=0.5, alpha=0.6)
 
 n_obs_hist  = [s["n_obs"] for s in gp_snapshots]
 mean_q_hist = [s["mean_q"] for s in gp_snapshots]
@@ -129,11 +128,10 @@ axes[1].errorbar(n_obs_hist, mean_q_hist, yerr=2 * np.array(std_q_hist),
 axes[1].set_xlabel("number of FFT solves used")
 axes[1].set_ylabel(fr"GP prediction $E(\phi={PHI_QUERY})$ [MPa]")
 axes[1].set_title("Cheap, uncertainty-aware answer -- no new solve needed")
-axes[1].grid(True, linewidth=0.5, alpha=0.6)
 
 fig.tight_layout()
 
-out_path = Path(__file__).resolve().parents[1] / "docs" / "static" / "img" / "structure-property_gp_convergence.png"
+out_path = Path(__file__).resolve().parents[1] / "docs" / "static" / "img" / "examples" / "structure-property_gp_convergence.png"
 out_path.parent.mkdir(parents=True, exist_ok=True)
-fig.savefig(out_path, dpi=150)
+save_figure(fig, out_path, dpi=150)
 print(f"\nSaved plot to {out_path}")

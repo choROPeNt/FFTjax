@@ -29,6 +29,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import matplotlib.pyplot as plt
+from utils.plotting import save_figure, use_style
+use_style()
 
 from generation.rve import make_square_composite_rve
 from materialmodels.elastic.isotropic import LinearElasticIsotropic
@@ -116,15 +118,15 @@ fig, axes = plt.subplots(1, 3, figsize=(11, 3.5))
 
 im = axes[0].imshow(phase_np[:, :, 0].T, origin="lower", cmap="gray_r", extent=extent)
 axes[0].set_title(f"Fiber phase (Vf={phi_act:.3f})")
-fig.colorbar(im, ax=axes[0])
+fig.colorbar(im, ax=axes[0], ticks=[0, 1], fraction=0.046, pad=0.04)
 
 im = axes[1].imshow(u_grid[:, :, 0, 0].T, origin="lower", cmap="plasma", extent=extent)
-axes[1].set_title(r"Displacement $u_x$ [mm]")
-fig.colorbar(im, ax=axes[1], format="%.1e")
+axes[1].set_title("Displacement")
+fig.colorbar(im, ax=axes[1], label=r"$u_x$ [mm]", fraction=0.046, pad=0.04)
 
 im = axes[2].imshow(u_grid[:, :, 0, 1].T, origin="lower", cmap="plasma", extent=extent)
-axes[2].set_title(r"Displacement $u_y$ [mm]")
-fig.colorbar(im, ax=axes[2], format="%.1e")
+axes[2].set_title("Displacement")
+fig.colorbar(im, ax=axes[2], label=r"$u_y$ [mm]", fraction=0.046, pad=0.04)
 
 for ax in axes:
     ax.set_xlabel("x [mm]")
@@ -132,7 +134,7 @@ for ax in axes:
 
 fig.tight_layout()
 
-out_path = Path(__file__).resolve().parents[1] / "docs" / "static" / "img" / "lin_elastic_mixed_bc.png"
+out_path = Path(__file__).resolve().parents[1] / "docs" / "static" / "img" / "examples" / "lin_elastic_mixed_bc.png"
 out_path.parent.mkdir(parents=True, exist_ok=True)
-fig.savefig(out_path, dpi=150)
+save_figure(fig, out_path, dpi=150)
 print(f"\nSaved plot to {out_path}")

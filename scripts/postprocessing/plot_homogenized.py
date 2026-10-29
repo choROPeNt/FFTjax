@@ -71,6 +71,8 @@ import numpy as np
 
 sys.path.insert(0, "src")
 
+from utils.plotting import save_figure, use_style  # noqa: E402
+
 _VOIGT_NAMES = ("11", "22", "33", "12", "13", "23")  # matches homogenize.py / post.fields._VOIGT_IJ
 
 # Categorical palette, assigned to runs in this fixed order and never cycled:
@@ -201,7 +203,7 @@ def plot_stress_strain(runs: list[Run], comp: int, outdir: Path) -> Path:
         title=f"Homogenized stress-strain response, component {c}",
     )
     path = outdir / "stress_strain.png"
-    ax.figure.savefig(path, dpi=150, bbox_inches="tight")
+    save_figure(ax.figure, path, dpi=150, bbox_inches="tight")
     return path
 
 
@@ -248,7 +250,7 @@ def plot_stress_path(runs: list[Run], outdir: Path) -> Path:
         ax.legend(fontsize=8)
     fig.tight_layout()
     path = outdir / "stress_path.png"
-    fig.savefig(path, dpi=150, bbox_inches="tight")
+    save_figure(fig, path, dpi=150, bbox_inches="tight")
     return path
 
 
@@ -276,7 +278,7 @@ def plot_components(runs: list[Run], outdir: Path) -> list[Path]:
         ax_eps.set_title("Homogenized strain and stress components")
         fig.tight_layout()
         path = outdir / "components.png"
-        fig.savefig(path, dpi=150, bbox_inches="tight")
+        save_figure(fig, path, dpi=150, bbox_inches="tight")
         return [path]
 
     return [_component_grid(runs, "eps", r"$\bar\varepsilon$",
@@ -307,7 +309,7 @@ def _component_grid(runs: list[Run], prefix: str, ylabel: str, title: str,
     fig.suptitle(title, x=0.01, ha="left")
     fig.tight_layout(rect=(0, 0, 1, 0.95))
     path = outdir / filename
-    fig.savefig(path, dpi=150, bbox_inches="tight")
+    save_figure(fig, path, dpi=150, bbox_inches="tight")
     return path
 
 
@@ -325,7 +327,7 @@ def plot_pressure(runs: list[Run], outdir: Path) -> Path:
     _style(ax, len(runs))
     fig.tight_layout()
     path = outdir / "pressure.png"
-    fig.savefig(path, dpi=150, bbox_inches="tight")
+    save_figure(fig, path, dpi=150, bbox_inches="tight")
     return path
 
 
@@ -342,7 +344,7 @@ def plot_hardening(runs: list[Run], outdir: Path) -> Path:
         title="Homogenized hardening response",
     )
     path = outdir / "hardening.png"
-    ax.figure.savefig(path, dpi=150, bbox_inches="tight")
+    save_figure(ax.figure, path, dpi=150, bbox_inches="tight")
     return path
 
 
@@ -376,7 +378,7 @@ def plot_plastic_activity(runs: list[Run], outdir: Path) -> Path:
     _style(ax_mean, len(runs))
     fig.tight_layout()
     path = outdir / "plastic_activity.png"
-    fig.savefig(path, dpi=150, bbox_inches="tight")
+    save_figure(fig, path, dpi=150, bbox_inches="tight")
     return path
 
 
@@ -397,7 +399,7 @@ def plot_plastic_strain(runs: list[Run], outdir: Path) -> list[Path]:
         ax.set_title("Homogenized plastic strain tensor")
         fig.tight_layout()
         p = outdir / "plastic_strain.png"
-        fig.savefig(p, dpi=150, bbox_inches="tight")
+        save_figure(fig, p, dpi=150, bbox_inches="tight")
         written.append(p)
     else:
         written.append(_component_grid(runs, "eps_p", r"$\bar\varepsilon^p$",
@@ -416,7 +418,7 @@ def plot_plastic_strain(runs: list[Run], outdir: Path) -> list[Path]:
     _style(ax, len(runs))
     fig.tight_layout()
     p = outdir / "plastic_volume.png"
-    fig.savefig(p, dpi=150, bbox_inches="tight")
+    save_figure(fig, p, dpi=150, bbox_inches="tight")
     written.append(p)
     return written
 
@@ -438,7 +440,7 @@ def plot_damage(runs: list[Run], outdir: Path) -> Path:
     ax.legend(fontsize=8)
     fig.tight_layout()
     path = outdir / "damage.png"
-    fig.savefig(path, dpi=150, bbox_inches="tight")
+    save_figure(fig, path, dpi=150, bbox_inches="tight")
     return path
 
 
@@ -474,6 +476,7 @@ def main():
         import matplotlib
         matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    use_style()
 
     labels = _labels(args.csv, args.labels)
     runs = [Run(_load(p), lab, p) for p, lab in zip(args.csv, labels)]

@@ -35,6 +35,9 @@ package-dir = { "" = "src" }
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+utils = ["*.mplstyle"]
+
 [dependency-groups]
 dev = [
     "pytest>=9.2.0",
