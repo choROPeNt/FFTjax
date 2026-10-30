@@ -50,7 +50,6 @@ matters.
 
 import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on TPU, no GPU prealloc)
 
-import time
 from functools import partial
 from typing import Any, Callable, Tuple, cast
 from math import prod
@@ -64,7 +63,7 @@ from operators.fft_distributed import distributed_fft_flat, distributed_ifft_fla
 from operators.galerkin import build_galerkin_projector
 from operators.green import build_freq_grid, build_reference_green_operator, nyquist_safe_xi
 from post.fields import compute_displacement, field_to_grid, to_voigt, von_mises
-from problems.incremental import IncrementResult, solve_automatic, solve_fixed
+from problems.incremental import IncrementResult, solve_automatic, solve_fixed, solve_path
 from solvers.elliptic.vector.displacement_based import DisplacementBasedSolver
 from solvers.elliptic.vector.fourier_galerkin import FourierGalerkinSolver
 from solvers.elliptic.vector.lippmann_schwinger import LippmannSchwingerMixedBCSolver, LippmannSchwingerSolver
@@ -74,6 +73,7 @@ from solvers.elliptic.vector.mixed_bc import (
 from solvers.krylov.cg import cg_solve
 from solvers.solution import ElasticitySolution
 from utils.io.xdmf_writer import IncrementalWriter
+from utils.monitor import get_monitor
 
 
 def _solve_mechanics_step(
@@ -288,42 +288,37 @@ def solve_mechanics(
     def _on_increment(result: IncrementResult) -> None:
         write_time = 0.0
         if writer is not None:
-            t0 = time.perf_counter()
-            sol = cast(ElasticitySolution, result.solution)
-            eps_grid   = field_to_grid(sol.eps, n)
-            sigma_grid = field_to_grid(sol.sigma, n)
-            sigma_vm   = von_mises(sigma_grid)
-            # sol.eps_bar (displacement formulation only) is the *solved*
-            # macroscopic strain -- stress-controlled entries filled in with
-            # their actual result, e.g. Poisson contraction under a free
-            # lateral surface. The prescribed eps_bar has zeros there instead,
-            # so falling back to it would silently drop that contraction from
-            # the displacement field's macroscopic part (sol.eps itself is
-            # unaffected -- the solver embeds the true mean directly in its
-            # DC frequency mode, so stress/modulus are correct either way).
-            eps_bar_u  = sol.eps_bar if sol.eps_bar is not None else result.t * eps_bar
-            u_grid     = compute_displacement(sol.eps, eps_bar_u, n, L)
-            fields = {
-                "phase":        np.asarray(phase).reshape(n).astype(np.float32),
-                "strain":       to_voigt(eps_grid).astype(np.float64),
-                "stress":       to_voigt(sigma_grid).astype(np.float64),
-                "von_mises":    sigma_vm.astype(np.float64),
-                "displacement": u_grid.astype(np.float64),
-            }
-            if orientation is not None:
-                fields["orientation"] = np.asarray(orientation).T.reshape(*n, 3).astype(np.float64)
-            writer.write_increment(result.step, fields, time=result.t)
-            write_time = time.perf_counter() - t0
+            with get_monitor().stage("write") as st_write:
+                sol = cast(ElasticitySolution, result.solution)
+                eps_grid   = field_to_grid(sol.eps, n)
+                sigma_grid = field_to_grid(sol.sigma, n)
+                sigma_vm   = von_mises(sigma_grid)
+                # sol.eps_bar (displacement formulation only) is the *solved*
+                # macroscopic strain -- stress-controlled entries filled in with
+                # their actual result, e.g. Poisson contraction under a free
+                # lateral surface. The prescribed eps_bar has zeros there instead,
+                # so falling back to it would silently drop that contraction from
+                # the displacement field's macroscopic part (sol.eps itself is
+                # unaffected -- the solver embeds the true mean directly in its
+                # DC frequency mode, so stress/modulus are correct either way).
+                eps_bar_u  = sol.eps_bar if sol.eps_bar is not None else result.t * eps_bar
+                u_grid     = compute_displacement(sol.eps, eps_bar_u, n, L)
+                fields = {
+                    "phase":        np.asarray(phase).reshape(n).astype(np.float32),
+                    "strain":       to_voigt(eps_grid).astype(np.float64),
+                    "stress":       to_voigt(sigma_grid).astype(np.float64),
+                    "von_mises":    sigma_vm.astype(np.float64),
+                    "displacement": u_grid.astype(np.float64),
+                }
+                if orientation is not None:
+                    fields["orientation"] = np.asarray(orientation).T.reshape(*n, 3).astype(np.float64)
+                writer.write_increment(result.step, fields, time=result.t)
+            write_time = st_write.elapsed
         if on_increment is not None:
             on_increment(result, write_time)
 
     if stepping == "single":
-        t0 = time.perf_counter()
-        sol = solve_fn(1.0)
-        result = IncrementResult(step=1, t=1.0, dt=1.0, solution=sol,
-                                  wall_time=time.perf_counter() - t0)
-        _on_increment(result)
-        return [result]
+        return solve_path(solve_fn, [1.0], on_increment=_on_increment)
     elif stepping == "fixed":
         if dt is None:
             raise ValueError("stepping='fixed' requires dt")
@@ -642,48 +637,55 @@ def solve_displacement_based_nonlinear(
         delta_update = strain_from_correction(du_sol)
         return delta_update, sv_sol, cg_converged
 
+    mon = get_monitor()
     for n_iter in range(1, maxiter_nr + 1):
-        eps_bar_free_bcast = jnp.ones((3, 3, Nv)) * eps_bar_free[:, :, None]
-        eps_k = eps0 + eps_bar_free_bcast + delta
-        sigma_k, C_tan_k, new_state, residual_div, residual_extra, resid_norm_j, ref_norm_j = (
-            _residual(eps_k, state)
-        )
+        # One monitored stage per iteration (shown at log level "newton"):
+        # residual and CG outcome, timed. Both float(resid) and bool(cg) force
+        # the iteration's result to the host, so the time is this iteration's.
+        with mon.stage("newton", n_iter) as it:
+            eps_bar_free_bcast = jnp.ones((3, 3, Nv)) * eps_bar_free[:, :, None]
+            eps_k = eps0 + eps_bar_free_bcast + delta
+            sigma_k, C_tan_k, new_state, residual_div, residual_extra, resid_norm_j, ref_norm_j = (
+                _residual(eps_k, state)
+            )
 
-        resid_norm = float(resid_norm_j)
-        ref_norm   = float(ref_norm_j)
-        if resid_norm / ref_norm < toler_nr:
-            converged = True
-            state = new_state
-            break
+            resid_norm = float(resid_norm_j)
+            ref_norm   = float(ref_norm_j)
+            it.note(f"res={resid_norm / ref_norm:.3e}")
+            if resid_norm / ref_norm < toler_nr:
+                converged = True
+                state = new_state
+                break
 
-        # The extra block enters as +residual_extra, not -: A_op's extra row
-        # is negated (see above), so its RHS is negated with it, which leaves
-        # the equation it encodes -- mean(sigma_k + C_tan : deps) = stress_goal
-        # -- exactly as it was.
-        bb = pack((-residual_div).reshape(-1), residual_extra)
-        delta_update, sv_sol, _cg_converged = _cg_correction(C_tan_k, bb)
+            # The extra block enters as +residual_extra, not -: A_op's extra row
+            # is negated (see above), so its RHS is negated with it, which leaves
+            # the equation it encodes -- mean(sigma_k + C_tan : deps) = stress_goal
+            # -- exactly as it was.
+            bb = pack((-residual_div).reshape(-1), residual_extra)
+            delta_update, sv_sol, cg_converged = _cg_correction(C_tan_k, bb)
+            it.note("cg=ok" if bool(cg_converged) else "cg=NOT converged")
 
-        delta = delta + delta_update
-        eps_bar_free = eps_bar_free + sv2sm(sv_sol)
-        # ``state`` is deliberately NOT advanced here. It is the state at the
-        # last CONVERGED load increment, and a return mapping is defined
-        # relative to exactly that -- it must stay frozen for every Newton
-        # iteration of this increment, with only ``delta``/``eps_bar_free``
-        # (the unknowns) moving. Advancing it per iteration instead makes
-        # each iteration's return start from the previous iterate's
-        # already-updated plastic strain, so plastic flow ratchets up once
-        # per iteration and sigma drifts under Newton's feet. Hardening
-        # masks it -- the drift self-limits as sigma_y grows, so the residual
-        # still falls, just to a stalled ~1e-7 floor instead of ~1e-10, at a
-        # fixed ~10 iterations per step regardless of the load. Push the load
-        # far enough (a confined DP matrix past eps_11 ~ 0.03) and it stops
-        # being masked: Newton descends about five iterations, turns around
-        # and diverges geometrically to a garbage fixed point, with the inner
-        # CG reporting success throughout and the step size making no
-        # difference. Verified on a 152^3 tangled-fibre RVE -- freezing state
-        # here took that step from divergence to convergence in 8 iterations,
-        # and cut every earlier step from ~10 to ~6 (see
-        # test/test_problems_mechanics_nonlinear.py, check 4).
+            delta = delta + delta_update
+            eps_bar_free = eps_bar_free + sv2sm(sv_sol)
+            # ``state`` is deliberately NOT advanced here. It is the state at the
+            # last CONVERGED load increment, and a return mapping is defined
+            # relative to exactly that -- it must stay frozen for every Newton
+            # iteration of this increment, with only ``delta``/``eps_bar_free``
+            # (the unknowns) moving. Advancing it per iteration instead makes
+            # each iteration's return start from the previous iterate's
+            # already-updated plastic strain, so plastic flow ratchets up once
+            # per iteration and sigma drifts under Newton's feet. Hardening
+            # masks it -- the drift self-limits as sigma_y grows, so the residual
+            # still falls, just to a stalled ~1e-7 floor instead of ~1e-10, at a
+            # fixed ~10 iterations per step regardless of the load. Push the load
+            # far enough (a confined DP matrix past eps_11 ~ 0.03) and it stops
+            # being masked: Newton descends about five iterations, turns around
+            # and diverges geometrically to a garbage fixed point, with the inner
+            # CG reporting success throughout and the step size making no
+            # difference. Verified on a 152^3 tangled-fibre RVE -- freezing state
+            # here took that step from divergence to convergence in 8 iterations,
+            # and cut every earlier step from ~10 to ~6 (see
+            # test/test_problems_mechanics_nonlinear.py, check 4).
     else:
         # loop exhausted maxiter_nr without an early break -- converged stays
         # False and ``state`` is still the last converged increment's, so a
