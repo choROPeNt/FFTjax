@@ -196,6 +196,7 @@ def run_case(case: LoadCase, *, stem, n, L, Nv, xi_flat, phase_np, materials,
                    and (stress_goal is None or not bool(jnp.any(stress_goal))))
         if trivial:
             sol = InelasticSolution(eps=jnp.zeros((3, 3, Nv)), sigma=jnp.zeros((3, 3, Nv)),
+                                    eps_p=carry["state"][0], eps_bar=jnp.zeros((3, 3)),
                                     state=carry["state"], converged=True, n_iter=0)
         else:
             eps_prev_full = carry["eps_prev"]
@@ -215,13 +216,16 @@ def run_case(case: LoadCase, *, stem, n, L, Nv, xi_flat, phase_np, materials,
             # control_arr so the strain-controlled entries stay with
             # eps0_step and are not counted twice.
             eps_bar_free_init = jnp.mean(eps_prev_full, axis=-1) * control_arr
-            sol = InelasticSolution(*solve_displacement_based_nonlinear(
+            eps, sigma, state, converged, n_iter = solve_displacement_based_nonlinear(
                 n, xi_flat, eps_bar_step, local_update, carry["state"],
                 delta_init=delta_init,
                 control=control, stress_goal=stress_goal,
                 eps_bar_free_init=eps_bar_free_init,
                 **solver,
-            ))
+            )
+            sol = InelasticSolution(eps=eps, sigma=sigma, eps_p=state[0],
+                                    eps_bar=jnp.mean(eps, axis=-1), state=state,
+                                    converged=converged, n_iter=n_iter)
         carry["eps_prev"] = sol.eps
         carry["state"]    = sol.state
         return sol
@@ -233,11 +237,8 @@ def run_case(case: LoadCase, *, stem, n, L, Nv, xi_flat, phase_np, materials,
         step, gamma = r.step - 1, r.t
         eps_step, sigma_step, converged = sol.eps, sol.sigma, sol.converged
         tau_avg = float(jnp.mean(sigma_step[i_comp, j_comp]))
-        # The macroscopic strain actually reached -- equal to eps_bar_step
-        # under pure strain BC (delta is zero-mean by construction), and
-        # the solved-for answer on stress-controlled directions otherwise.
         sig_bar = np.array(jnp.mean(sigma_step, axis=-1))
-        eps_bar_out = np.array(jnp.mean(eps_step, axis=-1))
+        eps_bar_out = np.array(sol.eps_bar)
 
         # Per-case, not a fixed set of components: under mixed BC what is
         # worth watching is this case's own driven strain, the strain
@@ -259,7 +260,7 @@ def run_case(case: LoadCase, *, stem, n, L, Nv, xi_flat, phase_np, materials,
         stats_rows.append((step, gamma, bool(converged), int(sol.n_iter), r.wall_time,
                            tau_avg, sig_bar, eps_bar_out))
 
-        eps_p_step, alpha_step = sol.state
+        _, alpha_step = sol.state
         # Resolved macroscopic strain, not eps_bar_step: compute_displacement
         # adds the macroscopic part as eps_bar_ij x_j, and under mixed BC
         # eps_bar_step is zero on the stress-controlled directions, which
@@ -281,7 +282,7 @@ def run_case(case: LoadCase, *, stem, n, L, Nv, xi_flat, phase_np, materials,
                 # mandel=False, the same Voigt convention "strain" above uses,
                 # so eps_p and eps components are directly comparable (and the
                 # trace, the plastic volume change, is just the first three).
-                fields["eps_p"] = to_voigt(field_to_grid(eps_p_step, n)).astype(np.float64)
+                fields["eps_p"] = to_voigt(field_to_grid(sol.eps_p, n)).astype(np.float64)
             # time = step index, not gamma -- see module docstring
             writer.write_increment(step, fields, time=float(step))
 

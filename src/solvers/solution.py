@@ -70,7 +70,14 @@ class InelasticSolution(NamedTuple):
 
     eps:       jnp.ndarray  # (3, 3, Nv)  local strain
     sigma:     jnp.ndarray  # (3, 3, Nv)  local stress
-    state:     tuple        # material state after the solve, e.g. (eps_p, alpha) --
+    eps_p:     jnp.ndarray  # (3, 3, Nv)  plastic strain, state[0] -- zero in
+                            # elastic phases, and like state the last CONVERGED
+                            # increment's if this one did not converge
+    eps_bar:   jnp.ndarray  # (3, 3)      macroscopic strain reached, mean of eps:
+                            # the prescribed eps_bar under pure strain BC, with the
+                            # stress-controlled entries solved for under mixed BC
+                            # (as ElasticitySolution.eps_bar)
+    state:     tuple        # material state after the solve, (eps_p, alpha) --
                             # the last CONVERGED increment's if this one did not
                             # converge (see solve_displacement_based_nonlinear)
     converged: bool         # Newton converged within maxiter_nr
