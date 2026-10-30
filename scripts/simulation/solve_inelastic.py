@@ -116,6 +116,7 @@ import sys
 import time
 from contextlib import nullcontext
 from pathlib import Path
+from typing import cast
 
 import h5py
 import numpy as np
@@ -129,8 +130,10 @@ from materialmodels.assembly import assemble_local_update, describe_materials
 from materialmodels.factory import build_material
 from operators.green import build_freq_grid
 from post.fields import compute_displacement, field_to_grid, to_voigt, von_mises
+from problems.incremental import IncrementResult, solve_path
 from problems.mechanics import solve_displacement_based_nonlinear
 from problems.utils.loadcases import LoadCase, resolve_cases, select_cases, voigt_label
+from solvers.solution import InelasticSolution
 from utils.config import field_write_mode, load_config
 from utils.io.reader import SimulationReader
 from utils.io.xdmf_writer import IncrementalWriter
@@ -174,113 +177,129 @@ def run_case(case: LoadCase, *, stem, n, L, Nv, xi_flat, phase_np, materials,
     print(f"Case   : {case.describe()}")
 
     stats_rows = []
-    state = state0
-    eps_prev_full = jnp.zeros((3, 3, Nv))
-    ok, failed_at = True, None
+    # Carried from one load point to the next by solve_fn: the plastic state
+    # and the last point's strain (the Newton warm start). A non-converged
+    # point ends the path (problems.incremental.solve_path), so what it leaves
+    # here is never read by a later solve -- only ``state`` for the final
+    # report, and the solver hands back the last CONVERGED state on failure.
+    carry = {"state": state0, "eps_prev": jnp.zeros((3, 3, Nv)), "first": True}
     t_case = time.perf_counter()
+
+    def solve_fn(gamma: float) -> InelasticSolution:
+        first, carry["first"] = carry["first"], False
+        eps_bar_step = jnp.asarray(case.eps_bar(gamma))
+
+        # The virgin state is the trivial eps = sigma = 0 solution only if
+        # nothing is being asked of it -- with a nonzero stress target
+        # (a preload) even gamma = 0 is a real solve.
+        trivial = (first and gamma == 0.0
+                   and (stress_goal is None or not bool(jnp.any(stress_goal))))
+        if trivial:
+            sol = InelasticSolution(eps=jnp.zeros((3, 3, Nv)), sigma=jnp.zeros((3, 3, Nv)),
+                                    state=carry["state"], converged=True, n_iter=0)
+        else:
+            eps_prev_full = carry["eps_prev"]
+            # Baseline carries only the strain-controlled directions --
+            # matching what the solver builds internally, so delta_init
+            # stays the zero-mean fluctuation it is meant to be.
+            eps0_step = jnp.ones((3, 3, Nv)) * (eps_bar_step * (1.0 - control_arr))[:, :, None]
+            # warm start: previous step's converged strain minus this step's
+            # new baseline -- keeps Newton converging past yield, whichever
+            # direction gamma moves (see problems.mechanics's own docstring).
+            delta_init = eps_prev_full - eps0_step
+            # Mixed-BC half of the same warm start: the previous step's
+            # converged macroscopic strain on the stress-controlled
+            # directions (e.g. the lateral contraction under axial
+            # tension), which is a far better guess than 0 and is what
+            # keeps the bordered Newton solve inside its basin. Masked by
+            # control_arr so the strain-controlled entries stay with
+            # eps0_step and are not counted twice.
+            eps_bar_free_init = jnp.mean(eps_prev_full, axis=-1) * control_arr
+            sol = InelasticSolution(*solve_displacement_based_nonlinear(
+                n, xi_flat, eps_bar_step, local_update, carry["state"],
+                delta_init=delta_init,
+                control=control, stress_goal=stress_goal,
+                eps_bar_free_init=eps_bar_free_init,
+                **solver,
+            ))
+        carry["eps_prev"] = sol.eps
+        carry["state"]    = sol.state
+        return sol
+
+    def on_increment(r: IncrementResult) -> None:
+        sol = cast(InelasticSolution, r.solution)
+        # Path entry 0 is the virgin state, numbered step 0 in the output
+        # (stats, XDMF time) -- IncrementResult.step counts from 1.
+        step, gamma = r.step - 1, r.t
+        eps_step, sigma_step, converged = sol.eps, sol.sigma, sol.converged
+        tau_avg = float(jnp.mean(sigma_step[i_comp, j_comp]))
+        # The macroscopic strain actually reached -- equal to eps_bar_step
+        # under pure strain BC (delta is zero-mean by construction), and
+        # the solved-for answer on stress-controlled directions otherwise.
+        sig_bar = np.array(jnp.mean(sigma_step, axis=-1))
+        eps_bar_out = np.array(jnp.mean(eps_step, axis=-1))
+
+        # Per-case, not a fixed set of components: under mixed BC what is
+        # worth watching is this case's own driven strain, the strain
+        # SOLVED FOR on its free directions (the lateral contraction, the
+        # plastic dilatancy), and how well the stress target on those
+        # directions is actually met -- the BC residual, which is the one
+        # number that says the bordered system did its job.
+        extra = f"  eps_{case.label}={eps_bar_out[i_comp, j_comp]: .5f}"
+        if control is not None:
+            free = [(a, b) for a in range(3) for b in range(a, 3) if control[a][b]]
+            goal = np.zeros((3, 3)) if case.stress_bar is None else np.asarray(case.stress_bar)
+            resid = max(abs(sig_bar[a, b] - goal[a, b]) for a, b in free) if free else 0.0
+            extra += ("  free: "
+                      + " ".join(f"eps_{voigt_label(a, b)}={eps_bar_out[a, b]: .5f}"
+                                 for a, b in free)
+                      + f"  |sig-goal|max={resid:.1e}")
+        print(f"  step {step:3d}  gamma={gamma: .4f}  converged={converged}  "
+              f"n_iter={sol.n_iter:2d}  tau_avg={tau_avg: .4f} MPa  wall={r.wall_time:.2f}s{extra}")
+        stats_rows.append((step, gamma, bool(converged), int(sol.n_iter), r.wall_time,
+                           tau_avg, sig_bar, eps_bar_out))
+
+        eps_p_step, alpha_step = sol.state
+        # Resolved macroscopic strain, not eps_bar_step: compute_displacement
+        # adds the macroscopic part as eps_bar_ij x_j, and under mixed BC
+        # eps_bar_step is zero on the stress-controlled directions, which
+        # would drop the lateral contraction from the displacement field.
+        # Identical to eps_bar_step under pure strain BC.
+        if writer is not None and not (step == 0 and write_fields == "increments"):
+            eps_grid   = field_to_grid(eps_step, n)
+            sigma_grid = field_to_grid(sigma_step, n)
+            u_grid = compute_displacement(eps_step, jnp.asarray(eps_bar_out), n, L)
+            fields = {
+                "phase":        phase_np.reshape(n).astype(np.float64),
+                "displacement": u_grid.astype(np.float64),
+                "strain":       to_voigt(eps_grid).astype(np.float64),
+                "stress":       to_voigt(sigma_grid).astype(np.float64),
+                "von_mises":    von_mises(sigma_grid).astype(np.float64),
+                "strain_p":     np.array(alpha_step).reshape(n).astype(np.float64),
+            }
+            if write_eps_p:
+                # mandel=False, the same Voigt convention "strain" above uses,
+                # so eps_p and eps components are directly comparable (and the
+                # trace, the plastic volume change, is just the first three).
+                fields["eps_p"] = to_voigt(field_to_grid(eps_p_step, n)).astype(np.float64)
+            # time = step index, not gamma -- see module docstring
+            writer.write_increment(step, fields, time=float(step))
+
+        if not converged:
+            print(f"  !! Newton did not converge at step {step}, gamma={gamma:.4f} "
+                  f"-- stopping case {case.name!r} here")
 
     writer_cm = (IncrementalWriter(stem, grid_shape=n, grid_length=L)
                  if write_fields != "none" else nullcontext(None))
     with writer_cm as writer:
-        for step, gamma in enumerate(case.gammas):
-            t0 = time.perf_counter()
-            eps_bar_step = jnp.asarray(case.eps_bar(gamma))
+        # A non-converged point ends the path early; the files written up to
+        # then stay valid (see run_case's docstring).
+        results = solve_path(solve_fn, case.gammas, on_increment=on_increment)
+    last = results[-1]
+    ok = bool(cast(InelasticSolution, last.solution).converged)
+    failed_at = None if ok else last.step - 1
 
-            # The virgin state is the trivial eps = sigma = 0 solution only if
-            # nothing is being asked of it -- with a nonzero stress target
-            # (a preload) even gamma = 0 is a real solve.
-            trivial = (step == 0 and gamma == 0.0
-                       and (stress_goal is None or not bool(jnp.any(stress_goal))))
-            if trivial:
-                eps_step, sigma_step, converged, n_iter = (
-                    jnp.zeros((3, 3, Nv)), jnp.zeros((3, 3, Nv)), True, 0,
-                )
-            else:
-                # Baseline carries only the strain-controlled directions --
-                # matching what the solver builds internally, so delta_init
-                # stays the zero-mean fluctuation it is meant to be.
-                eps0_step = jnp.ones((3, 3, Nv)) * (eps_bar_step * (1.0 - control_arr))[:, :, None]
-                # warm start: previous step's converged strain minus this step's
-                # new baseline -- keeps Newton converging past yield, whichever
-                # direction gamma moves (see problems.mechanics's own docstring).
-                delta_init = eps_prev_full - eps0_step
-                # Mixed-BC half of the same warm start: the previous step's
-                # converged macroscopic strain on the stress-controlled
-                # directions (e.g. the lateral contraction under axial
-                # tension), which is a far better guess than 0 and is what
-                # keeps the bordered Newton solve inside its basin. Masked by
-                # control_arr so the strain-controlled entries stay with
-                # eps0_step and are not counted twice.
-                eps_bar_free_init = jnp.mean(eps_prev_full, axis=-1) * control_arr
-                eps_step, sigma_step, state, converged, n_iter = solve_displacement_based_nonlinear(
-                    n, xi_flat, eps_bar_step, local_update, state,
-                    delta_init=delta_init,
-                    control=control, stress_goal=stress_goal,
-                    eps_bar_free_init=eps_bar_free_init,
-                    **solver,
-                )
-            eps_prev_full = eps_step
-            wall_time = time.perf_counter() - t0
-            tau_avg = float(jnp.mean(sigma_step[i_comp, j_comp]))
-            # The macroscopic strain actually reached -- equal to eps_bar_step
-            # under pure strain BC (delta is zero-mean by construction), and
-            # the solved-for answer on stress-controlled directions otherwise.
-            sig_bar = np.array(jnp.mean(sigma_step, axis=-1))
-            eps_bar_out = np.array(jnp.mean(eps_step, axis=-1))
-
-            # Per-case, not a fixed set of components: under mixed BC what is
-            # worth watching is this case's own driven strain, the strain
-            # SOLVED FOR on its free directions (the lateral contraction, the
-            # plastic dilatancy), and how well the stress target on those
-            # directions is actually met -- the BC residual, which is the one
-            # number that says the bordered system did its job.
-            extra = f"  eps_{case.label}={eps_bar_out[i_comp, j_comp]: .5f}"
-            if control is not None:
-                free = [(a, b) for a in range(3) for b in range(a, 3) if control[a][b]]
-                goal = np.zeros((3, 3)) if case.stress_bar is None else np.asarray(case.stress_bar)
-                resid = max(abs(sig_bar[a, b] - goal[a, b]) for a, b in free) if free else 0.0
-                extra += ("  free: "
-                          + " ".join(f"eps_{voigt_label(a, b)}={eps_bar_out[a, b]: .5f}"
-                                     for a, b in free)
-                          + f"  |sig-goal|max={resid:.1e}")
-            print(f"  step {step:3d}  gamma={gamma: .4f}  converged={converged}  "
-                  f"n_iter={n_iter:2d}  tau_avg={tau_avg: .4f} MPa  wall={wall_time:.2f}s{extra}")
-            stats_rows.append((step, float(gamma), bool(converged), int(n_iter), wall_time,
-                               tau_avg, sig_bar, eps_bar_out))
-
-            eps_p_step, alpha_step = state
-            # Resolved macroscopic strain, not eps_bar_step: compute_displacement
-            # adds the macroscopic part as eps_bar_ij x_j, and under mixed BC
-            # eps_bar_step is zero on the stress-controlled directions, which
-            # would drop the lateral contraction from the displacement field.
-            # Identical to eps_bar_step under pure strain BC.
-            if writer is not None and not (step == 0 and write_fields == "increments"):
-                eps_grid   = field_to_grid(eps_step, n)
-                sigma_grid = field_to_grid(sigma_step, n)
-                u_grid = compute_displacement(eps_step, jnp.asarray(eps_bar_out), n, L)
-                fields = {
-                    "phase":        phase_np.reshape(n).astype(np.float64),
-                    "displacement": u_grid.astype(np.float64),
-                    "strain":       to_voigt(eps_grid).astype(np.float64),
-                    "stress":       to_voigt(sigma_grid).astype(np.float64),
-                    "von_mises":    von_mises(sigma_grid).astype(np.float64),
-                    "strain_p":     np.array(alpha_step).reshape(n).astype(np.float64),
-                }
-                if write_eps_p:
-                    # mandel=False, the same Voigt convention "strain" above uses,
-                    # so eps_p and eps components are directly comparable (and the
-                    # trace, the plastic volume change, is just the first three).
-                    fields["eps_p"] = to_voigt(field_to_grid(eps_p_step, n)).astype(np.float64)
-                # time = step index, not gamma -- see module docstring
-                writer.write_increment(step, fields, time=float(step))
-
-            if not converged:
-                ok, failed_at = False, step
-                print(f"  !! Newton did not converge at step {step}, gamma={gamma:.4f} "
-                      f"-- stopping case {case.name!r} here")
-                break
-
-    _, alpha_final = state
+    _, alpha_final = carry["state"]
     n_plastic = int(jnp.sum(alpha_final > 1e-12))
     with h5py.File(stem + ".h5", "a") as f:
         f.attrs["n"] = np.array(n, dtype=int)

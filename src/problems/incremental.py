@@ -1,8 +1,10 @@
 """
 Abaqus-*STATIC-style incremental loading: wraps a per-increment solve
 callable in a load-stepping loop, either fixed (equal increments of a given
-size) or automatic (adaptive step, grown after a converged increment, cut
-back and retried after a non-converged one).
+size), automatic (adaptive step, grown after a converged increment, cut
+back and retried after a non-converged one), or a prescribed path (an
+explicit list of load points, any order -- e.g. a load/unload/reload
+cycle, see solve_path).
 
 Deliberately solver-agnostic: the per-increment solve is any callable
 ``solve_fn(t) -> object with a .converged usable via bool(...)``, where ``t`` is
@@ -38,7 +40,7 @@ doing anything except quietly wrecking performance.
 from __future__ import annotations
 
 import time
-from typing import Callable, NamedTuple, Protocol, runtime_checkable
+from typing import Callable, NamedTuple, Protocol, Sequence, runtime_checkable
 
 
 @runtime_checkable
@@ -59,8 +61,9 @@ class Solution(Protocol):
 
 class IncrementResult(NamedTuple):
     step:      int        # increment number, 1-based
-    t:         float      # cumulative load fraction reached, 0 < t <= 1
-    dt:        float      # this increment's load-fraction size
+    t:         float      # cumulative load fraction reached, 0 < t <= 1 (solve_path:
+                           # the path value, any sign)
+    dt:        float      # this increment's load-fraction size (solve_path: signed)
     solution:  Solution   # whatever solve_fn(t) returned
     wall_time: float      # seconds spent on this increment, wall-clock (includes
                            # any failed cutback attempts before the accepted one)
@@ -103,6 +106,52 @@ def solve_fixed(
         results.append(result)
         if on_increment is not None:
             on_increment(result)
+    return results
+
+
+def solve_path(
+    solve_fn: Callable[[float], Solution],
+    path: Sequence[float],
+    on_increment: Callable[[IncrementResult], None] | None = None,
+) -> list[IncrementResult]:
+    """
+    One increment per entry of ``path``, in order: ``solve_fn(path[k])`` for
+    k = 0, 1, .... Unlike solve_fixed/solve_automatic the load parameter is
+    not a fraction running monotonically to 1 -- ``path`` is whatever the
+    caller's closure understands (e.g. the engineering strain gamma of a
+    load/unload/reload cycle, see problems.utils.loadcases.cycle_gammas), and
+    it may reverse direction. ``IncrementResult.t`` is the path value itself
+    and ``.dt`` the signed change from the previous one (from 0 for the
+    first entry). No cutback: the path is prescribed, so there is no smaller
+    step to retry with.
+
+    A non-converged increment ends the path WITHOUT raising (solve_fixed
+    raises): the results up to and including the failed one are returned,
+    the failed one last, so the caller keeps the partial output and reads
+    ``results[-1].solution.converged`` to tell. ``on_increment`` fires for
+    that failed increment too -- unlike solve_automatic's, where a failed
+    attempt is followed by a retry and is never final, here it is the last
+    word on that load point, and recording it (stats, fields) is the
+    diagnostic.
+    """
+    if len(path) == 0:
+        raise ValueError("path is empty")
+
+    results = []
+    t_prev = 0.0
+    for step, t in enumerate(path, start=1):
+        t = float(t)
+        t0 = time.perf_counter()
+        sol = solve_fn(t)
+        converged = bool(sol.converged)
+        wall_time = time.perf_counter() - t0
+        result = IncrementResult(step=step, t=t, dt=t - t_prev, solution=sol, wall_time=wall_time)
+        results.append(result)
+        if on_increment is not None:
+            on_increment(result)
+        if not converged:
+            break
+        t_prev = t
     return results
 
 
