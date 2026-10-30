@@ -11,8 +11,9 @@ Four checks
 1. One solve_fn call per path entry, in order, with the path value itself
    -- including a reversing path, which solve_fixed/solve_automatic (load
    fraction running monotonically to 1) cannot express.
-2. IncrementResult bookkeeping: step counts from 1, t is the path value,
-   dt the SIGNED change from the previous entry (from 0 for the first).
+2. IncrementResult bookkeeping: step counts from 1 (or first_step), t is
+   the path value, dt the SIGNED change from the previous entry (from 0 for
+   the first).
 3. A non-converged entry ends the path without raising: the results up to
    and including it are returned, it is last, and on_increment fired for it
    too (the caller writes it out as the diagnostic) -- but nothing after it
@@ -64,6 +65,8 @@ expected_dt = [b - a for a, b in zip([0.0] + path[:-1], path)]
 assert all(abs(r.dt - d) < 1e-15 for r, d in zip(results, expected_dt)), \
     f"dt {[r.dt for r in results]} != {expected_dt}"
 assert all(r.solution.t == r.t for r in results)
+assert [r.step for r in solve_path(_stub()[0], path, first_step=0)] == list(range(len(path))), \
+    "first_step=0 numbers the reference entry step 0 (solve_inelastic's virgin state)"
 print("[2] PASSED")
 
 # ── [3] a failed entry ends the path, is returned last, and is reported ─────

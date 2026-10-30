@@ -42,6 +42,8 @@ from __future__ import annotations
 import time
 from typing import Callable, NamedTuple, Protocol, Sequence, runtime_checkable
 
+from utils.monitor import Monitor, get_monitor
+
 
 @runtime_checkable
 class _Boolable(Protocol):
@@ -93,26 +95,43 @@ def solve_fixed(
 
     n_steps = max(1, round(1.0 / dt))
     dt_actual = 1.0 / n_steps
+    mon = get_monitor()
     results = []
     for step in range(1, n_steps + 1):
         t = step * dt_actual
-        t0 = time.perf_counter()
+        with mon.stage("increment", step):
+            t0 = time.perf_counter()
+            sol, converged = _solve_attempt(mon, solve_fn, t, dt_actual, 1)
+            wall_time = time.perf_counter() - t0
+            if not converged:
+                raise RuntimeError(f"Increment {step}/{n_steps} (t={t:.4f}) did not converge")
+            result = IncrementResult(step=step, t=t, dt=dt_actual, solution=sol, wall_time=wall_time)
+            results.append(result)
+            if on_increment is not None:
+                on_increment(result)
+    return results
+
+
+def _solve_attempt(mon: Monitor, solve_fn: Callable[[float], Solution], t: float, dt: float,
+                   attempt: int) -> tuple[Solution, bool]:
+    """
+    One solve_fn call as a monitored "solve" stage -- one per attempt, so a
+    cutback sequence shows every attempt (at log level "solve") rather than
+    only the accepted one. ``bool(sol.converged)`` inside the stage is what
+    forces the result to the host, so the stage's time is the solve's.
+    """
+    with mon.stage("solve", attempt, start=f"t={t:.5f}  dt={dt:.5f}") as st:
         sol = solve_fn(t)
         converged = bool(sol.converged)
-        wall_time = time.perf_counter() - t0
-        if not converged:
-            raise RuntimeError(f"Increment {step}/{n_steps} (t={t:.4f}) did not converge")
-        result = IncrementResult(step=step, t=t, dt=dt_actual, solution=sol, wall_time=wall_time)
-        results.append(result)
-        if on_increment is not None:
-            on_increment(result)
-    return results
+        st.note(f"converged={converged}")
+    return sol, converged
 
 
 def solve_path(
     solve_fn: Callable[[float], Solution],
     path: Sequence[float],
     on_increment: Callable[[IncrementResult], None] | None = None,
+    first_step: int = 1,
 ) -> list[IncrementResult]:
     """
     One increment per entry of ``path``, in order: ``solve_fn(path[k])`` for
@@ -122,7 +141,9 @@ def solve_path(
     load/unload/reload cycle, see problems.utils.loadcases.cycle_gammas), and
     it may reverse direction. ``IncrementResult.t`` is the path value itself
     and ``.dt`` the signed change from the previous one (from 0 for the
-    first entry). No cutback: the path is prescribed, so there is no smaller
+    first entry); ``.step`` counts from ``first_step`` (1 by default, 0 for
+    a path whose first entry is a reference state the output calls step 0,
+    as solve_inelastic's virgin gamma = 0 is). No cutback: the path is prescribed, so there is no smaller
     step to retry with.
 
     A non-converged increment ends the path WITHOUT raising (solve_fixed
@@ -137,18 +158,19 @@ def solve_path(
     if len(path) == 0:
         raise ValueError("path is empty")
 
+    mon = get_monitor()
     results = []
     t_prev = 0.0
-    for step, t in enumerate(path, start=1):
+    for step, t in enumerate(path, start=first_step):
         t = float(t)
-        t0 = time.perf_counter()
-        sol = solve_fn(t)
-        converged = bool(sol.converged)
-        wall_time = time.perf_counter() - t0
-        result = IncrementResult(step=step, t=t, dt=t - t_prev, solution=sol, wall_time=wall_time)
-        results.append(result)
-        if on_increment is not None:
-            on_increment(result)
+        with mon.stage("increment", step):
+            t0 = time.perf_counter()
+            sol, converged = _solve_attempt(mon, solve_fn, t, t - t_prev, 1)
+            wall_time = time.perf_counter() - t0
+            result = IncrementResult(step=step, t=t, dt=t - t_prev, solution=sol, wall_time=wall_time)
+            results.append(result)
+            if on_increment is not None:
+                on_increment(result)
         if not converged:
             break
         t_prev = t
@@ -183,6 +205,7 @@ def solve_automatic(
             f"require 0 < dt_min <= dt_init <= dt_max, got {dt_min}, {dt_init}, {dt_max}"
         )
 
+    mon = get_monitor()
     results = []
     t, dt, step = 0.0, dt_init, 0
 
@@ -192,28 +215,33 @@ def solve_automatic(
         step += 1
         dt = min(dt, dt_max, 1.0 - t)   # don't overshoot t=1
 
-        converged = False
-        t0 = time.perf_counter()
-        for attempt in range(max_cutbacks + 1):
-            t_trial = t + dt
-            sol = solve_fn(t_trial)
-            converged = bool(sol.converged)
-            if converged:
-                break
-            dt = max(dt * factor_dec, dt_min)
-        wall_time = time.perf_counter() - t0
+        with mon.stage("increment", step):
+            converged = False
+            t0 = time.perf_counter()
+            for attempt in range(max_cutbacks + 1):
+                t_trial = t + dt
+                sol, converged = _solve_attempt(mon, solve_fn, t_trial, dt, attempt + 1)
+                if converged:
+                    break
+                dt_failed, dt = dt, max(dt * factor_dec, dt_min)
+                # Shown at the default level: a cutback is rare, and without
+                # this line a run of them looks like one very slow increment.
+                mon.log("increment", f"cutback: t={t_trial:.5f} not converged, "
+                                     + (f"retrying dt {dt_failed:.5f} -> {dt:.5f}"
+                                        if attempt < max_cutbacks else "no cutbacks left"))
+            wall_time = time.perf_counter() - t0
 
-        if not converged:
-            raise RuntimeError(
-                f"Increment {step} did not converge after {max_cutbacks} cutbacks "
-                f"at t={t:.4f} (dt floored at {dt_min})"
-            )
+            if not converged:
+                raise RuntimeError(
+                    f"Increment {step} did not converge after {max_cutbacks} cutbacks "
+                    f"at t={t:.4f} (dt floored at {dt_min})"
+                )
 
-        t = t_trial
-        result = IncrementResult(step=step, t=t, dt=dt, solution=sol, wall_time=wall_time)
-        results.append(result)
-        if on_increment is not None:
-            on_increment(result)
+            t = t_trial
+            result = IncrementResult(step=step, t=t, dt=dt, solution=sol, wall_time=wall_time)
+            results.append(result)
+            if on_increment is not None:
+                on_increment(result)
         dt = min(dt * factor_inc, dt_max)
 
     return results

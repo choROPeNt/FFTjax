@@ -33,7 +33,6 @@ reason solve_mechanics does.
 
 import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on TPU, no GPU prealloc)
 
-import time
 from typing import Callable, Tuple, cast
 
 import jax.numpy as jnp
@@ -42,10 +41,11 @@ import numpy as np
 from materialmodels.assembly import assemble_K_field
 from operators.green import build_freq_grid
 from post.fields import vector_field_to_grid
-from problems.incremental import IncrementResult, solve_automatic, solve_fixed
+from problems.incremental import IncrementResult, solve_automatic, solve_fixed, solve_path
 from solvers.elliptic.scalar import solve_thermal_conduction
 from solvers.solution import ThermalSolution
 from utils.io.xdmf_writer import IncrementalWriter
+from utils.monitor import get_monitor
 
 _ZERO_CONTROL = (0, 0, 0)
 
@@ -171,28 +171,23 @@ def solve_thermal(
     def _on_increment(result: IncrementResult) -> None:
         write_time = 0.0
         if writer is not None:
-            t0 = time.perf_counter()
-            sol = cast(ThermalSolution, result.solution)
-            grad_T_grid = vector_field_to_grid(sol.grad_T, n)
-            flux_grid   = vector_field_to_grid(sol.flux, n)
-            fields = {
-                "phase":                  np.asarray(phase).reshape(n).astype(np.float32),
-                "gradient":               grad_T_grid.astype(np.float64),
-                "flux":                   flux_grid.astype(np.float64),
-                "temperature_fluctuation": np.asarray(sol.T_prime).reshape(n).astype(np.float64),
-            }
-            writer.write_increment(result.step, fields, time=result.t)
-            write_time = time.perf_counter() - t0
+            with get_monitor().stage("write") as st_write:
+                sol = cast(ThermalSolution, result.solution)
+                grad_T_grid = vector_field_to_grid(sol.grad_T, n)
+                flux_grid   = vector_field_to_grid(sol.flux, n)
+                fields = {
+                    "phase":                  np.asarray(phase).reshape(n).astype(np.float32),
+                    "gradient":               grad_T_grid.astype(np.float64),
+                    "flux":                   flux_grid.astype(np.float64),
+                    "temperature_fluctuation": np.asarray(sol.T_prime).reshape(n).astype(np.float64),
+                }
+                writer.write_increment(result.step, fields, time=result.t)
+            write_time = st_write.elapsed
         if on_increment is not None:
             on_increment(result, write_time)
 
     if stepping == "single":
-        t0 = time.perf_counter()
-        sol = solve_fn(1.0)
-        result = IncrementResult(step=1, t=1.0, dt=1.0, solution=sol,
-                                  wall_time=time.perf_counter() - t0)
-        _on_increment(result)
-        return [result]
+        return solve_path(solve_fn, [1.0], on_increment=_on_increment)
     elif stepping == "fixed":
         if dt is None:
             raise ValueError("stepping='fixed' requires dt")

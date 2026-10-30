@@ -38,6 +38,9 @@ String values in the YAML support {variable} interpolation:
 Usage
 -----
     python scripts/simulation/solve_fracture.py configs/simulation/fracture_example.yaml
+    # progress detail (default: the config's top-level log_level, else
+    # "increment" -- one line per step); see utils.monitor:
+    python scripts/simulation/solve_fracture.py <config> --log-level sweep
 
 Output
 ------
@@ -75,6 +78,7 @@ from utils.config import load_config
 from utils.io.reader import SimulationReader
 from utils.io.stats import write_stats
 from utils.io.xdmf_writer import IncrementalWriter
+from utils.monitor import add_log_level_argument, get_monitor, monitor_from
 
 
 def main():
@@ -82,6 +86,7 @@ def main():
         description="Solve mechanics + AT2 phase-field damage on a loaded microstructure (XDMF/HDF5)"
     )
     parser.add_argument("config", type=Path, help="YAML configuration file")
+    add_log_level_argument(parser)
     args = parser.parse_args()
 
     cfg  = load_config(args.config)
@@ -159,15 +164,18 @@ def main():
         sol = cast(FractureSolution, r.solution)
         eps_bar, sigma_bar = homogenize(sol.eps, sol.sigma)
         resp = macroscopic_response(eps_bar, sigma_bar, scalars={"damage": sol.d})
-        print(f"  step {r.step:3d}  t={r.t:.4f}  dt={r.dt:.4f}  converged={bool(sol.converged)}  "
-              f"staggered_iters={sol.iter_staggered:3d}  d_max={resp['damage_max']:.4f}  "
-              f"solve={r.wall_time:.2f}s  write={write_time:.2f}s  "
-              f"total={r.wall_time + write_time:.2f}s")
+        # Fields for the monitor's step line, which adds the clock and the
+        # solve/write/total split -- see utils.monitor.
+        mon = get_monitor()
+        mon.note(f"t={r.t:.4f}  dt={r.dt:.4f}  converged={bool(sol.converged)}  "
+                 f"staggered_iters={sol.iter_staggered:3d}  d_max={resp['damage_max']:.4f}",
+                 kind="increment")
         # Voigt order: [11, 22, 33, 12, 13, 23]
         eps_v, sigma_v = resp["eps_bar"], resp["sigma_bar"]
-        print(f"           eps_bar   voigt = [{' '.join(f'{v: .4e}' for v in eps_v)}]")
-        print(f"           sigma_bar voigt = [{' '.join(f'{v: .4e}' for v in sigma_v)}]")
-        print(f"           mises_stress = {resp['mises_stress']:.4e}   pressure = {resp['pressure']:.4e}")
+        mon.detail(f"           eps_bar   voigt = [{' '.join(f'{v: .4e}' for v in eps_v)}]", kind="increment")
+        mon.detail(f"           sigma_bar voigt = [{' '.join(f'{v: .4e}' for v in sigma_v)}]", kind="increment")
+        mon.detail(f"           mises_stress = {resp['mises_stress']:.4e}   pressure = {resp['pressure']:.4e}",
+                   kind="increment")
         stats_rows.append((
             r.step, r.t, r.dt, bool(sol.converged),
             bool(sol.converged_mech), bool(sol.converged_helm),
@@ -178,7 +186,7 @@ def main():
         ))
 
     mode = scfg.get("mode", "single")
-    with IncrementalWriter(stem, grid_shape=n, grid_length=L) as w:
+    with monitor_from(cfg, args.log_level), IncrementalWriter(stem, grid_shape=n, grid_length=L) as w:
         # step 0 -- initial condition (t=0): whatever damage state was loaded
         # in (zero for a fresh geometry file), zero strain/stress/displacement.
         step0_fields = {
