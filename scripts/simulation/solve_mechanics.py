@@ -62,6 +62,9 @@ Usage
     # one case out of a sweep, or just what would run:
     python scripts/simulation/solve_mechanics.py <config> --cases shear_xy
     python scripts/simulation/solve_mechanics.py <config> --list-cases
+    # progress detail (default: the config's top-level log_level, else
+    # "increment" -- one line per step); see utils.monitor:
+    python scripts/simulation/solve_mechanics.py <config> --log-level solve
 
 Output
 ------
@@ -97,6 +100,7 @@ from solvers.solution import ElasticitySolution
 from utils.config import field_write_mode, load_config
 from utils.io.reader import SimulationReader
 from utils.io.xdmf_writer import IncrementalWriter
+from utils.monitor import add_log_level_argument, get_monitor, monitor_from
 
 # per-increment solver + homogenization stats, saved to <stem>_stats.npy --
 # one structured-array row per accepted increment.
@@ -121,6 +125,7 @@ def main():
     parser.add_argument("--keep-going", action="store_true",
                         help="on a non-converged case, carry on with the remaining cases "
                              "instead of stopping (exit status is still nonzero)")
+    add_log_level_argument(parser)
     args = parser.parse_args()
 
     cfg  = load_config(args.config)
@@ -212,20 +217,21 @@ def main():
     mode = scfg.get("mode", "single")
 
     summaries = []
-    for k, (name, eps_bar_run, control_run, stress_run) in enumerate(runs, start=1):
-        stem = f"{output}/{jobname}_{name}" if name else f"{output}/{jobname}"
-        if name:
-            print(f"\n── load case {k}/{len(runs)}: {name} "
-                  f"────────────────────────────────────")
-        summaries.append(run_case(
-            name=name, stem=stem, eps_bar=eps_bar_run, control=control_run,
-            stress_goal=stress_run, n=n, L=L, phase=phase, phase_np=phase_np,
-            materials=materials, orientations_np=orientations_np, mcfg=mcfg, scfg=scfg,
-            mode=mode, write_fields=write_fields, src=src,
-        ))
-        if not summaries[-1]["ok"] and not args.keep_going:
-            print("\nStopping after a non-converged case (--keep-going runs the rest anyway).")
-            break
+    with monitor_from(cfg, args.log_level):
+        for k, (name, eps_bar_run, control_run, stress_run) in enumerate(runs, start=1):
+            stem = f"{output}/{jobname}_{name}" if name else f"{output}/{jobname}"
+            if name:
+                print(f"\n── load case {k}/{len(runs)}: {name} "
+                      f"────────────────────────────────────")
+            summaries.append(run_case(
+                name=name, stem=stem, eps_bar=eps_bar_run, control=control_run,
+                stress_goal=stress_run, n=n, L=L, phase=phase, phase_np=phase_np,
+                materials=materials, orientations_np=orientations_np, mcfg=mcfg, scfg=scfg,
+                mode=mode, write_fields=write_fields, src=src,
+            ))
+            if not summaries[-1]["ok"] and not args.keep_going:
+                print("\nStopping after a non-converged case (--keep-going runs the rest anyway).")
+                break
 
     if len(runs) > 1:
         _write_summary(f"{output}/{jobname}", summaries)
@@ -274,14 +280,15 @@ def run_case(*, name, stem, eps_bar, control, stress_goal, n, L, phase, phase_np
     def _report(r, write_time):
         sol = cast(ElasticitySolution, r.solution)
         eps_bar_out, sigma_bar = homogenize(sol.eps, sol.sigma)
-        print(f"  step {r.step:3d}  t={r.t:.4f}  dt={r.dt:.4f}  converged={bool(sol.converged)}  "
-              f"solve={r.wall_time:.2f}s  write={write_time:.2f}s  "
-              f"total={r.wall_time + write_time:.2f}s")
+        # Fields for the monitor's step line, which adds the clock and the
+        # solve/write/total split -- see utils.monitor.
+        mon = get_monitor()
+        mon.note(f"t={r.t:.4f}  dt={r.dt:.4f}  converged={bool(sol.converged)}", kind="increment")
         # Voigt order: [11, 22, 33, 12, 13, 23]
         eps_v   = to_voigt(np.asarray(eps_bar_out))
         sigma_v = to_voigt(np.asarray(sigma_bar))
-        print(f"           eps_bar   voigt = [{' '.join(f'{v: .4e}' for v in eps_v)}]")
-        print(f"           sigma_bar voigt = [{' '.join(f'{v: .4e}' for v in sigma_v)}]")
+        mon.detail(f"           eps_bar   voigt = [{' '.join(f'{v: .4e}' for v in eps_v)}]", kind="increment")
+        mon.detail(f"           sigma_bar voigt = [{' '.join(f'{v: .4e}' for v in sigma_v)}]", kind="increment")
         stats_rows.append((
             r.step, r.t, r.dt, bool(sol.converged),
             r.wall_time, write_time, eps_v, sigma_v,

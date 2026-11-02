@@ -94,6 +94,9 @@ Usage
     python scripts/simulation/solve_inelastic.py <config> --cases shear_xy
     # what would run, without running it:
     python scripts/simulation/solve_inelastic.py <config> --list-cases
+    # progress detail (default: the config's top-level log_level, else
+    # "increment" -- one line per step); see utils.monitor:
+    python scripts/simulation/solve_inelastic.py <config> --log-level newton
 
 Output
 ------
@@ -137,6 +140,7 @@ from solvers.solution import InelasticSolution
 from utils.config import field_write_mode, load_config
 from utils.io.reader import SimulationReader
 from utils.io.xdmf_writer import IncrementalWriter
+from utils.monitor import add_log_level_argument, get_monitor, monitor_from
 
 _STATS_DTYPE = np.dtype([
     ("step", "i4"), ("gamma", "f8"), ("converged", "?"), ("n_iter", "i4"),
@@ -232,9 +236,7 @@ def run_case(case: LoadCase, *, stem, n, L, Nv, xi_flat, phase_np, materials,
 
     def on_increment(r: IncrementResult) -> None:
         sol = cast(InelasticSolution, r.solution)
-        # Path entry 0 is the virgin state, numbered step 0 in the output
-        # (stats, XDMF time) -- IncrementResult.step counts from 1.
-        step, gamma = r.step - 1, r.t
+        step, gamma = r.step, r.t
         eps_step, sigma_step, converged = sol.eps, sol.sigma, sol.converged
         tau_avg = float(jnp.mean(sigma_step[i_comp, j_comp]))
         sig_bar = np.array(jnp.mean(sigma_step, axis=-1))
@@ -255,8 +257,10 @@ def run_case(case: LoadCase, *, stem, n, L, Nv, xi_flat, phase_np, materials,
                       + " ".join(f"eps_{voigt_label(a, b)}={eps_bar_out[a, b]: .5f}"
                                  for a, b in free)
                       + f"  |sig-goal|max={resid:.1e}")
-        print(f"  step {step:3d}  gamma={gamma: .4f}  converged={converged}  "
-              f"n_iter={sol.n_iter:2d}  tau_avg={tau_avg: .4f} MPa  wall={r.wall_time:.2f}s{extra}")
+        # Fields for the monitor's step line, which adds the clock and the
+        # solve/write/total split -- see utils.monitor.
+        get_monitor().note(f"gamma={gamma: .4f}  converged={converged}  n_iter={sol.n_iter:2d}  "
+                           f"tau_avg={tau_avg: .4f} MPa{extra}", kind="increment")
         stats_rows.append((step, gamma, bool(converged), int(sol.n_iter), r.wall_time,
                            tau_avg, sig_bar, eps_bar_out))
 
@@ -267,38 +271,40 @@ def run_case(case: LoadCase, *, stem, n, L, Nv, xi_flat, phase_np, materials,
         # would drop the lateral contraction from the displacement field.
         # Identical to eps_bar_step under pure strain BC.
         if writer is not None and not (step == 0 and write_fields == "increments"):
-            eps_grid   = field_to_grid(eps_step, n)
-            sigma_grid = field_to_grid(sigma_step, n)
-            u_grid = compute_displacement(eps_step, jnp.asarray(eps_bar_out), n, L)
-            fields = {
-                "phase":        phase_np.reshape(n).astype(np.float64),
-                "displacement": u_grid.astype(np.float64),
-                "strain":       to_voigt(eps_grid).astype(np.float64),
-                "stress":       to_voigt(sigma_grid).astype(np.float64),
-                "von_mises":    von_mises(sigma_grid).astype(np.float64),
-                "strain_p":     np.array(alpha_step).reshape(n).astype(np.float64),
-            }
-            if write_eps_p:
-                # mandel=False, the same Voigt convention "strain" above uses,
-                # so eps_p and eps components are directly comparable (and the
-                # trace, the plastic volume change, is just the first three).
-                fields["eps_p"] = to_voigt(field_to_grid(sol.eps_p, n)).astype(np.float64)
-            # time = step index, not gamma -- see module docstring
-            writer.write_increment(step, fields, time=float(step))
-
-        if not converged:
-            print(f"  !! Newton did not converge at step {step}, gamma={gamma:.4f} "
-                  f"-- stopping case {case.name!r} here")
+            with get_monitor().stage("write"):
+                eps_grid   = field_to_grid(eps_step, n)
+                sigma_grid = field_to_grid(sigma_step, n)
+                u_grid = compute_displacement(eps_step, jnp.asarray(eps_bar_out), n, L)
+                fields = {
+                    "phase":        phase_np.reshape(n).astype(np.float64),
+                    "displacement": u_grid.astype(np.float64),
+                    "strain":       to_voigt(eps_grid).astype(np.float64),
+                    "stress":       to_voigt(sigma_grid).astype(np.float64),
+                    "von_mises":    von_mises(sigma_grid).astype(np.float64),
+                    "strain_p":     np.array(alpha_step).reshape(n).astype(np.float64),
+                }
+                if write_eps_p:
+                    # mandel=False, the same Voigt convention "strain" above uses,
+                    # so eps_p and eps components are directly comparable (and the
+                    # trace, the plastic volume change, is just the first three).
+                    fields["eps_p"] = to_voigt(field_to_grid(sol.eps_p, n)).astype(np.float64)
+                # time = step index, not gamma -- see module docstring
+                writer.write_increment(step, fields, time=float(step))
 
     writer_cm = (IncrementalWriter(stem, grid_shape=n, grid_length=L)
                  if write_fields != "none" else nullcontext(None))
     with writer_cm as writer:
         # A non-converged point ends the path early; the files written up to
         # then stay valid (see run_case's docstring).
-        results = solve_path(solve_fn, case.gammas, on_increment=on_increment)
+        # first_step=0: path entry 0 is the virgin state, step 0 in the output
+        # (stats, XDMF time).
+        results = solve_path(solve_fn, case.gammas, on_increment=on_increment, first_step=0)
     last = results[-1]
     ok = bool(cast(InelasticSolution, last.solution).converged)
-    failed_at = None if ok else last.step - 1
+    failed_at = None if ok else last.step
+    if not ok:
+        print(f"  !! Newton did not converge at step {last.step}, gamma={last.t:.4f} "
+              f"-- stopping case {case.name!r} here")
 
     _, alpha_final = carry["state"]
     n_plastic = int(jnp.sum(alpha_final > 1e-12))
@@ -352,6 +358,7 @@ def main():
     parser.add_argument("--keep-going", action="store_true",
                         help="on a non-converged case, carry on with the remaining cases "
                              "instead of stopping (exit status is still nonzero)")
+    add_log_level_argument(parser)
     args = parser.parse_args()
 
     cfg  = load_config(args.config)
@@ -425,18 +432,19 @@ def main():
         print("Output : writing the plastic strain tensor eps_p (Voigt 6) per increment")
 
     summaries = []
-    for k, case in enumerate(cases, start=1):
-        stem = f"{output}/{jobname}_{case.name}" if suffixed else f"{output}/{jobname}"
-        print(f"\n── load case {k}/{len(cases)} ─────────────────────────────────────────")
-        summaries.append(run_case(
-            case, stem=stem, n=n, L=L, Nv=Nv, xi_flat=xi_flat, phase_np=phase_np,
-            materials=materials, local_update=local_update, state0=state0,
-            solver=solver, src=src, write_fields=write_fields,
-            write_eps_p=write_eps_p,
-        ))
-        if not summaries[-1]["ok"] and not args.keep_going:
-            print("\nStopping after a non-converged case (--keep-going runs the rest anyway).")
-            break
+    with monitor_from(cfg, args.log_level):
+        for k, case in enumerate(cases, start=1):
+            stem = f"{output}/{jobname}_{case.name}" if suffixed else f"{output}/{jobname}"
+            print(f"\n── load case {k}/{len(cases)} ─────────────────────────────────────────")
+            summaries.append(run_case(
+                case, stem=stem, n=n, L=L, Nv=Nv, xi_flat=xi_flat, phase_np=phase_np,
+                materials=materials, local_update=local_update, state0=state0,
+                solver=solver, src=src, write_fields=write_fields,
+                write_eps_p=write_eps_p,
+            ))
+            if not summaries[-1]["ok"] and not args.keep_going:
+                print("\nStopping after a non-converged case (--keep-going runs the rest anyway).")
+                break
 
     if len(cases) > 1:
         print(f"\n{'case':<14s}{'comp':>5s}{'steps':>7s}{'plastic':>9s}"

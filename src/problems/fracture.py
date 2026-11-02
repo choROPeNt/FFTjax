@@ -34,7 +34,6 @@ materialmodels/ and solvers/ stacks so far:
 
 import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on TPU, no GPU prealloc)
 
-import time
 from typing import Callable, Tuple, cast
 
 import jax.numpy as jnp
@@ -46,7 +45,7 @@ from materialmodels.phasefield.driving_force import lame_field, strain_energy_am
 from operators.galerkin import build_galerkin_projector
 from operators.green import build_freq_grid, build_reference_green_operator
 from post.fields import compute_displacement, field_to_grid, to_voigt, von_mises
-from problems.incremental import IncrementResult, solve_automatic, solve_fixed
+from problems.incremental import IncrementResult, solve_automatic, solve_fixed, solve_path
 from solvers.elliptic.scalar import solve_damage_helmholtz_cg, solve_damage_helmholtz_cg_het
 from solvers.elliptic.vector.displacement_based import solve_displacement_based
 from solvers.elliptic.vector.fourier_galerkin import solve_fourier_galerkin
@@ -54,6 +53,7 @@ from solvers.elliptic.vector.lippmann_schwinger import solve_lippmann_schwinger,
 from solvers.elliptic.vector.mixed_bc import _ZERO_CONTROL
 from solvers.solution import FractureSolution
 from utils.io.xdmf_writer import IncrementalWriter
+from utils.monitor import Monitor, get_monitor
 
 
 def solve_fracture(
@@ -253,60 +253,68 @@ def _staggered_loop(
     eps_prev = jnp.ones((3, 3, Nv)) * eps_bar[:, :, None]
     control_nonzero = any(any(row) for row in control)
 
+    # One monitored stage per staggered sweep (shown at log level "sweep").
+    # Eager path only: with early_exit=False this loop may be running under a
+    # jit/vmap trace, where a wall clock and float() of the error mean nothing.
+    mon = get_monitor() if early_exit else Monitor(level=None)
     for iter_st in range(1, maxiter_st + 1):
-        d_prev_st = d_st
+        with mon.stage("sweep", iter_st) as sw:
+            d_prev_st = d_st
 
-        _, C_eff = pff_local_update(eps_prev, d_st)
+            _, C_eff = pff_local_update(eps_prev, d_st)
 
-        if formulation == "lippmann_schwinger":
-            if control_nonzero:
-                eps, sigma, delta, eps_bar_cur, converged_mech, _n_iter_outer = solve_lippmann_schwinger_mixed_bc(
-                    n, C_eff, elastic_op, control, eps_bar, stress_goal_arr,
+            if formulation == "lippmann_schwinger":
+                if control_nonzero:
+                    eps, sigma, delta, eps_bar_cur, converged_mech, _n_iter_outer = solve_lippmann_schwinger_mixed_bc(
+                        n, C_eff, elastic_op, control, eps_bar, stress_goal_arr,
+                        toler_lin=toler_lin, maxiter=maxiter_cg,
+                    )
+                else:
+                    eps, sigma, delta, converged_mech = solve_lippmann_schwinger(
+                        n, C_eff, elastic_op, eps_bar,
+                        toler_lin=toler_lin, maxiter=maxiter_cg,
+                    )
+            elif formulation == "fourier_galerkin":
+                eps, sigma, delta, eps_bar_cur, converged_mech = solve_fourier_galerkin(
+                    n, C_eff, elastic_op, eps_bar, control, stress_goal_arr,
                     toler_lin=toler_lin, maxiter=maxiter_cg,
                 )
+            else:  # "displacement"
+                eps, sigma, delta, eps_bar_cur, converged_mech = solve_displacement_based(
+                    n, C_eff, xi_flat, eps_bar, control, stress_goal_arr,
+                    toler_lin=toler_lin, maxiter=maxiter_cg,
+                )
+            eps_prev = eps
+
+            psi_pos, _ = strain_energy_amor_split(eps, lam_vox, mu_vox)
+            H_st = update_history_hybrid(H_st, psi_pos, d_prev_st, d_thres=d_thres)
+
+            damage_solve = solve_damage_helmholtz_cg_het if Gc_heterogeneous else solve_damage_helmholtz_cg
+            d_st, converged_helm = damage_solve(
+                H_st, xi_flat, n, l0, Gc, d_prev_st,
+                toler_cg=toler_helm, maxiter=maxiter_helm, eta=eta, dt=dt, k=k_res_arr,
+            )
+
+            diff = jnp.max(jnp.abs(d_st - d_prev_st))
+            if early_exit:
+                # concrete Python float/bool -- fine outside vmap/jit (eager),
+                # which is the only context solve_fracture is ever called in.
+                err_abs = float(diff)
+                err_rel = float(diff / (jnp.max(jnp.abs(d_st)) + 1e-30))
+                staggered_converged = err_abs < toler_st_abs or err_rel < toler_st_rel
+                if mon.enabled("sweep"):
+                    sw.note(f"err_abs={err_abs:.3e}  d_max={float(jnp.max(d_st)):.4f}  "
+                            f"mech={bool(converged_mech)}  helm={bool(converged_helm)}")
+                if staggered_converged:
+                    break
             else:
-                eps, sigma, delta, converged_mech = solve_lippmann_schwinger(
-                    n, C_eff, elastic_op, eps_bar,
-                    toler_lin=toler_lin, maxiter=maxiter_cg,
-                )
-        elif formulation == "fourier_galerkin":
-            eps, sigma, delta, eps_bar_cur, converged_mech = solve_fourier_galerkin(
-                n, C_eff, elastic_op, eps_bar, control, stress_goal_arr,
-                toler_lin=toler_lin, maxiter=maxiter_cg,
-            )
-        else:  # "displacement"
-            eps, sigma, delta, eps_bar_cur, converged_mech = solve_displacement_based(
-                n, C_eff, xi_flat, eps_bar, control, stress_goal_arr,
-                toler_lin=toler_lin, maxiter=maxiter_cg,
-            )
-        eps_prev = eps
-
-        psi_pos, _ = strain_energy_amor_split(eps, lam_vox, mu_vox)
-        H_st = update_history_hybrid(H_st, psi_pos, d_prev_st, d_thres=d_thres)
-
-        damage_solve = solve_damage_helmholtz_cg_het if Gc_heterogeneous else solve_damage_helmholtz_cg
-        d_st, converged_helm = damage_solve(
-            H_st, xi_flat, n, l0, Gc, d_prev_st,
-            toler_cg=toler_helm, maxiter=maxiter_helm, eta=eta, dt=dt, k=k_res_arr,
-        )
-
-        diff = jnp.max(jnp.abs(d_st - d_prev_st))
-        if early_exit:
-            # concrete Python float/bool -- fine outside vmap/jit (eager),
-            # which is the only context solve_fracture is ever called in.
-            err_abs = float(diff)
-            err_rel = float(diff / (jnp.max(jnp.abs(d_st)) + 1e-30))
-            staggered_converged = err_abs < toler_st_abs or err_rel < toler_st_rel
-            if staggered_converged:
-                break
-        else:
-            # stay array-valued -- float()/bool() on a batched/traced value
-            # would raise under vmap; every batch lane must run the same
-            # (here: all maxiter_st) iterations regardless of its own
-            # convergence, so there's nothing to break out of anyway.
-            err_abs = diff
-            err_rel = diff / (jnp.max(jnp.abs(d_st)) + 1e-30)
-            staggered_converged = jnp.logical_or(err_abs < toler_st_abs, err_rel < toler_st_rel)
+                # stay array-valued -- float()/bool() on a batched/traced value
+                # would raise under vmap; every batch lane must run the same
+                # (here: all maxiter_st) iterations regardless of its own
+                # convergence, so there's nothing to break out of anyway.
+                err_abs = diff
+                err_rel = diff / (jnp.max(jnp.abs(d_st)) + 1e-30)
+                staggered_converged = jnp.logical_or(err_abs < toler_st_abs, err_rel < toler_st_rel)
 
     return FractureSolution(
         eps=eps, sigma=sigma, delta=delta, d=d_st, H=H_st, psi_pos=psi_pos,
@@ -582,35 +590,30 @@ def solve_fracture_incremental(
 
         write_time = 0.0
         if writer is not None:
-            t0 = time.perf_counter()
-            eps_grid   = field_to_grid(sol.eps, n)
-            sigma_grid = field_to_grid(sol.sigma, n)
-            sigma_vm   = von_mises(sigma_grid)
-            eps_bar_u  = sol.eps_bar if sol.eps_bar is not None else result.t * eps_bar
-            u_grid     = compute_displacement(sol.eps, eps_bar_u, n, L)
-            fields = {
-                "phase":        np.asarray(phase).reshape(n).astype(np.float32),
-                "strain":       to_voigt(eps_grid).astype(np.float64),
-                "stress":       to_voigt(sigma_grid).astype(np.float64),
-                "von_mises":    sigma_vm.astype(np.float64),
-                "displacement": u_grid.astype(np.float64),
-                "damage":       np.asarray(sol.d).reshape(n).astype(np.float64),
-                "strain_energy_pos": np.asarray(sol.psi_pos).reshape(n).astype(np.float64),
-            }
-            if orientation is not None:
-                fields["orientation"] = np.asarray(orientation).T.reshape(*n, 3).astype(np.float64)
-            writer.write_increment(result.step, fields, time=result.t)
-            write_time = time.perf_counter() - t0
+            with get_monitor().stage("write") as st_write:
+                eps_grid   = field_to_grid(sol.eps, n)
+                sigma_grid = field_to_grid(sol.sigma, n)
+                sigma_vm   = von_mises(sigma_grid)
+                eps_bar_u  = sol.eps_bar if sol.eps_bar is not None else result.t * eps_bar
+                u_grid     = compute_displacement(sol.eps, eps_bar_u, n, L)
+                fields = {
+                    "phase":        np.asarray(phase).reshape(n).astype(np.float32),
+                    "strain":       to_voigt(eps_grid).astype(np.float64),
+                    "stress":       to_voigt(sigma_grid).astype(np.float64),
+                    "von_mises":    sigma_vm.astype(np.float64),
+                    "displacement": u_grid.astype(np.float64),
+                    "damage":       np.asarray(sol.d).reshape(n).astype(np.float64),
+                    "strain_energy_pos": np.asarray(sol.psi_pos).reshape(n).astype(np.float64),
+                }
+                if orientation is not None:
+                    fields["orientation"] = np.asarray(orientation).T.reshape(*n, 3).astype(np.float64)
+                writer.write_increment(result.step, fields, time=result.t)
+            write_time = st_write.elapsed
         if on_increment is not None:
             on_increment(result, write_time)
 
     if stepping == "single":
-        t0 = time.perf_counter()
-        sol = solve_fn(1.0)
-        result = IncrementResult(step=1, t=1.0, dt=1.0, solution=sol,
-                                  wall_time=time.perf_counter() - t0)
-        _on_increment(result)
-        return [result]
+        return solve_path(solve_fn, [1.0], on_increment=_on_increment)
     elif stepping == "fixed":
         if dt_step is None:
             raise ValueError("stepping='fixed' requires dt_step")
