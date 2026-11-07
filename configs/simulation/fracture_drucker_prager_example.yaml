@@ -89,14 +89,16 @@ fracture:
     - [0.0,    0.0, 0.0]
     - [0.0,    0.0, 0.0]
 
+  # Uniaxial STRESS: only the driven component (eps_11) is strain-controlled,
+  # every other macroscopic stress -- shears included -- is held at stress_bar
+  # (zero), via the same free_surfaces derivation solve_mechanics/
+  # solve_inelastic use (problems.utils.loadcases.free_surface_control).
   # Mixed BC matters more here than in a purely brittle run: a pure-strain BC
   # aims the local stress path nearly along the hydrostatic axis, straight at
-  # the cone's tensile vertex, which is exactly where the plastic tangent is
-  # worst conditioned. Relaxing the transverse directions stops aiming at it.
-  control:
-    - [0, 0, 0]
-    - [0, 1, 0]
-    - [0, 0, 1]
+  # the cone's tensile vertex, where the plastic tangent is worst conditioned.
+  # Freeing the shears too matters once a crack forms: holding shear STRAIN at
+  # zero locks an inclined crack band and props up the softening tail.
+  free_surfaces: true
   stress_bar:
     - [0.0, 0.0, 0.0]
     - [0.0, 0.0, 0.0]
@@ -116,12 +118,23 @@ fracture:
   toler_helm:   1.0e-6            # damage CG
   maxiter_helm: 300
 
-  eta: 1.0e-6       # damage-equation viscous regularisation (0 = none)
+  # Viscous regularisation, in LOAD-FRACTION units: it enters only as eta/dt,
+  # with dt the step in t in [0, 1]. 0.125 is the pinned value for this
+  # config's 2 % target strain at dt_max 0.10 (0.2 % strain per step) -- see
+  # CLAUDE.md before changing eps_bar or dt_max. 1e-6 would be inert.
+  eta: 0.125
   d_thres: 0.95     # hybrid irreversibility threshold
 
   toler_st_abs: 1.0e-4            # staggered fixed-point convergence
   toler_st_rel: 1.0e-5
-  maxiter_st:   50
+  maxiter_st:   200               # not less: at 40 rejected attempts ate most
+                                   # of the wall time, at 20 runs spiralled into
+                                   # cutbacks (see CLAUDE.md)
+
+  # Ceiling on damage -- a conditioning regularization and a modelling change:
+  # a crack keeps (1 - d_cap)^2 + k_res of its stiffness and never fully opens.
+  # Quote it with any result. 1.0 (the default) is unmodified AT2.
+  d_cap: 0.975
 
   # `automatic` is the mode to want here. Unlike the brittle path, an
   # increment's MECHANICAL solve can genuinely fail once a crack localizes
