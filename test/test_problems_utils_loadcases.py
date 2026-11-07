@@ -48,7 +48,7 @@ import numpy as np
 
 from post.fields import _VOIGT_IJ
 from problems.utils.loadcases import (
-    BASE_COMPONENTS, BASE_SIX, cycle_gammas, free_surface_control,
+    BASE_COMPONENTS, BASE_SIX, cycle_gammas, driven_component, free_surface_control,
     resolve_cases, select_cases, strain_symbol, stress_symbol, voigt_label,
 )
 
@@ -197,5 +197,23 @@ for i in range(3):
         assert strain_symbol(i, j) == f"ε{voigt_label(i, j)}"
         assert stress_symbol(i, j) == f"σ{voigt_label(i, j)}"
 print("[8] PASSED")
+
+# ── [9] driven_component: the one loaded entry of a tensor eps_bar ──────────
+# What solve_fracture.py's free_surfaces derives its mask from, so it must
+# agree with the named cases' own component, accept either triangle for a
+# shear, and refuse anything that is not a single-component load.
+for name, (i, j) in BASE_COMPONENTS.items():
+    eps9 = np.zeros((3, 3))
+    eps9[j, i] = 0.02          # lower triangle on purpose for the shears
+    assert driven_component(eps9) == (i, j), name
+    assert driven_component(eps9.T) == (i, j), name
+for bad in (np.zeros((3, 3)), np.diag([0.02, 0.01, 0.0])):
+    try:
+        driven_component(bad)
+    except ValueError as exc:
+        assert "exactly one" in str(exc)
+    else:
+        raise AssertionError(f"expected a ValueError for eps_bar=\n{bad}")
+print("[9] PASSED")
 
 print("\ntest_problems_utils_loadcases: all checks passed")

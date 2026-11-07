@@ -73,6 +73,7 @@ from materialmodels.base import PhaseFieldMaterial
 from materialmodels.factory import build_material
 from post.fields import homogenize, macroscopic_response
 from problems.fracture import solve_fracture_incremental
+from problems.utils.loadcases import BASE_COMPONENTS, driven_component, free_surface_control, voigt_label
 from solvers.solution import FractureSolution
 from utils.config import load_config
 from utils.io.reader import SimulationReader
@@ -134,8 +135,20 @@ def main():
 
     # mixed strain/stress BC -- formulation="displacement" only (see
     # problems.fracture.solve_fracture docstring).
+    # free_surfaces: true derives the mask the way problems.utils.loadcases does
+    # for solve_mechanics/solve_inelastic: the one component eps_bar drives is
+    # strain-controlled, every other macroscopic stress (shears included) is
+    # held at stress_bar, i.e. zero by default. Same precedence as there: it
+    # overrides a run-level `control`.
     control_cfg = fcfg.get("control")
-    control = tuple(tuple(int(c) for c in row) for row in control_cfg) if control_cfg else None
+    if fcfg.get("free_surfaces", False):
+        control = free_surface_control(*driven_component(fcfg["eps_bar"]))
+    else:
+        control = tuple(tuple(int(c) for c in row) for row in control_cfg) if control_cfg else None
+    if control is not None:
+        free = [voigt_label(a, b) for a, b in BASE_COMPONENTS.values() if control[a][b]]  # Voigt order
+        print(f"BC     : stress-controlled {', '.join(free) or 'none'}"
+              + ("  (free_surfaces)" if fcfg.get("free_surfaces", False) else ""))
     stress_bar_cfg = fcfg.get("stress_bar")
     stress_goal = jnp.array(stress_bar_cfg) if stress_bar_cfg else None
 
