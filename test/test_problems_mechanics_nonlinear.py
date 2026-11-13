@@ -53,15 +53,27 @@ Three checks
    non-driven macroscopic stress at round-off, and must actually develop the
    coupled shear strain. A mask that clamped the non-driven shears would
    leave sigma_12 (resp. sigma_23) nonzero instead.
-8. The macroscopic-strain block of the mixed-BC CG preconditioner
-   (macro_block_preconditioner, shared by solve_displacement_based and the
-   Newton correction here) is symmetric POSITIVE definite, for the
-   free-surface masks and for partial ones. The bordered operator is negative
-   semidefinite and the displacement block of its preconditioner positive, so
-   CG on that pair is CG on an SPD system only if this block is positive too.
-   It used to carry the operator's own (negative) sign, which made the
-   preconditioner indefinite: every solve with a stress-controlled component
-   still converged, but 2.5-3x slower on a plastic tangent.
+8. The bordered mixed-BC system of a Newton correction: the operator is
+   negative semidefinite and its preconditioner POSITIVE definite, on the
+   displacement block, on the macroscopic-strain block, and on mixtures of
+   the two. CG on that pair is CG on an SPD system only if M is positive
+   definite. The macroscopic block of M used to carry the operator's own
+   (negative) sign, which made M indefinite: every solve with a
+   stress-controlled component still converged, but 2.5-3x slower on a
+   plastic tangent (CODE_REVIEW.md, R1). Checked on the solver's own
+   operator pair (NewtonKernels.linear_system), and on the helper the linear
+   displacement solver shares (macro_block_preconditioner).
+9. Compiled kernels are reused: with ``kernels`` from build_newton_kernels
+   and the varying field passed through ``local_args``, a second solve with
+   different values does not retrace the constitutive callable, and each
+   solve reproduces the linear reference for its own field. Kernels built for
+   a different problem are rejected.
+10. A solve that needs k corrections converges with maxiter_nr = k: the
+   strain the LAST correction produces is tested like any other. It used to
+   be returned untested and reported as a failure.
+11. ``state_on_failure``: a failed solve returns ``state_init`` by default
+   and, with "trial", the state return-mapped from ``state_init`` at the
+   returned strain, with the stress of that same evaluation.
 
 Usage
 -----
@@ -82,8 +94,8 @@ from generation.rve import make_square_composite_rve
 from materialmodels.elastic.isotropic import LinearElasticIsotropic
 from materialmodels.assembly import assemble_C_field
 from materialmodels.inelastic.plasticity_j2 import J2Plasticity
-from operators.green import build_freq_grid
-from problems.mechanics import solve_displacement_based_nonlinear
+from operators.green import build_freq_grid, nyquist_safe_xi
+from problems.mechanics import build_newton_kernels, solve_displacement_based_nonlinear
 from problems.utils.loadcases import free_surface_control
 from solvers.elliptic.vector.displacement_based import solve_displacement_based
 from solvers.elliptic.vector.mixed_bc import _active_pairs, macro_block_preconditioner
@@ -198,10 +210,9 @@ d_alpha = float(jnp.max(jnp.abs(alpha_chk - alpha_large)))
 print(f"[4] state is one return mapping from state0: max|dsigma|={d_sigma:.3e}  "
       f"max|deps_p|={d_eps_p:.3e}  max|dalpha|={d_alpha:.3e}")
 assert float(jnp.max(alpha_large)) > 0.0, "check 4 is vacuous if nothing yielded"
-# sigma only matches to roundoff -- the driver recomputes it after the loop via
-# local_update(eps_final, state) with state already advanced, so it takes a
-# different (dgamma == 0, hence value-identical) arithmetic path to the same
-# stress. 1e-12 relative is ~4 orders above the observed 1e-16 and ~10 orders
+# sigma only matches to roundoff -- the driver returns the stress of the
+# converging iteration's own (jitted) evaluation, this reference call is
+# eager. 1e-12 relative is ~4 orders above the observed 1e-16 and ~10 orders
 # below the per-iteration ratcheting the bug produced.
 assert d_sigma < 1e-12 * float(jnp.max(jnp.abs(sigma_large)))
 # eps_p/alpha: the converging iteration's own local_update call runs inside
@@ -358,20 +369,142 @@ for (i, j), (ci, cj) in (((0, 0), (0, 1)), ((0, 2), (1, 2))):
         f"driven ({i},{j}): the layering must load eps_{ci + 1}{cj + 1}, or this check is vacuous"
 print("[7] PASSED")
 
-# ── 8. macroscopic block of the mixed-BC preconditioner: positive definite ──
+# ── 8. bordered system: A negative semidefinite, M positive definite ────────
 
+iq_lay = 1j * nyquist_safe_xi(xi_lay, n_lay)
 Nv_lay = int(np.prod(n_lay))
+rng = np.random.default_rng(0)
 C0_lay = jnp.mean(C_lay, axis=-1)
+worst = {"A": -np.inf, "M": np.inf, "P": np.inf, "sym": 0.0}
 masks = (free_surface_control(0, 0), free_surface_control(0, 2),
          ((1, 0, 0), (0, 1, 0), (0, 0, 1)), ((0, 0, 0), (0, 1, 0), (0, 0, 1)))
-worst_P = np.inf
 for mask in masks:
     pairs = _active_pairs(mask)
+    K = len(pairs)
+    # The helper shared with solve_displacement_based: symmetric positive definite.
     P = np.asarray(macro_block_preconditioner(C0_lay, pairs, Nv_lay, C0_lay.dtype))
     assert np.allclose(P, P.T, rtol=1e-12, atol=0.0), f"{mask}: P_extra is not symmetric"
-    worst_P = min(worst_P, float(np.linalg.eigvalsh(P).min()))
-print(f"[8] macro_block_preconditioner over {len(masks)} masks: min eig = {worst_P:.3e} (> 0)")
-assert worst_P > 0.0, "macro_block_preconditioner must be positive definite"
+    worst["P"] = min(worst["P"], float(np.linalg.eigvalsh(P).min()))
+    kern8 = build_newton_kernels(n_lay, layered_local_update, control=mask)
+    for C0 in (None, C0_lay):
+        A_op, M = kern8.linear_system(C_lay, iq_lay, C0)
+        du = rng.standard_normal((3, Nv_lay))
+        du -= du.mean(axis=1, keepdims=True)          # no rigid translation: A's null space
+        sv = rng.standard_normal(K)
+        x_du = jnp.asarray(np.concatenate([du.ravel(), np.zeros(K)]))
+        x_sv = jnp.asarray(np.concatenate([np.zeros(3 * Nv_lay), sv]))
+        # mixtures across ten decades of relative weight, so neither block hides the other
+        xs = [x_du, x_sv] + [x_du + 10.0 ** e * x_sv for e in (-4, -2, 0, 2, 4, 6)]
+        for x in xs:
+            xAx = float(jnp.vdot(x, A_op(x)))
+            xMx = float(jnp.vdot(x, M(x)))
+            worst["A"] = max(worst["A"], xAx / float(jnp.vdot(x, x)))
+            worst["M"] = min(worst["M"], xMx)
+            assert xAx < 0.0, f"{mask}: the bordered operator is not negative: x.Ax = {xAx:.3e}"
+            assert xMx > 0.0, (f"{mask}: the preconditioner is not positive definite: "
+                               f"x.Mx = {xMx:.3e} (C0 {'given' if C0 is not None else 'mean'})")
+        u, v = xs[4], jnp.asarray(rng.standard_normal(3 * Nv_lay + K))
+        for op in (A_op, M):
+            asym = abs(float(jnp.vdot(u, op(v)) - jnp.vdot(v, op(u))))
+            worst["sym"] = max(worst["sym"], asym / (float(jnp.linalg.norm(u)) * float(jnp.linalg.norm(op(v)))))
+print(f"[8] bordered system over {len(masks)} masks: max x.Ax/x.x = {worst['A']:.3e} (< 0)  "
+      f"min x.Mx = {worst['M']:.3e} (> 0)  min eig(P_extra) = {worst['P']:.3e} (> 0)  "
+      f"asymmetry = {worst['sym']:.1e}")
+assert worst["P"] > 0.0, "macro_block_preconditioner must be positive definite"
+assert worst["sym"] < 1e-10, "the bordered operator and its preconditioner must be symmetric"
 print("[8] PASSED")
+
+# ── 9. compiled kernels are reused across solves ────────────────────────────
+
+traces = {"n": 0}
+
+
+def scaled_local_update(eps_field, state, scale):
+    traces["n"] += 1      # Python side effect: runs when the function is TRACED, not when it is called
+    C = C_field * scale[None, None, None, None, :]
+    return jnp.einsum("ijklm,klm->ijm", C, eps_field), C, state
+
+
+kern9 = build_newton_kernels(n, scaled_local_update, maxiter_lin=2000)
+no_control = ((0, 0, 0), (0, 0, 0), (0, 0, 0))
+scales = (jnp.ones(Nv), jnp.asarray(rng.uniform(0.3, 1.0, Nv)), jnp.asarray(rng.uniform(0.3, 1.0, Nv)))
+traces_after = []
+for scale in scales:
+    eps9, _, _, conv9, _ = solve_displacement_based_nonlinear(
+        n, xi_flat, eps_bar, scaled_local_update, state_init=None,
+        toler_lin=1e-10, maxiter_lin=2000, toler_nr=1e-10, maxiter_nr=10,
+        local_args=(scale,), kernels=kern9,
+    )
+    eps9_ref, _, _, _, conv9_ref = solve_displacement_based(
+        n, C_field * scale[None, None, None, None, :], xi_flat, eps_bar, no_control,
+        jnp.zeros((3, 3)), toler_lin=1e-10, maxiter=2000,
+    )
+    err9 = float(jnp.max(jnp.abs(eps9 - eps9_ref)))
+    traces_after.append(traces["n"])
+    assert conv9 and bool(conv9_ref)
+    assert err9 < 1e-8, f"reused kernels do not reproduce the linear reference: {err9:.3e}"
+print(f"[9] kernels reused over {len(scales)} solves: traces of local_update after each = {traces_after}")
+assert traces_after[0] >= 1
+assert traces_after[-1] == traces_after[0], \
+    f"local_update was retraced on a later solve ({traces_after}): the kernels are not being reused"
+for bad_kwargs, what in ((dict(maxiter_lin=7), "maxiter_lin"), (dict(control=masks[0]), "control")):
+    kw = dict(toler_lin=1e-10, maxiter_lin=2000, toler_nr=1e-10, maxiter_nr=10,
+              local_args=(scales[0],), kernels=kern9)
+    kw.update(bad_kwargs)
+    try:
+        solve_displacement_based_nonlinear(n, xi_flat, eps_bar, scaled_local_update, None, **kw)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError(f"kernels built for a different {what} were accepted")
+try:
+    solve_displacement_based_nonlinear(n, xi_flat, eps_bar, linear_local_update, None, kernels=kern9,
+                                       maxiter_lin=2000)
+except ValueError:
+    pass
+else:
+    raise AssertionError("kernels built for a different local_update were accepted")
+print("[9] PASSED")
+
+# ── 10. the strain produced by the last correction is tested ────────────────
+
+kw10 = dict(toler_lin=1e-10, maxiter_lin=2000, toler_nr=1e-6)
+_, _, _, conv_full, n_full = solve_displacement_based_nonlinear(
+    n, xi_flat, eps_bar_large, plastic_local_update, state0, maxiter_nr=50, **kw10)
+k_corr = n_full - 1          # iteration n_full only tested the residual and stopped
+assert conv_full and k_corr >= 2, "check 10 needs a solve that takes several corrections"
+eps10, sigma10, _, conv10, n10, res10 = solve_displacement_based_nonlinear(
+    n, xi_flat, eps_bar_large, plastic_local_update, state0, maxiter_nr=k_corr,
+    return_residual=True, **kw10)
+_, _, _, conv10_short, _, res10_short = solve_displacement_based_nonlinear(
+    n, xi_flat, eps_bar_large, plastic_local_update, state0, maxiter_nr=k_corr - 1,
+    return_residual=True, **kw10)
+print(f"[10] needs {k_corr} corrections: maxiter_nr={k_corr} -> converged={conv10} (res {res10:.1e});  "
+      f"maxiter_nr={k_corr - 1} -> converged={conv10_short} (res {res10_short:.1e})")
+assert conv10 and n10 == k_corr and res10 < 1e-6, \
+    "a solve whose last correction converges must be reported converged"
+assert (not conv10_short) and res10_short >= 1e-6, "one correction fewer must still fail"
+print("[10] PASSED")
+
+# ── 11. state_on_failure ────────────────────────────────────────────────────
+
+kw11 = dict(toler_lin=1e-10, maxiter_lin=2000, toler_nr=1e-10, maxiter_nr=1)
+eps11, sigma11, state11, conv11, _ = solve_displacement_based_nonlinear(
+    n, xi_flat, eps_bar_large, plastic_local_update, state0, **kw11)
+eps11t, sigma11t, state11t, conv11t, _ = solve_displacement_based_nonlinear(
+    n, xi_flat, eps_bar_large, plastic_local_update, state0, state_on_failure="trial", **kw11)
+assert not conv11 and not conv11t, "check 11 needs a failed solve"
+assert state11[0] is state0[0] and state11[1] is state0[1], \
+    "a failed solve must hand back state_init by default"
+sigma_ref, _, (eps_p_ref, alpha_ref) = plastic_local_update(eps11t, state0)
+d11 = (float(jnp.max(jnp.abs(sigma11t - sigma_ref))), float(jnp.max(jnp.abs(state11t[0] - eps_p_ref))),
+       float(jnp.max(jnp.abs(state11t[1] - alpha_ref))))
+print(f"[11] failed solve: default returns state_init; 'trial' state vs one return mapping at the "
+      f"returned strain: max|dsigma|={d11[0]:.1e}  max|deps_p|={d11[1]:.1e}  max|dalpha|={d11[2]:.1e}  "
+      f"(alpha_max {float(jnp.max(alpha_ref)):.2e})")
+assert float(jnp.max(alpha_ref)) > 0.0, "check 11 is vacuous if nothing yielded"
+assert d11[0] < 1e-10 * float(jnp.max(jnp.abs(sigma_ref))) and d11[1] < 1e-14 and d11[2] < 1e-14
+assert float(jnp.max(jnp.abs(eps11 - eps11t))) == 0.0, "the returned strain must not depend on the option"
+print("[11] PASSED")
 
 print("\ntest_problems_mechanics_nonlinear: all checks passed")

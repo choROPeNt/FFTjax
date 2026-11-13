@@ -369,6 +369,10 @@ def main():
             # Backtracking line search in Newton (max step halvings); 0 =
             # full steps. See problems.fracture.solve_fracture's line_search.
             line_search  = int(fcfg.get("newton_line_search", 0)),
+            # Krylov method of the Newton correction: "cg" (default),
+            # "cg_best" (CG returning its best iterate when it hits maxiter_cg)
+            # or "gmres" (~1.8x cost).
+            linear_solver = str(fcfg.get("linear_solver", "cg")),
             # Damage bounds solved ("solve") or clipped ("clip", default), and
             # what irreversibility refers to: the previous sweep ("sweep",
             # default) or the increment's start ("increment"). See

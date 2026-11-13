@@ -134,7 +134,7 @@ from materialmodels.factory import build_material
 from operators.green import build_freq_grid
 from post.fields import compute_displacement, field_to_grid, to_voigt, von_mises
 from problems.incremental import IncrementResult, solve_path
-from problems.mechanics import solve_displacement_based_nonlinear
+from problems.mechanics import build_newton_kernels, solve_displacement_based_nonlinear
 from problems.utils.loadcases import LoadCase, resolve_cases, select_cases, voigt_label
 from solvers.solution import InelasticSolution
 from utils.config import field_write_mode, load_config
@@ -177,6 +177,11 @@ def run_case(case: LoadCase, *, stem, n, L, Nv, xi_flat, phase_np, materials,
     # keep eps_bar out of the solved-for directions and to keep the warm start
     # from double-counting them (see the load loop below).
     control_arr = jnp.zeros((3, 3)) if control is None else jnp.asarray(control, dtype=jnp.float64)
+    # The Newton solve's compiled pieces, once per case (they depend on the
+    # control mask): every load point of the path then reuses them instead of
+    # tracing and compiling the residual and the CG correction afresh.
+    kernels = build_newton_kernels(n, local_update, control=control,
+                                   maxiter_lin=solver.get("maxiter_lin", 1000))
 
     print(f"Case   : {case.describe()}")
 
@@ -225,6 +230,7 @@ def run_case(case: LoadCase, *, stem, n, L, Nv, xi_flat, phase_np, materials,
                 delta_init=delta_init,
                 control=control, stress_goal=stress_goal,
                 eps_bar_free_init=eps_bar_free_init,
+                kernels=kernels,
                 **solver,
             )
             sol = InelasticSolution(eps=eps, sigma=sigma, eps_p=state[0],

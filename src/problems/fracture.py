@@ -34,8 +34,9 @@ materialmodels/ and solvers/ stacks so far:
 
 import utils.precision  # noqa: F401 -- side effect: configures JAX (X64 off on TPU, no GPU prealloc)
 
-from typing import Callable, Tuple, cast
+from typing import Callable, NamedTuple, Tuple, cast
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 
@@ -48,7 +49,7 @@ from operators.galerkin import build_galerkin_projector
 from operators.green import build_freq_grid, build_reference_green_operator
 from post.fields import compute_displacement, field_to_grid, to_voigt, von_mises
 from problems.incremental import IncrementResult, solve_automatic, solve_fixed, solve_path
-from problems.mechanics import solve_displacement_based_nonlinear
+from problems.mechanics import build_newton_kernels, solve_displacement_based_nonlinear
 from solvers.damage.anderson import build_accelerator
 from solvers.elliptic.scalar import (solve_damage_helmholtz_bounded, solve_damage_helmholtz_cg,
                                      solve_damage_helmholtz_cg_het)
@@ -100,6 +101,139 @@ def _require_newton_compatible(formulation: str, materials) -> None:
         )
 
 
+class FractureSetup(NamedTuple):
+    """
+    Everything solve_fracture derives from the PROBLEM DEFINITION alone --
+    grid, phases, materials, formulation, boundary-condition mask -- and that
+    therefore does not change from one load increment to the next. Built by
+    ``prepare_fracture``; see there.
+    """
+    key:              tuple            # what it was built for, checked by solve_fracture
+    mechanics:        str              # "newton" | "linear"
+    nl_local_update:  Callable | None  # newton: (eps, state, d) -> (sigma, C_tan, new_state)
+    nl_driving_force: Callable | None  # newton: jitted (eps, state) -> (drive, psi_pos)
+    state0:           tuple | None     # newton: virgin plastic state
+    C0:               jnp.ndarray | None  # newton: fixed elastic reference of the CG preconditioner
+    newton_kernels:   object | None    # newton: problems.mechanics.NewtonKernels
+    pff_local_update: Callable | None  # linear: (eps, d) -> (sigma, C_tan)
+    lam_vox:          jnp.ndarray
+    mu_vox:           jnp.ndarray
+    xi_flat:          jnp.ndarray
+    k_res_arr:        jnp.ndarray | float
+    Gc:               jnp.ndarray | float
+    Gc_heterogeneous: bool
+    elastic_op:       object | None    # reference Green operator / Galerkin projector
+
+
+def _setup_key(n, formulation, control, maxiter_cg, linear_solver):
+    return (tuple(int(v) for v in n), formulation,
+            tuple(tuple(int(c) for c in row) for row in control),
+            int(maxiter_cg), linear_solver)
+
+
+def prepare_fracture(
+    n:             Tuple[int, ...],
+    L:             Tuple[float, ...],
+    phase:         jnp.ndarray,
+    materials:     list,
+    Gc:            float | jnp.ndarray | None = None,
+    k_res:         float | jnp.ndarray | None = None,
+    formulation:   str = "lippmann_schwinger",
+    scheme:        str = "rotated",
+    control:       Tuple[Tuple[int, ...], ...] | None = None,
+    maxiter_cg:    int = 1000,
+    linear_solver: str = "cg",
+) -> FractureSetup:
+    """
+    Build, ONCE, what every increment of a fracture run shares: the per-phase
+    material callables, the frequency grid, the Gc / k_res / Lame fields, the
+    reference operator and -- for a stateful phase-field material -- the
+    compiled Newton kernels and the jitted driving force.
+
+    Pass the result as solve_fracture's ``setup``. solve_fracture_incremental
+    does; a caller driving solve_fracture increment by increment should too.
+    Without it solve_fracture builds its own on every call, which is correct
+    but repeats this work per increment, and on the Newton path recompiles
+    the mechanical solve each time (problems.mechanics.NewtonKernels).
+
+    Why this matters on the Newton path: the mechanical sub-solve's compiled
+    functions are cached per constitutive callable. The staggered loop used to
+    build a new callable per SWEEP, closing over the current damage field, so
+    every sweep traced and compiled afresh (3.5-22 s per sweep at 24^3, 44-83 %
+    of its time; FINDINGS.md F20). Here the callable is built once and takes
+    the damage field as an argument.
+
+    Parameters are solve_fracture's own, and must be the ones it is then
+    called with (the ones that shape compiled code are checked).
+    """
+    if formulation not in ("lippmann_schwinger", "displacement", "fourier_galerkin"):
+        raise ValueError(
+            f"unknown formulation {formulation!r}, expected 'lippmann_schwinger', "
+            f"'displacement', or 'fourier_galerkin'"
+        )
+    control = control if control is not None else _ZERO_CONTROL
+
+    # A stateful phase-field material (PhaseFieldDruckerPrager) makes the
+    # mechanical sub-problem genuinely nonlinear and path-dependent, so the
+    # frozen-tangent linear solve cannot represent it at all -- switch to the
+    # Newton driver. Decided from `materials`, which is static Python, so no
+    # new config key is needed; see _staggered_loop for the two paths.
+    mechanics = "newton" if _has_plastic_pff(materials) else "linear"
+    if mechanics == "newton":
+        _require_newton_compatible(formulation, materials)
+        update, drive, state0 = assemble_inelastic_pff_local_update(materials, phase)
+
+        def nl_local_update(eps_field, state, d_field):
+            # The (eps, state, *local_args) signature the Newton solver calls.
+            # d is its ARGUMENT, never captured: one function object, and one
+            # compilation, for every sweep of every increment.
+            return update(eps_field, d_field, state)
+
+        nl_driving_force = jax.jit(drive)
+        # Fixed elastic reference for the CG preconditioner -- see
+        # _staggered_loop's docstring for why not the default.
+        C0 = jnp.mean(assemble_C_field(materials, phase), axis=-1)
+        newton_kernels = build_newton_kernels(
+            n, nl_local_update, control=control, maxiter_lin=maxiter_cg,
+            linear_solver=linear_solver)
+        pff_local_update = None
+    else:
+        nl_local_update = nl_driving_force = state0 = C0 = newton_kernels = None
+        pff_local_update = assemble_pff_local_update(materials, phase)
+
+    lam_vox, mu_vox = lame_field(materials, phase)
+    xi_flat = build_freq_grid(n, L)
+    k_res_arr = k_res_field(materials, phase) if k_res is None else k_res
+
+    if Gc is None:
+        Gc = Gc_field(materials, phase)
+    # A per-voxel Gc that happens to be uniform collapses to the cheaper,
+    # exact-preconditioner homogeneous solver -- only a genuinely varying
+    # Gc needs the 3x-FFT divergence-form one (see solvers.elliptic.scalar).
+    Gc_heterogeneous = isinstance(Gc, jnp.ndarray) and jnp.ndim(Gc) > 0
+    if Gc_heterogeneous:
+        Gc_min, Gc_max = float(jnp.min(Gc)), float(jnp.max(Gc))
+        if Gc_min == Gc_max:
+            Gc = Gc_min
+            Gc_heterogeneous = False
+
+    if formulation == "lippmann_schwinger":
+        elastic_op = build_reference_green_operator(n, L, materials, scheme=scheme)
+    elif formulation == "fourier_galerkin":
+        elastic_op = build_galerkin_projector(n, L, scheme=scheme)
+    else:
+        elastic_op = None
+
+    return FractureSetup(
+        key=_setup_key(n, formulation, control, maxiter_cg, linear_solver),
+        mechanics=mechanics, nl_local_update=nl_local_update,
+        nl_driving_force=nl_driving_force, state0=state0, C0=C0,
+        newton_kernels=newton_kernels, pff_local_update=pff_local_update,
+        lam_vox=lam_vox, mu_vox=mu_vox, xi_flat=xi_flat, k_res_arr=k_res_arr,
+        Gc=Gc, Gc_heterogeneous=Gc_heterogeneous, elastic_op=elastic_op,
+    )
+
+
 def solve_fracture(
     n:            Tuple[int, ...],
     L:            Tuple[float, ...],
@@ -132,8 +266,10 @@ def solve_fracture(
     d_cap:        float = 1.0,
     eps_init:     jnp.ndarray | None = None,
     line_search:  int = 0,
+    linear_solver: str = "cg",
     damage_bounds: str = "clip",
     irreversibility: str = "sweep",
+    setup:        FractureSetup | None = None,
 ) -> FractureSolution:
     """
     Solve one staggered mechanics<->phase-field increment under a
@@ -264,6 +400,11 @@ def solve_fracture(
                   increment converges in 5 sweeps of 4-6 Newton iterations
                   each, 51 s. On the linear path it is the frozen-tangent
                   evaluation point of the first sweep (see _staggered_loop).
+    linear_solver : newton path only -- "cg" (default), "cg_best" (CG that
+                  returns its smallest-residual iterate when it hits
+                  maxiter_cg) or "gmres", the Krylov method of each Newton
+                  correction; see problems.mechanics.
+                  solve_displacement_based_nonlinear.
     damage_bounds : "clip" (default) or "solve". How the damage subproblem
                   meets its bounds (irreversibility floor below, d_cap above).
                   "clip" solves it unconstrained and clips, which is not the
@@ -294,6 +435,12 @@ def solve_fracture(
                   -> ...) and Newton missed 1e-6 in 30 iterations in every
                   sweep from the second on. With 4 halvings it fell
                   monotonically and converged in all three sweeps tested.
+    setup       : FractureSetup from ``prepare_fracture`` for this same
+                  problem (n, L, phase, materials, Gc, k_res, formulation,
+                  scheme, control, maxiter_cg, linear_solver), to share the
+                  per-run preparation and the compiled mechanical solve
+                  across increments. None (default) prepares it for this
+                  call alone.
 
     Returns
     -------
@@ -314,63 +461,39 @@ def solve_fracture(
     control = control if control is not None else _ZERO_CONTROL
     stress_goal_arr = jnp.zeros((3, 3)) if stress_goal is None else stress_goal
 
-    # A stateful phase-field material (PhaseFieldDruckerPrager) makes the
-    # mechanical sub-problem genuinely nonlinear and path-dependent, so the
-    # frozen-tangent linear solve cannot represent it at all -- switch to the
-    # Newton driver. Decided from `materials`, which is static Python, so no
-    # new config key is needed; see _staggered_loop for the two paths.
-    mechanics = "newton" if _has_plastic_pff(materials) else "linear"
-    if mechanics == "newton":
-        _require_newton_compatible(formulation, materials)
-        nl_local_update, nl_driving_force, state0 = (
-            assemble_inelastic_pff_local_update(materials, phase))
-        state_init = state0 if state_init is None else state_init
-        # Fixed elastic reference for the CG preconditioner -- see
-        # _staggered_loop's docstring for why not the default.
-        C0 = jnp.mean(assemble_C_field(materials, phase), axis=-1)
-        pff_local_update = None
-    else:
-        nl_local_update = nl_driving_force = C0 = None
-        pff_local_update = assemble_pff_local_update(materials, phase)
-
-    lam_vox, mu_vox = lame_field(materials, phase)
-    xi_flat = build_freq_grid(n, L)
-    k_res_arr = k_res_field(materials, phase) if k_res is None else k_res
-
-    if Gc is None:
-        Gc = Gc_field(materials, phase)
-    # A per-voxel Gc that happens to be uniform collapses to the cheaper,
-    # exact-preconditioner homogeneous solver -- only a genuinely varying
-    # Gc needs the 3x-FFT divergence-form one (see solvers.elliptic.scalar).
-    Gc_heterogeneous = isinstance(Gc, jnp.ndarray) and jnp.ndim(Gc) > 0
-    if Gc_heterogeneous:
-        Gc_min, Gc_max = float(jnp.min(Gc)), float(jnp.max(Gc))
-        if Gc_min == Gc_max:
-            Gc = Gc_min
-            Gc_heterogeneous = False
-
-    if formulation == "lippmann_schwinger":
-        elastic_op = build_reference_green_operator(n, L, materials, scheme=scheme)
-    elif formulation == "fourier_galerkin":
-        elastic_op = build_galerkin_projector(n, L, scheme=scheme)
-    else:
-        elastic_op = None
+    # Materials, fields, operators and the compiled mechanical solve: the
+    # per-run preparation, shared across increments when the caller hands it
+    # in (prepare_fracture), built here for this call alone otherwise.
+    if setup is None:
+        setup = prepare_fracture(
+            n, L, phase, materials, Gc=Gc, k_res=k_res, formulation=formulation,
+            scheme=scheme, control=control, maxiter_cg=maxiter_cg,
+            linear_solver=linear_solver)
+    elif setup.key != _setup_key(n, formulation, control, maxiter_cg, linear_solver):
+        raise ValueError(
+            "setup was prepared for a different problem than this call: "
+            f"(n, formulation, control, maxiter_cg, linear_solver) = {setup.key}, "
+            f"called with {_setup_key(n, formulation, control, maxiter_cg, linear_solver)}")
+    if setup.mechanics == "newton" and state_init is None:
+        state_init = setup.state0
 
     return _staggered_loop(
         n=n, l0=l0, formulation=formulation, control=control, stress_goal_arr=stress_goal_arr,
-        pff_local_update=pff_local_update, lam_vox=lam_vox, mu_vox=mu_vox, xi_flat=xi_flat, k_res_arr=k_res_arr,
-        Gc=Gc, Gc_heterogeneous=Gc_heterogeneous, elastic_op=elastic_op,
+        pff_local_update=setup.pff_local_update, lam_vox=setup.lam_vox, mu_vox=setup.mu_vox,
+        xi_flat=setup.xi_flat, k_res_arr=setup.k_res_arr,
+        Gc=setup.Gc, Gc_heterogeneous=setup.Gc_heterogeneous, elastic_op=setup.elastic_op,
         eps_bar=eps_bar, d_init=d_init, H_init=H_init,
         toler_lin=toler_lin, maxiter_cg=maxiter_cg,
         toler_helm=toler_helm, maxiter_helm=maxiter_helm,
         eta=eta, dt=dt, d_thres=d_thres,
         toler_st_abs=toler_st_abs, toler_st_rel=toler_st_rel, maxiter_st=maxiter_st,
         early_exit=True,
-        mechanics=mechanics, nl_local_update=nl_local_update,
-        nl_driving_force=nl_driving_force, state_init=state_init,
-        toler_nr=toler_nr, maxiter_nr=maxiter_nr, C0=C0,
+        mechanics=setup.mechanics, nl_local_update=setup.nl_local_update,
+        nl_driving_force=setup.nl_driving_force, state_init=state_init,
+        toler_nr=toler_nr, maxiter_nr=maxiter_nr, C0=setup.C0,
+        newton_kernels=setup.newton_kernels,
         accelerator=accelerator, d_cap=d_cap, eps_init=eps_init,
-        line_search=line_search,
+        line_search=line_search, linear_solver=linear_solver,
         damage_bounds=damage_bounds, irreversibility=irreversibility,
     )
 
@@ -385,8 +508,9 @@ def _staggered_loop(
     nl_local_update=None, nl_driving_force=None, state_init=None,
     toler_nr: float = 1e-8, maxiter_nr: int = 50, C0=None,
     accelerator=None, d_cap: float = 1.0, eps_init=None,
-    line_search: int = 0,
+    line_search: int = 0, linear_solver: str = "cg",
     damage_bounds: str = "clip", irreversibility: str = "sweep",
+    newton_kernels=None,
 ) -> FractureSolution:
     """
     The mechanics<->damage staggered fixed-point loop shared by solve_fracture
@@ -428,9 +552,12 @@ def _staggered_loop(
       (materialmodels.phasefield.drucker_prager.PhaseFieldDruckerPrager),
       whose stress is genuinely path-dependent and so cannot be reached by a
       frozen-tangent linear solve at all. ``d`` is still frozen per sub-solve:
-      the loop closes over it to hand that solver the two-argument
-      (eps, state) signature it requires, which also means the tangent it
-      differentiates is dsigma/deps at fixed d -- the right one here.
+      it is handed to that solver as an extra ARGUMENT of ``nl_local_update``
+      (its ``local_args``), so the tangent it differentiates is dsigma/deps
+      at fixed d -- the right one here -- and the compiled solve
+      (``newton_kernels``) is the same for every sweep. Closing over d in a
+      per-sweep callable instead, as this loop used to, recompiled the
+      mechanical solve every sweep (see prepare_fracture).
 
     Three things the "newton" branch has to get right, all about WHICH state
     each solve starts from:
@@ -514,32 +641,32 @@ def _staggered_loop(
             d_prev_st = d_st
 
             if mechanics == "newton":
-                def _nl(e, st, _d=d_st):
-                    return nl_local_update(e, _d, st)
-
+                # state_on_failure="trial": a FAILED Newton by default returns
+                # the increment-START plastic state (its contract for callers
+                # that ignore the flag). The driving force below must not see
+                # that: it would build psi+ and W_p from plastic flow that is
+                # already gone from the strain. Converged sweeps then see this
+                # increment's plastic work and failed ones do not, so H jumps
+                # on every converged sweep. Measured on the 60^3 bi cell (eta
+                # 0.25, eps_22 ~ 2.9%, Newton at a 1-3e-5 floor): a four-sweep
+                # cycle -- Newton converges, err_abs jumps to 3-5e-3, three
+                # failed sweeps settle it to 3e-4, repeat -- for 168 sweeps.
+                # The state return-mapped at the returned strain instead makes
+                # every sweep's driving force consistent with its own strain;
+                # the solver has it already, so asking costs nothing.
                 eps, sigma, state_new, converged_mech, iter_nr, res_nr = (
                     solve_displacement_based_nonlinear(
-                        n, xi_flat, eps_bar, _nl, state_init,
+                        n, xi_flat, eps_bar, nl_local_update, state_init,
                         toler_lin=toler_lin, maxiter_lin=maxiter_cg,
                         toler_nr=toler_nr, maxiter_nr=maxiter_nr, C0=C0,
                         delta_init=delta_st, eps_bar_free_init=eps_bar_free_st,
                         control=control, stress_goal=stress_goal_arr,
                         line_search=line_search, return_residual=True,
+                        linear_solver=linear_solver,
+                        local_args=(d_st,), kernels=newton_kernels,
+                        state_on_failure="trial",
                     )
                 )
-                # A FAILED Newton returns the increment-START plastic state (its
-                # contract for callers that ignore the flag). The driving force
-                # below must not see that: it would build psi+ and W_p from
-                # plastic flow that is already gone from the strain. Converged
-                # sweeps then see this increment's plastic work and failed ones
-                # do not, so H jumps on every converged sweep. Measured on the
-                # 60^3 bi cell (eta 0.25, eps_22 ~ 2.9%, Newton at a 1-3e-5
-                # floor): a four-sweep cycle -- Newton converges, err_abs jumps
-                # to 3-5e-3, three failed sweeps settle it to 3e-4, repeat -- for
-                # 168 sweeps. Return-map at the returned strain instead, so every
-                # sweep's driving force is consistent with its own strain.
-                if not bool(converged_mech):
-                    _, _, state_new = nl_local_update(eps, d_st, state_init)
                 # Recover what that solver does not return, for the next
                 # iteration's warm start and for FractureSolution -- see above.
                 eps_bar_cur = jnp.mean(eps, axis=-1)
@@ -996,6 +1123,7 @@ def solve_fracture_incremental(
     toler_nr:     float = 1e-8,
     maxiter_nr:   int = 50,
     line_search:  int = 0,
+    linear_solver: str = "cg",
     damage_bounds: str = "clip",
     irreversibility: str = "sweep",
     write_plastic_strain_tensor: bool = False,
@@ -1124,10 +1252,18 @@ def solve_fracture_incremental(
         "eps": None if eps_init is None else jnp.asarray(eps_init),
     }
 
+    # Per-run preparation, once: material callables, fields, operators, and
+    # the compiled mechanical solve every sweep of every increment then
+    # reuses (see prepare_fracture).
+    setup = prepare_fracture(
+        n, L, phase, materials, Gc=Gc, k_res=k_res, formulation=formulation,
+        scheme=scheme, control=control, maxiter_cg=maxiter_cg,
+        linear_solver=linear_solver)
+
     def solve_fn(t: float) -> FractureSolution:
         dt_actual = t - _state["t_prev"]
         sol = solve_fracture(
-            n, L, phase, materials, t * eps_bar, l0, Gc,
+            n, L, phase, materials, t * eps_bar, l0, Gc, setup=setup,
             d_init=_state["d"], H_init=_state["H"],
             formulation=formulation, scheme=scheme, control=control, stress_goal=stress_goal,
             toler_lin=toler_lin, maxiter_cg=maxiter_cg,
@@ -1135,7 +1271,7 @@ def solve_fracture_incremental(
             eta=eta, dt=dt_actual, d_thres=d_thres, k_res=k_res,
             toler_st_abs=toler_st_abs, toler_st_rel=toler_st_rel, maxiter_st=maxiter_st,
             state_init=_state["plastic"], toler_nr=toler_nr, maxiter_nr=maxiter_nr,
-            line_search=line_search,
+            line_search=line_search, linear_solver=linear_solver,
             damage_bounds=damage_bounds, irreversibility=irreversibility,
             accelerator=accel, d_cap=d_cap, eps_init=_state["eps"],
         )

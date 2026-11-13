@@ -70,7 +70,8 @@ from solvers.elliptic.vector.lippmann_schwinger import LippmannSchwingerMixedBCS
 from solvers.elliptic.vector.mixed_bc import (
     _ZERO_CONTROL, _active_pairs, macro_block_preconditioner, sv2sm as _sv2sm, sm2sv as _sm2sv,
 )
-from solvers.krylov.cg import cg_solve
+from solvers.krylov.cg import cg_solve, cg_solve_best
+from jax.scipy.sparse.linalg import gmres as _jax_gmres
 from solvers.solution import ElasticitySolution
 from utils.io.xdmf_writer import IncrementalWriter
 from utils.monitor import get_monitor
@@ -336,6 +337,270 @@ def solve_mechanics(
         )
 
 
+_LINEAR_SOLVERS = ("cg", "cg_best", "gmres")
+
+
+class NewtonKernels:
+    """
+    The compiled pieces of solve_displacement_based_nonlinear, built ONCE by
+    ``build_newton_kernels`` and reused across calls.
+
+    ``jax.jit`` caches per function object. The three jitted functions here
+    close over ``local_update`` and the static configuration only; everything
+    that changes between calls (strain, state, the extra ``local_args`` such
+    as a damage field, the frequency grid, tolerances) is an argument. A
+    caller that solves many times with the same constitutive callable --
+    load stepping, or the staggered sweeps of problems.fracture -- therefore
+    compiles once, where building them inside the solve (as it used to) traced
+    and compiled afresh on every call: at 24^3 with a Drucker-Prager matrix
+    that was 3.5 s of every staggered sweep, 44 % of its time, and 22 s (83 %)
+    with a tabulated + exponential hardening law (FINDINGS.md F20).
+    """
+
+    __slots__ = ("local_update", "config", "zero_mean", "residual", "correction",
+                 "linear_system")
+
+    def __init__(self, local_update, config, zero_mean, residual, correction, linear_system):
+        self.local_update = local_update
+        self.config = config
+        self.zero_mean = zero_mean
+        self.residual = residual
+        self.correction = correction
+        self.linear_system = linear_system     # not jitted: (C_tan, iq, C0) -> (A_op, M)
+
+    def check(self, local_update, config) -> None:
+        """Raise if these kernels were built for a different problem than the
+        call that is about to use them."""
+        if local_update is not self.local_update:
+            raise ValueError(
+                "kernels were built for a different local_update callable than "
+                "the one passed to this solve")
+        if config != self.config:
+            names = ("n", "control", "maxiter_lin", "n_devices", "linear_solver")
+            diff = [f"{k}: built with {a!r}, called with {b!r}"
+                    for k, a, b in zip(names, self.config, config) if a != b]
+            raise ValueError("kernels do not match this solve -- " + "; ".join(diff))
+
+
+def _kernel_config(n, control, maxiter_lin, n_devices, linear_solver):
+    return (tuple(int(v) for v in n), tuple(tuple(int(c) for c in row) for row in control),
+            int(maxiter_lin), n_devices, linear_solver)
+
+
+def build_newton_kernels(
+    n:             Tuple[int, ...],
+    local_update:  Callable[..., Tuple[jnp.ndarray, jnp.ndarray, Any]],
+    control:       Tuple[Tuple[int, ...], ...] | None = None,
+    maxiter_lin:   int = 1000,
+    n_devices:     int | None = None,
+    linear_solver: str = "cg",
+) -> NewtonKernels:
+    """
+    Compile the residual evaluation and the linearized correction of
+    solve_displacement_based_nonlinear for one constitutive callable, grid and
+    boundary-condition mask. Pass the result as that function's ``kernels``
+    to reuse it across calls; see NewtonKernels for what that saves.
+
+    ``local_update(eps_field, state, *local_args)`` must be a PURE function of
+    its arguments: whatever it closes over is baked into the compiled code at
+    the first call. Anything that changes from call to call (a damage field)
+    has to come in through ``local_args``.
+
+    Parameters are solve_displacement_based_nonlinear's own; they must match
+    the call the kernels are used in (checked there).
+    """
+    if linear_solver not in _LINEAR_SOLVERS:
+        raise ValueError(
+            f"linear_solver must be one of {_LINEAR_SOLVERS}, got {linear_solver!r}")
+    control = control if control is not None else _ZERO_CONTROL
+    config = _kernel_config(n, control, maxiter_lin, n_devices, linear_solver)
+    n = config[0]
+    Nv = prod(n)
+    pairs = _active_pairs(control)
+
+    def fft_(x):
+        return distributed_fft_flat(x, n, n_devices=n_devices)
+
+    def ifft_(x):
+        return distributed_ifft_flat(x, n, n_devices=n_devices)
+
+    # ── mixed-BC bookkeeping, same convention as solve_displacement_based
+    #    (shared implementation, see solvers.elliptic.vector.mixed_bc) --
+    #    pairs=() (pure strain) makes every one of these a no-op.
+    sv2sm = partial(_sv2sm, pairs=pairs)
+    sm2sv = partial(_sm2sv, pairs=pairs)
+
+    def unpack(x_flat):
+        du = x_flat[: 3 * Nv].reshape(3, Nv)
+        sv = x_flat[3 * Nv:]
+        return du, sv
+
+    def pack(du, sv):
+        return jnp.concatenate([du.reshape(-1), sv])
+
+    def strain_from_correction(dU, iq):
+        """Pure-fluctuation strain from a displacement-like unknown -- zero
+        mean (DC bin) unconditionally. Used to extract delta's own update
+        from a Newton correction's du block: the macroscopic-strain update
+        (mixed BC) is carried entirely by eps_bar_free instead (see
+        strain_from_u below), so this stays exactly as before regardless of
+        whether control is active -- delta's zero-mean invariant is
+        untouched by turning mixed BC on."""
+        dU_hat   = fft_(dU)
+        grad_hat = jnp.einsum("im,jm->ijm", dU_hat, iq)
+        eps_hat  = 0.5 * (grad_hat + jnp.transpose(grad_hat, (1, 0, 2)))
+        eps_hat  = eps_hat.at[:, :, 0].set(0.0)
+        return ifft_(eps_hat)
+
+    def strain_from_u(du, deps_bar_free, iq):
+        """Like strain_from_correction, but embeds deps_bar_free into the DC
+        bin instead of zeroing it -- used only inside a Newton iteration's
+        own linearized CG sub-solve, where the fluctuation and macroscopic
+        corrections are coupled through the same tangent and must be solved
+        for jointly. Reduces to strain_from_correction exactly when
+        deps_bar_free is zero (in particular whenever pairs=())."""
+        du_hat   = fft_(du)
+        grad_hat = jnp.einsum("im,jm->ijm", du_hat, iq)
+        eps_hat  = 0.5 * (grad_hat + jnp.transpose(grad_hat, (1, 0, 2)))
+        eps_hat  = eps_hat.at[:, :, 0].set(Nv * deps_bar_free.astype(eps_hat.dtype))
+        return ifft_(eps_hat)
+
+    # Every nested jax.pmap call inside fft_/ifft_ (n_devices > 1) needs to be
+    # reached through tracers from an enclosing jax.jit, not concrete,
+    # already-device-committed arrays -- true of every OTHER distributed
+    # solver in this project (solve_displacement_based, solve_thermal_conduction,
+    # solve_damage_helmholtz_cg(_het), all @jax.jit-wrapped as a whole), but the
+    # Newton loop needs real Python control flow (its toler_nr early exit) and
+    # so can't be jit-compiled as one piece. Pushing jit down to the FFT-heavy
+    # per-iteration pieces -- the residual evaluation and the CG correction --
+    # gives pmap the trace boundary it needs without touching the outer loop's
+    # control flow. Reproduces and fixes a real 2-GPU failure: a bare eager
+    # jax.pmap call here raises "Sharding passed to jit does not match the
+    # sharding on the respective arg" against JAX's default multi-device mesh,
+    # since the array flowing into it is already committed to a (replicated)
+    # sharding rather than an abstract jit tracer pmap can shard itself.
+    @jit
+    def zero_mean(eps_field):
+        eps_hat = fft_(eps_field)
+        eps_hat = eps_hat.at[:, :, 0].set(0.0)
+        return ifft_(eps_hat)
+
+    @jit
+    def residual(eps_k, state, local_args, iq, stress_goal):
+        sigma_k, C_tan_k, new_state = local_update(eps_k, state, *local_args)
+        sigma_hat      = fft_(sigma_k)
+        residual_div   = ifft_(jnp.einsum("ijm,jm->im", sigma_hat, iq))   # div(sigma), (3, Nv) -- want 0
+        sigma_sum      = jnp.real(sigma_hat[:, :, 0])                     # DC bin = sum over voxels
+        residual_extra = sm2sv(sigma_sum) - Nv * sm2sv(stress_goal)       # want 0
+        resid_norm = jnp.sqrt(jnp.sum(residual_div ** 2) + jnp.sum(residual_extra ** 2))
+        ref_norm   = jnp.linalg.norm(sigma_k) + 1e-30
+        return sigma_k, C_tan_k, new_state, residual_div, residual_extra, resid_norm, ref_norm
+
+    def linear_system(C_tan_k, iq, C0):
+        """(A_op, M): the bordered operator of one Newton correction and its
+        preconditioner, as functions of the packed unknown. A_op is negative
+        semidefinite, M positive definite -- test_problems_mechanics_nonlinear
+        checks exactly that on these two."""
+        def A_op(x_flat):
+            du, sv      = unpack(x_flat)
+            eps_trial   = strain_from_u(du, sv2sm(sv), iq)
+            sigma_trial = jnp.einsum("ijklm,klm->ijm", C_tan_k, eps_trial)
+            sigma_hat   = fft_(sigma_trial)
+            div_flat    = ifft_(jnp.einsum("ijm,jm->im", sigma_hat, iq))
+            # Negated, exactly as solve_displacement_based's A_op does it --
+            # the minus is what makes the bordered operator SYMMETRIC, not a
+            # convention that can be re-derived per solver. div is -B^H
+            # (the symmetric-gradient's adjoint, up to sign), so the du row's
+            # coupling to sv is -B^H C S while the sv row's coupling to du is
+            # +/- S^H C B; only the negated form is that block's transpose.
+            # Unnegated, the operator is asymmetric (2e-1 relative on a 4^3
+            # test grid, against 2e-16 negated) and its symmetric part gains
+            # one positive eigenvalue per stress-controlled pair, i.e. turns
+            # indefinite -- both of the assumptions cg_solve rests on. The
+            # SOLUTION is unaffected either way (negating a row together with
+            # its RHS entry is an identity, see bb in correction), so this is
+            # purely about whether CG can find it: unnegated, check 6's load ramp
+            # diverges outright at toler_lin=1e-8 (sigma33 -> -4.8e3 after 50
+            # Newton iterations) and only finishes at 1e-6/300; negated, the
+            # same ramp converges at 1e-8 in 6 Newton iterations.
+            extra_out   = -sm2sv(jnp.real(sigma_hat[:, :, 0]))
+            return pack(div_flat, extra_out)
+
+        C0_ref  = jnp.mean(C_tan_k, axis=-1) if C0 is None else C0
+        K0_hat  = jnp.einsum("jm,ijkl,lm->ikm", iq.imag, C0_ref, iq.imag)
+        null_pt = jnp.all(iq.imag == 0.0, axis=0)
+        K0_hat  = jnp.where(null_pt[None, None, :], jnp.eye(3)[:, :, None], K0_hat)
+        K0_inv  = jnp.moveaxis(jnp.linalg.inv(jnp.moveaxis(K0_hat, -1, 0)), 0, -1)
+
+        # "extra" block preconditioner: self-coupling of the macroscopic-
+        # strain unknowns at the reference medium. A_op is negative
+        # semidefinite on both blocks (it is -E^H C E) and the displacement
+        # block of M is +K0^-1, so this block must be POSITIVE as well:
+        # preconditioned CG on (A, M) is CG on an SPD system only for a
+        # positive definite M. See macro_block_preconditioner -- until
+        # 2026-11-12 this block had A_op's own (negative) sign, which made M
+        # indefinite and cost CG a factor 2.5-3 in iterations.
+        if pairs:
+            P_extra = macro_block_preconditioner(C0_ref, pairs, Nv, C0_ref.dtype)
+
+        def M(x_flat):
+            du, sv = unpack(x_flat)
+            r_hat  = fft_(du)
+            z_hat  = jnp.einsum("ikm,km->im", K0_inv, r_hat)
+            z_du   = ifft_(z_hat)
+            z_sv   = jnp.linalg.solve(P_extra, sv) if pairs else sv
+            return pack(z_du, z_sv)
+
+        return A_op, M
+
+    @jit
+    def correction(C_tan_k, residual_div, residual_extra, iq, C0, toler_lin):
+        # The extra block enters as +residual_extra, not -: A_op's extra row
+        # is negated (see linear_system), so its RHS is negated with it, which
+        # leaves the equation it encodes -- mean(sigma_k + C_tan : deps) =
+        # stress_goal -- exactly as it was.
+        bb = pack((-residual_div).reshape(-1), residual_extra)
+        A_op, M = linear_system(C_tan_k, iq, C0)
+
+        x0 = jnp.zeros_like(bb)
+        if linear_solver == "gmres":
+            # Left preconditioning done HERE, not via gmres(M=...): JAX's
+            # restart loop compares the PRECONDITIONED residual ||M r|| with
+            # tol * ||b|| (UNpreconditioned), mixing units. On a 0.1 mm cell
+            # ||M b|| = 8e-4 < 1e-7 * ||b|| = 1.5e-2, so it returned x0 = 0
+            # without a single iteration. With M folded into the operator and
+            # the right-hand side, every norm it compares is the same one.
+            restart = 50
+            x_flat, _ = _jax_gmres(lambda x: M(A_op(x)), M(bb), x0, tol=toler_lin,
+                                   restart=restart,
+                                   maxiter=max(1, -(-maxiter_lin // restart)),
+                                   solve_method="batched")
+            cg_converged = None
+        else:
+            # "cg_best": the smallest-residual iterate when the cap is hit,
+            # instead of the last one (solvers.krylov.cg.cg_solve_best).
+            solve = cg_solve_best if linear_solver == "cg_best" else cg_solve
+            x_flat, cg_converged = solve(A_op, bb, x0, toler_lin, maxiter_lin, M=M)
+        # The relative residual CG actually reached -- a miss at 2e-7 and a
+        # miss at 1e-1 both read "not converged" otherwise, and CG stopped at
+        # its iteration cap can return relres > 1, a correction worse than
+        # none. One extra matvec per Newton iteration.
+        cg_relres = (jnp.linalg.norm(bb - A_op(x_flat))
+                     / (jnp.linalg.norm(bb) + 1e-30))
+        if cg_converged is None:             # gmres reports no usable flag
+            cg_converged = cg_relres <= toler_lin
+
+        # du_sol's symmetric gradient IS delta's own update
+        # (strain_from_correction), same as A_op's own eps_trial above; sv_sol
+        # is the macroscopic-strain correction, applied by the caller via
+        # sv2sm (that part has no FFT in it, safe to stay outside the trace).
+        du_sol, sv_sol = unpack(x_flat)
+        delta_update = strain_from_correction(du_sol, iq)
+        return delta_update, sv_sol, cg_converged, cg_relres
+
+    return NewtonKernels(local_update, config, zero_mean, residual, correction, linear_system)
+
+
 def solve_displacement_based_nonlinear(
     n:                 Tuple[int, ...],
     xi_flat:           jnp.ndarray,
@@ -354,6 +619,10 @@ def solve_displacement_based_nonlinear(
     n_devices:       int | None = None,
     line_search:       int = 0,
     return_residual:   bool = False,
+    linear_solver:     str = "cg",
+    local_args:        Tuple = (),
+    kernels:           NewtonKernels | None = None,
+    state_on_failure:  str = "initial",
 ):
     """
     Newton-outer / CG-inner solve for a nonlinear local constitutive law:
@@ -452,79 +721,86 @@ def solve_displacement_based_nonlinear(
     return_residual : bool -- also return the relative residual of the
                    returned strain as a sixth value (default False keeps the
                    five-value return every existing caller unpacks).
+    linear_solver : "cg" (default), "cg_best" or "gmres" -- the Krylov method
+                   for each Newton correction. "cg_best" is CG that returns its
+                   smallest-residual iterate when it stops at maxiter_lin
+                   unconverged (solvers.krylov.cg.cg_solve_best); identical to
+                   "cg" whenever CG converges. CG assumes a symmetric positive definite
+                   tangent. A phase-field Drucker-Prager tangent is neither once
+                   a crack forms: non-associated flow (a_g != a_f) makes every
+                   plastic voxel ~7% asymmetric, and a cracked voxel under
+                   compression is asymmetric AND indefinite even for associated
+                   flow. CG can then return a correction with relative residual
+                   > 1 -- worse than none. GMRES (restart 50, ~maxiter_lin
+                   iterations in total) cannot; ~1.8x the cost per Newton
+                   iteration. No gain on the uni cells; on the bi cell loaded
+                   out of plane it got Newton to 1-8x toler_nr at the crack's
+                   snap-through where CG stayed at 10-300x, and that increment
+                   was accepted. See sim/sim/13_small_rve (not in git) and
+                   FINDINGS.md. NOTE (2026-11-12): all of that was measured
+                   with the mixed-BC preconditioner still indefinite
+                   (macro_block_preconditioner); with it fixed, CG is as fast
+                   on this tangent as on its symmetric part, and relres > 1
+                   means CG stopped at maxiter_lin far from converged, not
+                   that the tangent defeated it. Raise maxiter_lin first.
+    local_args   : tuple of extra arguments handed to ``local_update`` after
+                   ``(eps_field, state)``, e.g. the damage field a staggered
+                   fracture sweep holds fixed. They are traced arguments of
+                   the compiled residual, so changing their VALUES between
+                   calls costs no recompilation -- which closing over them in
+                   a fresh ``local_update`` per call does.
+    kernels      : NewtonKernels from ``build_newton_kernels`` for this
+                   ``local_update``, grid, ``control``, ``maxiter_lin``,
+                   ``n_devices`` and ``linear_solver`` (checked), to reuse the
+                   compiled residual and correction across calls. None
+                   (default) builds them for this call alone, i.e. compiles on
+                   every call; fine for a single solve, wasteful in a loop.
+    state_on_failure : what ``state`` is when the solve did NOT converge.
+                   "initial" (default): ``state_init``, so a caller that
+                   ignores the flag resumes from a consistent state. "trial":
+                   the state return-mapped from ``state_init`` at the returned
+                   strain -- what a caller needs that goes on to use that
+                   strain anyway (problems.fracture's driving force).
 
     Returns
     -------
     eps       : (3, 3, Nv)
-    sigma     : (3, 3, Nv)
-    state     : final per-voxel state
-    converged : bool -- True if the Newton residual met toler_nr within maxiter_nr
+    sigma     : (3, 3, Nv)  stress at ``eps``, return-mapped from ``state_init``
+    state     : final per-voxel state (see ``state_on_failure``)
+    converged : bool -- True if the residual of the returned strain is below
+                toler_nr; that includes the strain produced by the last of
+                the maxiter_nr corrections
     n_iter    : int  -- Newton iterations actually run
+    residual  : float, only with ``return_residual`` -- relative residual of
+                the returned strain
 
     The resolved macroscopic strain (only meaningful when ``control`` has
     active entries) is recoverable as ``jnp.mean(eps, axis=-1)`` -- not
     returned separately, to keep this function's return signature identical
     for every existing pure-strain caller.
     """
+    if linear_solver not in _LINEAR_SOLVERS:
+        raise ValueError(
+            f"linear_solver must be one of {_LINEAR_SOLVERS}, got {linear_solver!r}")
+    if state_on_failure not in ("initial", "trial"):
+        raise ValueError(
+            f"state_on_failure must be 'initial' or 'trial', got {state_on_failure!r}")
+    control = control if control is not None else _ZERO_CONTROL
+    if kernels is None:
+        kernels = build_newton_kernels(n, local_update, control=control, maxiter_lin=maxiter_lin,
+                                       n_devices=n_devices, linear_solver=linear_solver)
+    else:
+        kernels.check(local_update,
+                      _kernel_config(n, control, maxiter_lin, n_devices, linear_solver))
+    n = kernels.config[0]
     Nv = prod(n)
     iq = 1j * nyquist_safe_xi(xi_flat, n)  # (3, Nv)
 
-    control = control if control is not None else _ZERO_CONTROL
     pairs = _active_pairs(control)
+    sv2sm = partial(_sv2sm, pairs=pairs)
     control_arr = jnp.asarray(control, dtype=eps_bar.dtype)
     stress_goal = jnp.zeros((3, 3), dtype=eps_bar.dtype) if stress_goal is None else stress_goal
-
-    def fft_(x):
-        return distributed_fft_flat(x, n, n_devices=n_devices)
-
-    def ifft_(x):
-        return distributed_ifft_flat(x, n, n_devices=n_devices)
-
-    def div_of(sigma_field):
-        """div(sigma), (3,3,Nv) -> (3,Nv)."""
-        sigma_hat = fft_(sigma_field)
-        return ifft_(jnp.einsum("ijm,jm->im", sigma_hat, iq))
-
-    def strain_from_correction(dU):
-        """Pure-fluctuation strain from a displacement-like unknown -- zero
-        mean (DC bin) unconditionally. Used to extract delta's own update
-        from a Newton correction's du block: the macroscopic-strain update
-        (mixed BC) is carried entirely by eps_bar_free instead (see
-        strain_from_u below), so this stays exactly as before regardless of
-        whether control is active -- delta's zero-mean invariant is
-        untouched by turning mixed BC on."""
-        dU_hat   = fft_(dU)
-        grad_hat = jnp.einsum("im,jm->ijm", dU_hat, iq)
-        eps_hat  = 0.5 * (grad_hat + jnp.transpose(grad_hat, (1, 0, 2)))
-        eps_hat  = eps_hat.at[:, :, 0].set(0.0)
-        return ifft_(eps_hat)
-
-    # ── mixed-BC bookkeeping, same convention as solve_displacement_based
-    #    (shared implementation, see solvers.elliptic.vector.mixed_bc) --
-    #    pairs=() (pure strain) makes every one of these a no-op.
-    sv2sm = partial(_sv2sm, pairs=pairs)
-    sm2sv = partial(_sm2sv, pairs=pairs)
-
-    def unpack(x_flat):
-        du = x_flat[: 3 * Nv].reshape(3, Nv)
-        sv = x_flat[3 * Nv:]
-        return du, sv
-
-    def pack(du, sv):
-        return jnp.concatenate([du.reshape(-1), sv])
-
-    def strain_from_u(du, deps_bar_free):
-        """Like strain_from_correction, but embeds deps_bar_free into the DC
-        bin instead of zeroing it -- used only inside a Newton iteration's
-        own linearized CG sub-solve, where the fluctuation and macroscopic
-        corrections are coupled through the same tangent and must be solved
-        for jointly. Reduces to strain_from_correction exactly when
-        deps_bar_free is zero (in particular whenever pairs=())."""
-        du_hat   = fft_(du)
-        grad_hat = jnp.einsum("im,jm->ijm", du_hat, iq)
-        eps_hat  = 0.5 * (grad_hat + jnp.transpose(grad_hat, (1, 0, 2)))
-        eps_hat  = eps_hat.at[:, :, 0].set(Nv * deps_bar_free.astype(eps_hat.dtype))
-        return ifft_(eps_hat)
+    local_args = tuple(local_args)
 
     eps0  = jnp.ones((3, 3, Nv)) * (eps_bar * (1.0 - control_arr))[:, :, None]
     delta = jnp.zeros((3, 3, Nv)) if delta_init is None else delta_init
@@ -534,142 +810,44 @@ def solve_displacement_based_nonlinear(
     # delta must be a zero-mean fluctuation on top of that, or the true
     # average strain silently drifts away from eps_bar. Newton's own
     # corrections are always zero-mean by construction (strain_from_correction
-    # zeros the DC bin below), but a caller-supplied delta_init has no such
+    # zeros the DC bin), but a caller-supplied delta_init has no such
     # guarantee -- e.g. a naive load-stepping warm start using the previous
     # step's full field minus THIS step's new baseline has a nonzero mean
     # whenever eps_bar changed, and in the worst case that alone can satisfy
     # div(sigma)=0 trivially (e.g. at eps=0) well short of the actual target
     # strain, reporting false convergence. Project unconditionally rather
-    # than trusting the caller to have gotten this right. jit-wrapped for the
-    # same reason as _residual/_cg_correction below -- see that comment.
-    @jit
-    def _zero_mean_strain(eps_field):
-        eps_hat = fft_(eps_field)
-        eps_hat = eps_hat.at[:, :, 0].set(0.0)
-        return ifft_(eps_hat)
+    # than trusting the caller to have gotten this right.
+    delta = kernels.zero_mean(delta)
 
-    delta = _zero_mean_strain(delta)
-    state = state_init
+    def evaluate(delta, eps_bar_free):
+        """Strain of the current iterate, and its stress, tangent, state and
+        residual. The state argument is ALWAYS state_init: see the comment at
+        the update below."""
+        eps_k = eps0 + jnp.ones((3, 3, Nv)) * eps_bar_free[:, :, None] + delta
+        return eps_k, kernels.residual(eps_k, state_init, local_args, iq, stress_goal)
+
     converged = False
     n_iter = 0
-
-    # Every nested jax.pmap call inside fft_/ifft_ (n_devices > 1) needs to be
-    # reached through tracers from an enclosing jax.jit, not concrete,
-    # already-device-committed arrays -- true of every OTHER distributed
-    # solver in this project (solve_displacement_based, solve_thermal_conduction,
-    # solve_damage_helmholtz_cg(_het), all @jax.jit-wrapped as a whole), but this
-    # driver's outer Newton loop needs real Python control flow (the toler_nr
-    # early-exit `break` below) and so can't be jit-compiled as one piece.
-    # Pushing jit down to just the two FFT-heavy per-iteration pieces -- the
-    # residual evaluation and the CG correction -- gives pmap the trace
-    # boundary it needs without touching the outer loop's control flow.
-    # Reproduces and fixes a real 2-GPU failure: a bare eager jax.pmap call
-    # here raises "Sharding passed to jit does not match the sharding on the
-    # respective arg" against JAX's default multi-device mesh, since the
-    # array flowing into it is already committed to a (replicated) sharding
-    # rather than an abstract jit tracer pmap can shard itself.
-    @jit
-    def _residual(eps_k, state):
-        sigma_k, C_tan_k, new_state = local_update(eps_k, state)
-        residual_div   = div_of(sigma_k)                   # (3, Nv) -- want 0
-        sigma_sum      = jnp.real(fft_(sigma_k)[:, :, 0])   # DC bin = sum over voxels
-        residual_extra = sm2sv(sigma_sum) - Nv * sm2sv(stress_goal)  # want 0
-        resid_norm = jnp.sqrt(jnp.sum(residual_div ** 2) + jnp.sum(residual_extra ** 2))
-        ref_norm   = jnp.linalg.norm(sigma_k) + 1e-30
-        return sigma_k, C_tan_k, new_state, residual_div, residual_extra, resid_norm, ref_norm
-
-    @jit
-    def _cg_correction(C_tan_k, bb):
-        def A_op(x_flat):
-            du, sv      = unpack(x_flat)
-            eps_trial   = strain_from_u(du, sv2sm(sv))
-            sigma_trial = jnp.einsum("ijklm,klm->ijm", C_tan_k, eps_trial)
-            sigma_hat   = fft_(sigma_trial)
-            div_flat    = ifft_(jnp.einsum("ijm,jm->im", sigma_hat, iq))
-            # Negated, exactly as solve_displacement_based's A_op does it --
-            # the minus is what makes the bordered operator SYMMETRIC, not a
-            # convention that can be re-derived per solver. div_of is -B^H
-            # (the symmetric-gradient's adjoint, up to sign), so the du row's
-            # coupling to sv is -B^H C S while the sv row's coupling to du is
-            # +/- S^H C B; only the negated form is that block's transpose.
-            # Unnegated, the operator is asymmetric (2e-1 relative on a 4^3
-            # test grid, against 2e-16 negated) and its symmetric part gains
-            # one positive eigenvalue per stress-controlled pair, i.e. turns
-            # indefinite -- both of the assumptions cg_solve rests on. The
-            # SOLUTION is unaffected either way (negating a row together with
-            # its RHS entry is an identity, see bb below), so this is purely
-            # about whether CG can find it: unnegated, check 6's load ramp
-            # diverges outright at toler_lin=1e-8 (sigma33 -> -4.8e3 after 50
-            # Newton iterations) and only finishes at 1e-6/300; negated, the
-            # same ramp converges at 1e-8 in 6 Newton iterations.
-            extra_out   = -sm2sv(jnp.real(sigma_hat[:, :, 0]))
-            return pack(div_flat, extra_out)
-
-        C0_ref  = jnp.mean(C_tan_k, axis=-1) if C0 is None else C0
-        K0_hat  = jnp.einsum("jm,ijkl,lm->ikm", iq.imag, C0_ref, iq.imag)
-        null_pt = jnp.all(iq.imag == 0.0, axis=0)
-        K0_hat  = jnp.where(null_pt[None, None, :], jnp.eye(3)[:, :, None], K0_hat)
-        K0_inv  = jnp.moveaxis(jnp.linalg.inv(jnp.moveaxis(K0_hat, -1, 0)), 0, -1)
-
-        # "extra" block preconditioner: self-coupling of the macroscopic-
-        # strain unknowns at the reference medium. A_op is negative
-        # semidefinite on both blocks (it is -E^H C E) and the displacement
-        # block of M is +K0^-1, so this block must be POSITIVE as well:
-        # preconditioned CG on (A, M) is CG on an SPD system only for a
-        # positive definite M. See macro_block_preconditioner -- until
-        # 2026-11-12 this block had A_op's own (negative) sign, which made M
-        # indefinite and cost CG a factor 2.5-3 in iterations.
-        if pairs:
-            P_extra = macro_block_preconditioner(C0_ref, pairs, Nv, C0_ref.dtype)
-
-        def M(x_flat):
-            du, sv = unpack(x_flat)
-            r_hat  = fft_(du)
-            z_hat  = jnp.einsum("ikm,km->im", K0_inv, r_hat)
-            z_du   = ifft_(z_hat)
-            z_sv   = jnp.linalg.solve(P_extra, sv) if pairs else sv
-            return pack(z_du, z_sv)
-
-        x0 = jnp.zeros_like(bb)
-        x_flat, cg_converged = cg_solve(A_op, bb, x0, toler_lin, maxiter_lin, M=M)
-
-        # Folded in here (rather than left for the caller, as the pre-fix
-        # code did) so this FFT call also runs inside this jit trace: du_sol's
-        # symmetric gradient IS delta's own update (strain_from_correction),
-        # same as A_op's own eps_trial above; sv_sol is the macroscopic-strain
-        # correction, applied by the caller via sv2sm (that part has no FFT
-        # in it, safe to stay outside).
-        du_sol, sv_sol = unpack(x_flat)
-        delta_update = strain_from_correction(du_sol)
-        return delta_update, sv_sol, cg_converged
-
     mon = get_monitor()
     for n_iter in range(1, maxiter_nr + 1):
         # One monitored stage per iteration (shown at log level "newton"):
         # residual and CG outcome, timed. Both float(resid) and bool(cg) force
         # the iteration's result to the host, so the time is this iteration's.
         with mon.stage("newton", n_iter) as it:
-            eps_bar_free_bcast = jnp.ones((3, 3, Nv)) * eps_bar_free[:, :, None]
-            eps_k = eps0 + eps_bar_free_bcast + delta
-            sigma_k, C_tan_k, new_state, residual_div, residual_extra, resid_norm_j, ref_norm_j = (
-                _residual(eps_k, state)
-            )
+            eps_k, (sigma_k, C_tan_k, new_state, residual_div, residual_extra,
+                    resid_norm_j, ref_norm_j) = evaluate(delta, eps_bar_free)
 
             resid_norm = float(resid_norm_j)
             ref_norm   = float(ref_norm_j)
             it.note(f"res={resid_norm / ref_norm:.3e}")
             if resid_norm / ref_norm < toler_nr:
                 converged = True
-                state = new_state
                 break
 
-            # The extra block enters as +residual_extra, not -: A_op's extra row
-            # is negated (see above), so its RHS is negated with it, which leaves
-            # the equation it encodes -- mean(sigma_k + C_tan : deps) = stress_goal
-            # -- exactly as it was.
-            bb = pack((-residual_div).reshape(-1), residual_extra)
-            delta_update, sv_sol, cg_converged = _cg_correction(C_tan_k, bb)
-            it.note("cg=ok" if bool(cg_converged) else "cg=NOT converged")
+            delta_update, sv_sol, cg_converged, cg_relres = kernels.correction(
+                C_tan_k, residual_div, residual_extra, iq, C0, toler_lin)
+            it.note(("cg=ok" if bool(cg_converged) else "cg=NOT converged")
+                    + f"  cg_res={float(cg_relres):.1e}")
 
             d_ebf = sv2sm(sv_sol)
             step = 1.0
@@ -680,14 +858,11 @@ def solve_displacement_based_nonlinear(
                 # step is halved up to ``line_search`` times and the trial with
                 # the smallest residual is taken (never a larger residual than
                 # the full step's). Each trial costs one local update and one
-                # divergence (through _residual, so it stays inside a jit trace
-                # for the distributed FFTs), against up to maxiter_lin CG
-                # matvecs for the step.
+                # divergence, against up to maxiter_lin CG matvecs for the step.
                 best = (float("inf"), 1.0)
                 for _ in range(int(line_search) + 1):
-                    eps_try = (eps0 + jnp.ones((3, 3, Nv)) * (eps_bar_free + step * d_ebf)[:, :, None]
-                               + delta + step * delta_update)
-                    r_try = float(_residual(eps_try, state)[5])
+                    r_try = float(evaluate(delta + step * delta_update,
+                                           eps_bar_free + step * d_ebf)[1][5])
                     if r_try < best[0]:
                         best = (r_try, step)
                     if r_try < resid_norm:
@@ -699,39 +874,47 @@ def solve_displacement_based_nonlinear(
 
             delta = delta + step * delta_update
             eps_bar_free = eps_bar_free + step * d_ebf
-            # ``state`` is deliberately NOT advanced here. It is the state at the
-            # last CONVERGED load increment, and a return mapping is defined
-            # relative to exactly that -- it must stay frozen for every Newton
-            # iteration of this increment, with only ``delta``/``eps_bar_free``
-            # (the unknowns) moving. Advancing it per iteration instead makes
-            # each iteration's return start from the previous iterate's
-            # already-updated plastic strain, so plastic flow ratchets up once
-            # per iteration and sigma drifts under Newton's feet. Hardening
-            # masks it -- the drift self-limits as sigma_y grows, so the residual
-            # still falls, just to a stalled ~1e-7 floor instead of ~1e-10, at a
-            # fixed ~10 iterations per step regardless of the load. Push the load
-            # far enough (a confined DP matrix past eps_11 ~ 0.03) and it stops
-            # being masked: Newton descends about five iterations, turns around
-            # and diverges geometrically to a garbage fixed point, with the inner
-            # CG reporting success throughout and the step size making no
-            # difference. Verified on a 152^3 tangled-fibre RVE -- freezing state
-            # here took that step from divergence to convergence in 8 iterations,
-            # and cut every earlier step from ~10 to ~6 (see
+            # The state every iterate is return-mapped FROM is deliberately not
+            # advanced here. It is the state at the last CONVERGED load
+            # increment, and a return mapping is defined relative to exactly
+            # that -- it must stay frozen for every Newton iteration of this
+            # increment, with only ``delta``/``eps_bar_free`` (the unknowns)
+            # moving. Advancing it per iteration instead makes each iteration's
+            # return start from the previous iterate's already-updated plastic
+            # strain, so plastic flow ratchets up once per iteration and sigma
+            # drifts under Newton's feet. Hardening masks it -- the drift
+            # self-limits as sigma_y grows, so the residual still falls, just to
+            # a stalled ~1e-7 floor instead of ~1e-10, at a fixed ~10 iterations
+            # per step regardless of the load. Push the load far enough (a
+            # confined DP matrix past eps_11 ~ 0.03) and it stops being masked:
+            # Newton descends about five iterations, turns around and diverges
+            # geometrically to a garbage fixed point, with the inner CG
+            # reporting success throughout and the step size making no
+            # difference. Verified on a 152^3 tangled-fibre RVE -- freezing
+            # state here took that step from divergence to convergence in 8
+            # iterations, and cut every earlier step from ~10 to ~6 (see
             # test/test_problems_mechanics_nonlinear.py, check 4).
     else:
-        # loop exhausted maxiter_nr without an early break -- converged stays
-        # False and ``state`` is still the last converged increment's, so a
-        # caller that ignores the flag resumes from a consistent state rather
-        # than from a half-converged iterate's.
-        pass
+        # maxiter_nr corrections taken without the residual test passing. The
+        # strain the LAST correction produced has not been evaluated yet: do
+        # it now. That gives the stress, state and residual of the strain
+        # actually returned, and it is a convergence test like any other -- a
+        # solve whose final correction lands below toler_nr is converged, not
+        # failed (it used to be reported failed, and its sweep repeated).
+        eps_k, (sigma_k, _, new_state, _, _, resid_norm_j, ref_norm_j) = evaluate(
+            delta, eps_bar_free)
+        resid_norm = float(resid_norm_j)
+        ref_norm   = float(ref_norm_j)
+        converged  = bool(resid_norm / ref_norm < toler_nr)
 
-    eps_bar_free_bcast = jnp.ones((3, 3, Nv)) * eps_bar_free[:, :, None]
-    eps_final = eps0 + eps_bar_free_bcast + delta
-    sigma_final, _, _ = local_update(eps_final, state)
+    # eps_k / sigma_k / new_state are one consistent evaluation at the returned
+    # strain -- on convergence the very one whose residual passed the test, so
+    # nothing is recomputed here. A failed solve hands back state_init unless
+    # the caller asked for the trial state: a caller that ignores the flag then
+    # resumes from a consistent state rather than a half-converged iterate's.
+    state = new_state if (converged or state_on_failure == "trial") else state_init
     if return_residual:
         # Relative residual of the RETURNED strain, same measure as the
         # convergence test above -- for a failed solve, how far it got.
-        _, _, _, _, _, r_abs, r_ref = _residual(eps_final, state)
-        r_final = float(r_abs) / float(r_ref)
-        return eps_final, sigma_final, state, converged, n_iter, r_final
-    return eps_final, sigma_final, state, converged, n_iter
+        return eps_k, sigma_k, state, converged, n_iter, resid_norm / ref_norm
+    return eps_k, sigma_k, state, converged, n_iter
