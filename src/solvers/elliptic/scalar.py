@@ -420,6 +420,118 @@ def _solve_damage_helmholtz_cg_het_sharded(H_field, xi_flat, n, l0, Gc, d_prev, 
     return gather_x_slabs(d_sharded), converged_sharded[0]
 
 
+@partial(jax.jit, static_argnames=("n", "maxiter", "heterogeneous"))
+def _bounded_damage_reduced_cg(driving, Gc, d_prev, eta_dt, l0, free, fixed, x0,
+                               xi_flat, n, toler_cg, maxiter, heterogeneous):
+    """
+    One inner solve of solve_damage_helmholtz_bounded: the damage equation on
+    the FREE voxels with the active ones held at their bound. CG on the
+    reduced operator P A P + (I - P), preconditioned by P M P + (I - P),
+    P = diag(free) -- SPD on the free subspace and the identity on the fixed
+    one, so plain CG applies. Also returns the full gradient A d - b, whose
+    sign on the fixed voxels decides whether they stay fixed.
+    """
+    fft_ = lambda v: distributed_fft_flat(v, n, n_devices=1)
+    ifft_ = lambda v: distributed_ifft_flat(v, n, n_devices=1)
+    xi_sq = jnp.sum(xi_flat ** 2, axis=0)
+    if heterogeneous:
+        iq = 1j * nyquist_safe_xi(xi_flat, n)
+
+        def diffusion(v):
+            grad = ifft_(iq * fft_(v)[None, :])
+            return l0 * ifft_(jnp.sum(iq * fft_(Gc[None, :] * grad), axis=0))
+        Gc0 = jnp.mean(Gc)
+    else:
+        def diffusion(v):
+            return Gc * l0 * ifft_(-xi_sq * fft_(v))
+        Gc0 = Gc
+
+    def A(v):
+        return (Gc / l0 + eta_dt + driving) * v - diffusion(v)
+
+    P_denom = Gc0 / l0 + eta_dt + jnp.mean(driving) + Gc0 * l0 * xi_sq
+    bb = driving + eta_dt * d_prev
+
+    def A_red(v):
+        return jnp.where(free, A(jnp.where(free, v, 0.0)), v)
+
+    def M_red(v):
+        return jnp.where(free, ifft_(fft_(jnp.where(free, v, 0.0)) / P_denom), v)
+
+    rhs = jnp.where(free, bb - A(fixed), fixed)
+    d, converged = cg_solve(A_red, rhs, x0, toler_cg, maxiter, M=M_red)
+    return d, A(d) - bb, converged
+
+
+def solve_damage_helmholtz_bounded(
+    H_field: jnp.ndarray,
+    xi_flat: jnp.ndarray,
+    n: tuple[int, ...],
+    l0: float,
+    Gc: float | jnp.ndarray,
+    d_prev: jnp.ndarray,
+    lower: jnp.ndarray,
+    upper: float | jnp.ndarray,
+    toler_cg: float = 1e-4,
+    maxiter: int = 300,
+    eta: float = 0.0,
+    dt: float = 1.0,
+    k: float | jnp.ndarray = 0.0,
+    x0: jnp.ndarray | None = None,
+    max_active_iters: int = 30,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """
+    The AT2 damage subproblem WITH its bounds, lower <= d <= upper, solved as
+    the bound-constrained minimisation it is (primal-dual active set), rather
+    than solved unconstrained and clipped afterwards as
+    solve_damage_helmholtz_cg(_het) + a cap do.
+
+    Same operator and right-hand side as those two (homogeneous or
+    heterogeneous Gc, viscous term (eta/dt)(d - d_prev)), so with no bound
+    active the result is the same solve. Where a bound IS active the clipped
+    solution is not the minimiser: its neighbours still see the unclipped
+    values through the diffusion term. Measured on post-peak 60^3 states
+    (sim/sim/14_root_cause): bounds active in 18k-48k voxels per solve, the
+    clipped field off by up to 0.12.
+
+    Active-set iteration: hold the voxels outside [lower, upper] at the bound,
+    solve the rest (one reduced CG), release a held voxel whose gradient
+    A d - b says it wants back inside, hold any free voxel that left the
+    box; stop when the sets repeat. Verified against L-BFGS-B to 1.5e-6; 4-11
+    outer iterations on real states. Single device.
+
+    Returns (d, converged) like the unbounded solvers; ``converged`` is the
+    last inner CG's flag AND the active sets having settled.
+    """
+    heterogeneous = bool(jnp.ndim(Gc) > 0)
+    dtype = H_field.dtype
+    Gc_arg = (jnp.broadcast_to(jnp.asarray(Gc, dtype=dtype), H_field.shape)
+              if heterogeneous else float(Gc))
+    driving = 2.0 * (1.0 - k) * H_field
+    lower = jnp.broadcast_to(jnp.asarray(lower, dtype=dtype), H_field.shape)
+    upper = jnp.broadcast_to(jnp.asarray(upper, dtype=dtype), H_field.shape)
+    pinned = lower >= upper                     # floor already at the ceiling
+    hi = pinned
+    lo = jnp.zeros_like(hi)
+    d = jnp.clip(lower if x0 is None else x0, lower, upper)
+    eta_dt = eta / dt
+    settled = False
+    converged = jnp.asarray(False)
+    for _ in range(max_active_iters):
+        free = ~(hi | lo)
+        fixed = jnp.where(hi, upper, jnp.where(lo, lower, 0.0))
+        d, grad, converged = _bounded_damage_reduced_cg(
+            driving, Gc_arg, d_prev, eta_dt, l0, free, fixed,
+            jnp.where(free, d, fixed), xi_flat, n, toler_cg, maxiter, heterogeneous)
+        new_hi = (hi & ((grad <= 0.0) | pinned)) | (free & (d > upper))
+        new_lo = ((lo & (grad >= 0.0)) | (free & (d < lower))) & ~new_hi
+        if bool(jnp.all(new_hi == hi)) and bool(jnp.all(new_lo == lo)):
+            settled = True
+            break
+        hi, lo = new_hi, new_lo
+    return jnp.clip(d, lower, upper), jnp.logical_and(converged, settled)
+
+
 _ZERO_CONTROL_1D = (0, 0, 0)
 
 

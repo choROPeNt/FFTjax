@@ -50,7 +50,8 @@ from post.fields import compute_displacement, field_to_grid, to_voigt, von_mises
 from problems.incremental import IncrementResult, solve_automatic, solve_fixed, solve_path
 from problems.mechanics import solve_displacement_based_nonlinear
 from solvers.damage.anderson import build_accelerator
-from solvers.elliptic.scalar import solve_damage_helmholtz_cg, solve_damage_helmholtz_cg_het
+from solvers.elliptic.scalar import (solve_damage_helmholtz_bounded, solve_damage_helmholtz_cg,
+                                     solve_damage_helmholtz_cg_het)
 from solvers.elliptic.vector.displacement_based import solve_displacement_based
 from solvers.elliptic.vector.fourier_galerkin import solve_fourier_galerkin
 from solvers.elliptic.vector.lippmann_schwinger import solve_lippmann_schwinger, solve_lippmann_schwinger_mixed_bc
@@ -131,6 +132,8 @@ def solve_fracture(
     d_cap:        float = 1.0,
     eps_init:     jnp.ndarray | None = None,
     line_search:  int = 0,
+    damage_bounds: str = "clip",
+    irreversibility: str = "sweep",
 ) -> FractureSolution:
     """
     Solve one staggered mechanics<->phase-field increment under a
@@ -261,6 +264,25 @@ def solve_fracture(
                   increment converges in 5 sweeps of 4-6 Newton iterations
                   each, 51 s. On the linear path it is the frozen-tangent
                   evaluation point of the first sweep (see _staggered_loop).
+    damage_bounds : "clip" (default) or "solve". How the damage subproblem
+                  meets its bounds (irreversibility floor below, d_cap above).
+                  "clip" solves it unconstrained and clips, which is not the
+                  minimiser once a bound is active: the neighbours of a held
+                  voxel still see its unclipped value through the diffusion
+                  term. "solve" solves the bound-constrained problem
+                  (solvers.elliptic.scalar.solve_damage_helmholtz_bounded).
+                  See sim/sim/14_root_cause/README.md, I2.
+    irreversibility : "sweep" (default) or "increment". What the floor and
+                  the hybrid history refer to. "sweep": the previous staggered
+                  sweep, so damage only grows sweep by sweep and an accepted
+                  state satisfies d >= D(d) -- path-dependent, and any overshoot
+                  (accelerator, failed Newton) is permanent. "increment": the
+                  increment's start, d >= d_init and H = max(H_init, D) where
+                  d_init >= d_thres, so an accepted state is the fixed point
+                  d = D(d) itself; the accelerator's iterate is then projected
+                  onto [d_init, d_cap] instead of floored at the Picard one,
+                  i.e. it may step back. Meant for damage_bounds="solve". See
+                  sim/sim/14_root_cause/README.md, I3.
     line_search : newton path only -- max step halvings of the backtracking
                   line search in problems.mechanics.
                   solve_displacement_based_nonlinear. 0 (default) takes full
@@ -284,6 +306,10 @@ def solve_fracture(
             f"unknown formulation {formulation!r}, expected 'lippmann_schwinger', "
             f"'displacement', or 'fourier_galerkin'"
         )
+    if damage_bounds not in ("clip", "solve"):
+        raise ValueError(f"damage_bounds must be 'clip' or 'solve', got {damage_bounds!r}")
+    if irreversibility not in ("sweep", "increment"):
+        raise ValueError(f"irreversibility must be 'sweep' or 'increment', got {irreversibility!r}")
 
     control = control if control is not None else _ZERO_CONTROL
     stress_goal_arr = jnp.zeros((3, 3)) if stress_goal is None else stress_goal
@@ -345,6 +371,7 @@ def solve_fracture(
         toler_nr=toler_nr, maxiter_nr=maxiter_nr, C0=C0,
         accelerator=accelerator, d_cap=d_cap, eps_init=eps_init,
         line_search=line_search,
+        damage_bounds=damage_bounds, irreversibility=irreversibility,
     )
 
 
@@ -359,6 +386,7 @@ def _staggered_loop(
     toler_nr: float = 1e-8, maxiter_nr: int = 50, C0=None,
     accelerator=None, d_cap: float = 1.0, eps_init=None,
     line_search: int = 0,
+    damage_bounds: str = "clip", irreversibility: str = "sweep",
 ) -> FractureSolution:
     """
     The mechanics<->damage staggered fixed-point loop shared by solve_fracture
@@ -554,7 +582,13 @@ def _staggered_loop(
             else:
                 drive, _ = strain_energy_amor_split(eps, lam_vox, mu_vox)
                 psi_pos = drive
-            H_st = update_history_hybrid(H_st, drive, d_prev_st, d_thres=d_thres)
+            if irreversibility == "increment":
+                # History relative to the last ACCEPTED increment, not to the
+                # previous sweep: a transient sweep (failed Newton, accelerator
+                # overshoot) cannot ratchet H up permanently.
+                H_st = update_history_hybrid(H_init, drive, d_init, d_thres=d_thres)
+            else:
+                H_st = update_history_hybrid(H_st, drive, d_prev_st, d_thres=d_thres)
 
             # Two different "previous damage" fields go into the damage solve,
             # and they must not be the same one:
@@ -588,20 +622,31 @@ def _staggered_loop(
             # At eta = 0 this is bit-for-bit the solve the loop always did; at the
             # eta = 1e-6 the configs so far use, the viscous change is below any
             # printed digit.
-            damage_solve = solve_damage_helmholtz_cg_het if Gc_heterogeneous else solve_damage_helmholtz_cg
-            d_picard, converged_helm = damage_solve(
-                H_st, xi_flat, n, l0, Gc, d_init,
-                toler_cg=toler_helm, maxiter=maxiter_helm, eta=eta, dt=dt, k=k_res_arr,
-                d_floor=d_prev_st,
-            )
+            floor = d_init if irreversibility == "increment" else d_prev_st
+            if damage_bounds == "solve":
+                # The bounds are part of the solve: the minimiser of the damage
+                # subproblem over floor <= d <= d_cap (see solve_fracture's
+                # damage_bounds), started from the current iterate.
+                d_picard, converged_helm = solve_damage_helmholtz_bounded(
+                    H_st, xi_flat, n, l0, Gc, d_init, floor, d_cap,
+                    toler_cg=toler_helm, maxiter=maxiter_helm, eta=eta, dt=dt,
+                    k=k_res_arr, x0=d_prev_st,
+                )
+            else:
+                damage_solve = solve_damage_helmholtz_cg_het if Gc_heterogeneous else solve_damage_helmholtz_cg
+                d_picard, converged_helm = damage_solve(
+                    H_st, xi_flat, n, l0, Gc, d_init,
+                    toler_cg=toler_helm, maxiter=maxiter_helm, eta=eta, dt=dt, k=k_res_arr,
+                    d_floor=floor,
+                )
 
-            # Cap the damage BEFORE it becomes the iterate, so both the fixed
-            # point and the accelerator see the capped map. d_cap < 1 leaves a
-            # crack with g(d_cap) = (1 - d_cap)^2 + k_res residual stiffness
-            # instead of k_res, which is what keeps the tangent from degenerating
-            # -- see solve_fracture's docstring for the trade that makes.
-            if d_cap < 1.0:
-                d_picard = jnp.minimum(d_picard, d_cap)
+                # Cap the damage BEFORE it becomes the iterate, so both the fixed
+                # point and the accelerator see the capped map. d_cap < 1 leaves a
+                # crack with g(d_cap) = (1 - d_cap)^2 + k_res residual stiffness
+                # instead of k_res, which is what keeps the tangent from degenerating
+                # -- see solve_fracture's docstring for the trade that makes.
+                if d_cap < 1.0:
+                    d_picard = jnp.minimum(d_picard, d_cap)
 
             # d_picard IS G(d_prev_st) -- one full sweep of the fixed point. The
             # accelerator recombines it with earlier sweeps (solvers.damage.
@@ -626,9 +671,16 @@ def _staggered_loop(
             # <= d_cap, so it cannot cycle or stall; overshoot is permanent, the
             # same d >= D(d) price the Picard floor already pays.
             if accelerator is not None:
-                d_st = jnp.maximum(
-                    jnp.asarray(accelerator.step(d_prev_st, d_picard), dtype=d_picard.dtype),
-                    d_picard)
+                cand = jnp.asarray(accelerator.step(d_prev_st, d_picard), dtype=d_picard.dtype)
+                if irreversibility == "increment":
+                    # The fixed point is d = D(d) within [d_init, d_cap], so the
+                    # accelerated iterate only has to stay in that box (the
+                    # accelerator already clamps to it); it may step BACK below
+                    # the Picard iterate, which is what lets it damp the
+                    # overshoot of a band-edge runaway instead of riding it.
+                    d_st = jnp.clip(cand, d_init, d_cap)
+                else:
+                    d_st = jnp.maximum(cand, d_picard)
             else:
                 d_st = d_picard
 
@@ -944,6 +996,8 @@ def solve_fracture_incremental(
     toler_nr:     float = 1e-8,
     maxiter_nr:   int = 50,
     line_search:  int = 0,
+    damage_bounds: str = "clip",
+    irreversibility: str = "sweep",
     write_plastic_strain_tensor: bool = False,
     accelerator:  str | object | None = None,
     accel_depth:  int = 5,
@@ -1040,6 +1094,7 @@ def solve_fracture_incremental(
             toler_st_abs=toler_st_abs, toler_st_rel=toler_st_rel, maxiter_st=maxiter_st,
             state_init=_state["plastic"], toler_nr=toler_nr, maxiter_nr=maxiter_nr,
             line_search=line_search,
+            damage_bounds=damage_bounds, irreversibility=irreversibility,
             accelerator=accel, d_cap=d_cap, eps_init=_state["eps"],
         )
         # Per-attempt fields for the monitor's "solve" line (problems.

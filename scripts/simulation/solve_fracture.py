@@ -282,6 +282,12 @@ def main():
             # Backtracking line search in Newton (max step halvings); 0 =
             # full steps. See problems.fracture.solve_fracture's line_search.
             line_search  = int(fcfg.get("newton_line_search", 0)),
+            # Damage bounds solved ("solve") or clipped ("clip", default), and
+            # what irreversibility refers to: the previous sweep ("sweep",
+            # default) or the increment's start ("increment"). See
+            # problems.fracture.solve_fracture and sim/sim/14_root_cause.
+            damage_bounds   = str(fcfg.get("damage_bounds", "clip")),
+            irreversibility = str(fcfg.get("irreversibility", "sweep")),
             write_plastic_strain_tensor = write_eps_p,
             # Staggered accelerator (solvers.damage.anderson). None/"none" is
             # plain Picard, i.e. exactly the behaviour before it existed.
