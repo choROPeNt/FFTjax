@@ -22,8 +22,9 @@ split: the models own the yield surface, this module owns sigma_y(alpha).
 below) make the residual R(dlam) = A - B*dlam - sigma_y(alpha_prev + dlam)
 strictly decreasing, so a law that cannot invert [*] in closed form can
 always fall back on the safeguarded Newton in IsotropicHardening.solve_return
--- which is exactly what a future smooth law (Voce, power-law) would inherit.
-The two laws shipped here both override it with their exact closed forms.
+-- which is what the smooth laws here (Voce, and the tabulated law with an
+exponential tail) inherit. Linear and tabulated-with-ideal-tail override it
+with their exact closed forms.
 
 Autodiff
 --------
@@ -248,7 +249,9 @@ class PiecewiseLinearHardening(IsotropicHardening):
     """
     Tabulated sigma_y(alpha), linearly interpolated between the rows and
     PERFECTLY PLASTIC beyond the last one (Abaqus' convention for a
-    ``*PLASTIC`` table).
+    ``*PLASTIC`` table; ``tail: ideal`` in a config). For a curve that turns
+    exponential there instead, see PiecewiseLinearExponentialHardening
+    (``tail: exponential``).
 
     Parameters
     ----------
@@ -447,6 +450,103 @@ class VoceHardening(IsotropicHardening):
                 f"b={self.b:.4g}, sigma_y_max={self.sigma_y_max:.4g})")
 
 
+# Ceiling on the exponent of the exponential tail. exp(30) ~ 1e13, so the
+# capped yield stress is ~1e13*Q MPa: far beyond any stress a return mapping
+# can meet, yet finite, and so is its square (in float32 too, as long as
+# Q < ~1e6). Finite matters: the bracket doublings in solve_return and
+# _solve_dlam_hyperbolic evaluate sigma_y well past the root, and an inf there
+# turns the discarded branch's tangent into NaN (0 * inf) under jacfwd.
+_EXP_CAP = 30.0
+
+
+class PiecewiseLinearExponentialHardening(PiecewiseLinearHardening):
+    """
+    A tabulated curve that turns EXPONENTIAL past its last row, where
+    PiecewiseLinearHardening goes perfectly plastic (ideal):
+
+        sigma_y(alpha) = table(alpha)                                 alpha <= alpha_t
+                         sigma_t + Q*(exp(b*(alpha - alpha_t)) - 1)   alpha >  alpha_t
+
+    with (alpha_t, sigma_t) the last row. Config: ``law: piecewise_linear``
+    with ``tail: exponential`` (see build_hardening).
+
+    The two tails of a tabulated curve, side by side: ``tail: ideal`` caps the
+    yield stress at sigma_t, ``tail: exponential`` caps the plastic strain
+    instead -- past alpha_t every further increment costs exponentially more
+    stress, so a voxel effectively stops flowing a few 1/b beyond alpha_t.
+    That is the property wanted in a crack band, where linear hardening lets
+    the apex of a cracked voxel's cone run to several hundred per cent
+    (sim/sim/14_root_cause).
+
+    Parameters
+    ----------
+    table : as PiecewiseLinearHardening
+    b     : float  steepness, > 0 -- the tail's slope grows by a factor e
+            every 1/b of plastic strain
+    Q     : float | None  scale of the tail, >= 0; its slope at alpha_t is
+            Q*b. None (default) takes Q = H_last/b, H_last being the table's
+            last slope, so the slope is CONTINUOUS at alpha_t: the curve keeps
+            its last slope and steepens from there. Any other Q puts a kink at
+            alpha_t, like a breakpoint of the table. Q = 0 is the ideal tail,
+            reached through the generic solves.
+
+    Not piecewise affine, so affine_segments() is None: DruckerPrager's
+    rounded tip takes its general path (_solve_dlam_hyperbolic, ~3x slower
+    per voxel), and solve_return is the generic safeguarded Newton -- the
+    table's closed form does not cover the tail.
+    """
+
+    def __init__(self, table, b: float, Q: float | None = None):
+        super().__init__(table)
+        self.b = float(b)
+        if not self.b > 0.0:
+            raise ValueError(
+                f"PiecewiseLinearExponentialHardening: b={self.b} must be > 0 -- "
+                "b <= 0 does not stiffen the tail")
+        H_last = float(self._H[-2])
+        if Q is None:
+            if H_last <= 0.0:
+                raise ValueError(
+                    "PiecewiseLinearExponentialHardening: Q not given, and the "
+                    "table's last segment is flat, so the slope-continuous "
+                    "default Q = H_last/b would be 0 -- the ideal tail. Give Q")
+            Q = H_last / self.b
+        self.Q = float(Q)
+        if self.Q < 0.0:
+            raise ValueError(
+                f"PiecewiseLinearExponentialHardening: Q={self.Q} < 0 -- softening "
+                "is not supported, for the reason LinearHardening's H < 0 check gives")
+        self.alpha_t = float(self.table[-1, 0])
+        self.sigma_t = float(self.table[-1, 1])
+        self.sigma_y_max = float("inf") if self.Q > 0.0 else self.sigma_t
+
+    def sigma_y(self, alpha):
+        # The table's own sigma_y is flat (= sigma_t) past alpha_t, so adding
+        # the tail there gives sigma_t + Q*(exp(..) - 1); below alpha_t the
+        # clip makes the tail exactly 0.
+        x = jnp.clip(self.b * (alpha - self.alpha_t), 0.0, _EXP_CAP)
+        return super().sigma_y(alpha) + self.Q * jnp.expm1(x)
+
+    def dsigma_y(self, alpha):
+        # Right-hand slope at alpha_t, as the table's segment lookup gives at
+        # its own breakpoints: Q*b there, not the plateau's 0.
+        z = self.b * (alpha - self.alpha_t)
+        x = jnp.clip(z, 0.0, _EXP_CAP)
+        tail = jnp.where((z >= 0.0) & (z < _EXP_CAP), self.Q * self.b * jnp.exp(x), 0.0)
+        return super().dsigma_y(alpha) + tail
+
+    def solve_return(self, A, B, alpha_prev):
+        return IsotropicHardening.solve_return(self, A, B, alpha_prev)
+
+    def affine_segments(self):
+        return None
+
+    def __repr__(self) -> str:
+        pts = ", ".join(f"({a:.4g}, {s:.4g})" for a, s in self.table)
+        return (f"piecewise_linear[{self.n_segments} pts: {pts}, then exponential "
+                f"Q={self.Q:.4g}, b={self.b:.4g}]")
+
+
 _HARDENING = {
     "linear":           LinearHardening,
     "piecewise_linear": PiecewiseLinearHardening,
@@ -471,7 +571,16 @@ def build_hardening(cfg: dict) -> IsotropicHardening:
           table:                # (plastic_strain, yield_stress)
             - [0.000, 56.1]
             - [0.020, 70.0]
-            - [0.100, 78.0]     # perfectly plastic beyond here
+            - [0.100, 78.0]     # perfectly plastic beyond here (tail: ideal)
+
+        hardening:
+          law: piecewise_linear
+          table:
+            - [0.000, 17.0]
+            - [0.075, 35.75]    # linear up to here...
+          tail: exponential     # ...then 35.75 + Q*(exp(b*(alpha - 0.075)) - 1)
+          b: 30.0
+          Q: 8.333              # optional; default H_last/b keeps the slope continuous
 
         hardening:
           law: voce             # smooth, saturating at sigma_y0 + Q
@@ -500,11 +609,30 @@ def build_hardening(cfg: dict) -> IsotropicHardening:
         table = cfg.pop("table", None)
         if table is None:
             raise ValueError("hardening: law 'piecewise_linear' requires a 'table' key")
+        # What the curve does past its last row. 'ideal' (perfectly plastic) is
+        # the Abaqus convention and the default; 'exponential' stiffens it.
+        tail = cfg.pop("tail", "ideal")
+        if tail == "exponential":
+            if "b" not in cfg:
+                raise ValueError(
+                    "hardening: piecewise_linear with tail 'exponential' requires 'b' "
+                    "(and optionally 'Q', default: slope-continuous)")
+            b = float(cfg.pop("b"))
+            Q = cfg.pop("Q", None)
+            law_obj = PiecewiseLinearExponentialHardening(
+                table, b=b, Q=None if Q is None else float(Q))
+        elif tail == "ideal":
+            law_obj = PiecewiseLinearHardening(table)
+        else:
+            raise ValueError(
+                f"hardening: piecewise_linear tail {tail!r}, expected 'ideal' or "
+                "'exponential'")
         if cfg:
             raise ValueError(
-                f"hardening: unexpected key(s) {list(cfg)} for law 'piecewise_linear'"
+                f"hardening: unexpected key(s) {list(cfg)} for law 'piecewise_linear' "
+                f"with tail {tail!r}"
             )
-        return PiecewiseLinearHardening(table)
+        return law_obj
 
     # YAML's float regex misses exponents without an explicit sign ("1.0e3"
     # loads as a str), so cast here -- same reason factory.build_material does.
