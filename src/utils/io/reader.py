@@ -3,6 +3,11 @@ Readers for the file formats used in FFTjax.
 
     read_xdmf  — load field arrays from an HDF5/XDMF simulation output
                  (also accepts a bare/metadata-less .h5, given L or dx)
+    read_increment — one increment's fields + attributes of an
+                 IncrementalWriter file, without its n/L attrs (a run that
+                 never finished, or is still running)
+    read_fracture_checkpoint — the restart state of one increment of a
+                 phase-field fracture run, in the solver layout
     read_vtu   — load a TexGen (or generate_weave) voxel mesh
     read_vti   — load a vtkImageData (.vti) field file
     read_npz   — load a numpy .npz archive (e.g. preproc output)
@@ -36,6 +41,10 @@ Quick reference
 
 # bare phase array -- no embedded length, must be given
 >>> n, L, phase = read_npy("output/generation/geom.npy", dx=(0.001, 0.001, 0.001))
+
+# restart state of increment 12 of a checkpointed fracture run
+>>> ck = read_fracture_checkpoint("output/simulation/myrun.h5", 12)
+>>> ck["t"], ck["d"].shape, ck["eps"].shape   # load fraction, (Nv,), (3, 3, Nv)
 """
 
 from __future__ import annotations
@@ -159,6 +168,186 @@ def read_xdmf(
             L_out = _resolve_grid_length(n, L, dx)
 
     return n, L_out, fields   # type: ignore[return-value]
+
+
+def _open_h5_for_reading(h5_path: Path):
+    """
+    ``h5py.File(h5_path, "r")``, retried with HDF5 file locking off when the
+    file is locked -- i.e. still open in the run writing it, which holds the
+    lock for as long as it runs (measured: errno 11, "unable to lock file").
+    A stalled run is exactly the one worth restarting. What the writer has
+    flushed -- every completed increment, IncrementalWriter.write_increment
+    flushes before returning -- reads fine without the lock.
+    """
+    import h5py
+
+    try:
+        return h5py.File(h5_path, "r")
+    except OSError as exc:
+        if "lock" not in str(exc).lower():
+            raise
+        warnings.warn(
+            f"{h5_path} is locked, probably still open in the run writing it -- "
+            "reading it without HDF5 file locking (its completed increments are "
+            "complete on disk)",
+            stacklevel=3,
+        )
+        return h5py.File(h5_path, "r", locking=False)
+
+
+def read_increment(
+    path: str | Path,
+    increment: int,
+    ndim: int = 3,
+) -> tuple[dict[str, np.ndarray], dict[str, object]]:
+    """
+    Every field of one increment of an IncrementalWriter file, in FFTjax XYZ
+    grid order -- ``(nx, ny, nz)`` scalars, ``(nx, ny, nz, k)`` k-component
+    fields, i.e. what IncrementalWriter.write_increment takes -- plus the
+    increment group's attributes (``time``; ``dt`` on a fracture checkpoint).
+
+    Unlike read_xdmf this needs no n/L root attributes:
+    scripts/simulation/solve_fracture.py writes those only after the run has
+    finished, and the run most worth restarting is one that never did. A
+    file still open in its writer is read without HDF5 file locking (with a
+    warning).
+
+    Parameters
+    ----------
+    path      : .h5 or .xdmf path (the .h5 next to it is read)
+    increment : increment number, i.e. the group ``increment_<increment:06d>``
+    ndim      : number of spatial axes (3, as for every fracture/mechanics
+                run: 2-D inputs are promoted to nz = 1). The writer stores
+                them reversed (z, y, x -- XDMF CoRectMesh), undone here.
+
+    Returns
+    -------
+    fields : dict[name -> numpy array in XYZ order]
+    attrs  : dict[name -> value] of the increment group
+    """
+    h5_path = Path(path).with_suffix(".h5")
+    if not h5_path.exists():
+        raise FileNotFoundError(f"HDF5 file not found: {h5_path}")
+
+    spatial = tuple(range(ndim - 1, -1, -1))
+    fields: dict[str, np.ndarray] = {}
+    with _open_h5_for_reading(h5_path) as f:
+        grp_name = f"increment_{increment:06d}"
+        if grp_name not in f:
+            available = sorted(int(k.split("_")[1]) for k in f.keys() if k.startswith("increment_"))
+            raise KeyError(f"increment {increment} not found in {h5_path}; available: {available}")
+        grp = f[grp_name]
+        attrs = {k: (v.item() if isinstance(v, np.generic) else v) for k, v in grp.attrs.items()}
+        for name, ds in grp.items():
+            arr = np.asarray(ds)
+            if arr.ndim < ndim:
+                raise ValueError(
+                    f"field {name!r} of {h5_path} has shape {arr.shape}, fewer than "
+                    f"ndim={ndim} spatial axes")
+            fields[name] = arr.transpose(spatial + tuple(range(ndim, arr.ndim)))
+    return fields, attrs
+
+
+def read_fracture_checkpoint(
+    path: str | Path,
+    increment: int,
+    n: tuple[int, ...] | None = None,
+) -> dict:
+    """
+    The state of one increment of a phase-field fracture run written with
+    ``write_checkpoint=True`` (problems.fracture.solve_fracture_incremental;
+    ``checkpoint: true`` in scripts/simulation/solve_fracture.py), in the
+    SOLVER's layout -- what a restart from that increment passes back in.
+
+    The file layout undone here (see utils.io.xdmf_writer, post.fields):
+    spatial axes are stored reversed, (nz, ny, nx), and tensors as Voigt
+    [11, 22, 33, 12, 13, 23] with TENSOR (not engineering) shear, so
+
+        scalar (nz, ny, nx)    -> .transpose(2, 1, 0).ravel()              (Nv,)
+        Voigt  (nz, ny, nx, 6) -> .transpose(2, 1, 0, 3) -> from_voigt
+               -> (nx, ny, nz, 3, 3) -> .transpose(3, 4, 0, 1, 2)
+               -> .reshape(3, 3, Nv)                                  (3, 3, Nv)
+
+    the inverse of post.fields.to_voigt(field_to_grid(.)). The round trip is
+    exact for the float64 fields the writer stores, provided the tensors are
+    symmetric to the bit -- measured for eps and eps_p on the Drucker-Prager
+    path (max |A - A^T| = 0, test/test_problems_fracture_restart.py, which
+    asserts it), so a restart reproduces the run bit-for-bit there.
+
+    Parameters
+    ----------
+    path      : .h5 (or .xdmf) of the run; no n/L root attributes needed
+                (a run that was killed or is still running is readable)
+    increment : the increment to read
+    n         : grid shape (nx, ny, nz) to check the file against, or None
+                to take it from the file
+
+    Returns
+    -------
+    dict with
+        step   : int    the increment read
+        t      : float  its load fraction (group attribute "time")
+        dt     : float | None  the accepted step that reached it (attribute
+                 "dt"; None at the step-0 initial condition)
+        n      : tuple  grid shape (nx, ny, nz)
+        d, H   : (Nv,)  damage, history
+        eps, sigma : (3, 3, Nv)  strain, stress (sigma None if not written)
+        eps_p  : (3, 3, Nv) | None  plastic strain tensor  } None unless a
+        alpha, W_p : (Nv,) | None   strain_p, plastic_work } phase is plastic
+        state  : (eps_p, alpha, W_p) | None -- solve_fracture_incremental's
+                 ``state_init``
+        phase  : (Nv,) | None  the phase field written with the increment,
+                 to check a restart's geometry against
+
+    Raises KeyError if the increment is missing or is not a checkpoint (no
+    ``history`` field: the run was written without write_checkpoint).
+    """
+    # Imported here so this module stays numpy-only at import time; the
+    # Voigt convention is post.fields', the writer side's (to_voigt).
+    from post.fields import from_voigt
+
+    fields, attrs = read_increment(path, increment, ndim=3 if n is None else len(n))
+    where = f"increment {increment} of {Path(path).with_suffix('.h5')}"
+    if "history" not in fields:
+        raise KeyError(
+            f"{where} is not a checkpoint: it has no 'history' field -- the run "
+            "was written without write_checkpoint=True (solve_fracture.py: "
+            "checkpoint: true), so H, and with it the state, is not on disk")
+    plastic = "strain_p" in fields
+    required = ["damage", "strain"] + (["eps_p", "plastic_work"] if plastic else [])
+    missing = [k for k in required if k not in fields]
+    if missing:
+        raise KeyError(f"{where} lacks {missing} -- not a complete checkpoint")
+    if "time" not in attrs:
+        raise KeyError(f"{where} has no 'time' attribute -- not a checkpoint")
+
+    grid = tuple(int(s) for s in fields["damage"].shape)
+    if n is not None and tuple(int(v) for v in n) != grid:
+        raise ValueError(f"{where} is on a {grid} grid, not the expected {tuple(n)}")
+    ndim = len(grid)
+
+    def scalar(a: np.ndarray) -> np.ndarray:        # (nx, ny, nz) -> (Nv,), x slowest
+        return a.ravel()
+
+    def tensor(a: np.ndarray) -> np.ndarray:        # (nx, ny, nz, 6) -> (3, 3, Nv)
+        return from_voigt(a).transpose(ndim, ndim + 1, *range(ndim)).reshape(3, 3, -1)
+
+    out = {
+        "step": int(increment),
+        "t": float(attrs["time"]),                  # type: ignore[arg-type]
+        "dt": float(attrs["dt"]) if "dt" in attrs else None,  # type: ignore[arg-type]
+        "n": grid,
+        "d": scalar(fields["damage"]),
+        "H": scalar(fields["history"]),
+        "eps": tensor(fields["strain"]),
+        "sigma": tensor(fields["stress"]) if "stress" in fields else None,
+        "eps_p": tensor(fields["eps_p"]) if plastic else None,
+        "alpha": scalar(fields["strain_p"]) if plastic else None,
+        "W_p": scalar(fields["plastic_work"]) if plastic else None,
+        "phase": scalar(fields["phase"]) if "phase" in fields else None,
+    }
+    out["state"] = (out["eps_p"], out["alpha"], out["W_p"]) if plastic else None
+    return out
 
 
 # ── VTU ──────────────────────────────────────────────────────────────────────

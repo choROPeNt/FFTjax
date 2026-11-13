@@ -1014,6 +1014,11 @@ def solve_fracture_incremental(
     writer:       IncrementalWriter | None = None,
     orientation:  jnp.ndarray | None = None,
     on_increment: Callable[[IncrementResult, float], None] | None = None,
+    state_init:   tuple | None = None,
+    eps_init:     jnp.ndarray | None = None,
+    t_start:      float = 0.0,
+    first_step:   int = 1,
+    write_checkpoint: bool = False,
 ) -> list[IncrementResult]:
     """
     solve_fracture, load-stepped up to the target eps_bar (Abaqus-*STATIC
@@ -1052,6 +1057,30 @@ def solve_fracture_incremental(
     the extra "damage" field written per increment here.
     All other parameters are solve_fracture's own.
 
+    Checkpoint / restart
+    --------------------
+    ``write_checkpoint`` (needs ``writer``) adds what the written output
+    lacks for a restart: the history field ``history`` (H) and the plastic
+    strain tensor ``eps_p`` (Voigt, as write_plastic_strain_tensor writes
+    it), plus the increment's step size as the group attribute ``dt`` next
+    to ``time``. With the fields always written (damage, strain, strain_p =
+    alpha, plastic_work = W_p) that is the whole state carried from one
+    accepted increment to the next; utils.io.reader.read_fracture_checkpoint
+    reads it back in the solver layout.
+
+    A restart from increment k passes that state in: ``d_init``/``H_init``,
+    ``state_init`` = (eps_p, alpha, W_p) (plastic materials; None starts
+    from the virgin state), ``eps_init`` (the first sweep's strain, see
+    solve_fracture -- None starts from the uniform eps_bar, as a fresh run
+    does), ``t_start`` = its load fraction and ``first_step`` = k + 1 (the
+    numbering continues). Increment k + 1 then reproduces the original run's
+    to round-off provided the step is the same: ``dt_init = min(dt_k *
+    factor_inc, dt_max)`` with dt_k the checkpoint's ``dt``, the step the
+    original tried next (see problems.incremental.solve_automatic). Nothing
+    else is carried across increments -- the accelerator is reset per
+    increment. A restart needs stepping="automatic": "fixed" and "single" lay
+    their increments out from t = 0.
+
     Returns
     -------
     list[IncrementResult] -- .solution is a FractureSolution per increment.
@@ -1062,6 +1091,14 @@ def solve_fracture_incremental(
     # increment before accepting one. Writing it ONLY in _on_increment -- which
     # problems.incremental guarantees fires once per ACCEPTED increment -- is
     # what keeps a rejected cutback attempt from advancing plastic flow.
+    if (t_start != 0.0 or first_step != 1) and stepping != "automatic":
+        raise ValueError(
+            f"a restart (t_start={t_start}, first_step={first_step}) needs "
+            f"stepping='automatic', got {stepping!r} -- 'fixed' and 'single' lay "
+            "their increments out from t = 0"
+        )
+    if write_checkpoint and writer is None:
+        raise ValueError("write_checkpoint=True needs a writer to write the checkpoint to")
     # One accelerator instance for the whole run, reset per increment inside
     # _staggered_loop (the fixed point moves with the applied strain). Built
     # from a name so a YAML config can select it; an already-built instance is
@@ -1079,8 +1116,13 @@ def solve_fracture_incremental(
     # ``eps`` is the last accepted increment's strain, the first sweep's
     # starting point in solve_fracture (eps_init) -- threaded the same way as
     # d/H, so a cutback retry restarts from the accepted strain and never from
-    # a rejected attempt's.
-    _state = {"d": d_init, "H": H_init, "t_prev": 0.0, "plastic": None, "eps": None}
+    # a rejected attempt's. A restart seeds all of it from the checkpoint (see
+    # the docstring); a fresh run starts from None for both.
+    _state = {
+        "d": d_init, "H": H_init, "t_prev": float(t_start),
+        "plastic": None if state_init is None else tuple(jnp.asarray(a) for a in state_init),
+        "eps": None if eps_init is None else jnp.asarray(eps_init),
+    }
 
     def solve_fn(t: float) -> FractureSolution:
         dt_actual = t - _state["t_prev"]
@@ -1137,6 +1179,11 @@ def solve_fracture_incremental(
                     "damage":       np.asarray(sol.d).reshape(n).astype(np.float64),
                     "strain_energy_pos": np.asarray(sol.psi_pos).reshape(n).astype(np.float64),
                 }
+                # The checkpoint: with damage, strain and the plastic fields
+                # below, the whole state _state carries to the next increment
+                # (see the docstring). float64, so the round trip is exact.
+                if write_checkpoint:
+                    fields["history"] = np.asarray(sol.H).reshape(n).astype(np.float64)
                 # Plastic output, only when a stateful phase-field material made
                 # the run plastic at all. Field names match
                 # scripts/simulation/solve_inelastic.py's ("strain_p" = alpha, the
@@ -1145,12 +1192,13 @@ def solve_fracture_incremental(
                 if sol.alpha is not None:
                     fields["strain_p"] = np.asarray(sol.alpha).reshape(n).astype(np.float64)
                     fields["plastic_work"] = np.asarray(sol.W_p).reshape(n).astype(np.float64)
-                    if write_plastic_strain_tensor:
+                    if write_plastic_strain_tensor or write_checkpoint:
                         fields["eps_p"] = to_voigt(
                             field_to_grid(sol.eps_p, n)).astype(np.float64)
                 if orientation is not None:
                     fields["orientation"] = np.asarray(orientation).T.reshape(*n, 3).astype(np.float64)
-                writer.write_increment(result.step, fields, time=result.t)
+                writer.write_increment(result.step, fields, time=result.t,
+                                       attrs={"dt": result.dt} if write_checkpoint else None)
             write_time = st_write.elapsed
         if on_increment is not None:
             on_increment(result, write_time)
@@ -1166,7 +1214,7 @@ def solve_fracture_incremental(
             solve_fn, dt_init=dt_init, dt_min=dt_min, dt_max=dt_max,
             factor_inc=factor_inc, factor_dec=factor_dec,
             max_cutbacks=max_cutbacks, max_steps=max_steps,
-            on_increment=_on_increment,
+            on_increment=_on_increment, t_start=t_start, first_step=first_step,
         )
     else:
         raise ValueError(
