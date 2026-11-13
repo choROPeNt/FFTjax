@@ -33,6 +33,68 @@ def cg_solve(A, b, x0, tol, maxiter, M=None):
     return x, converged
 
 
+def cg_solve_best(A, b, x0, tol, maxiter, M=None):
+    """
+    ``cg_solve`` that, when it stops at ``maxiter`` WITHOUT having converged,
+    returns the iterate with the smallest residual it visited instead of the
+    last one.
+
+    Why. CG minimizes the energy-norm error, not the residual, and its
+    residual norm is far from monotone on an ill-conditioned system: on the
+    Newton correction of a cracked Drucker-Prager RVE it exceeds |b| in 10-20
+    of the first 500 iterations, with peaks near 4 |b| (CODE_REVIEW.md, R4).
+    The last iterate of a capped solve is whatever point of that curve the cap
+    lands on. As a Newton direction, a correction with relative residual >= 1
+    is worse than none; the best iterate is never above 1 (x0 = 0 has exactly
+    1) and is usually an order of magnitude below the last one.
+
+    Same algorithm and the same stopping test as jax.scipy.sparse.linalg.cg
+    (unpreconditioned |r| <= tol |b|, recursively updated residual), so a
+    solve that converges takes the same iterations and returns its last
+    iterate, as ``cg_solve`` does. Only a capped solve differs. Costs one
+    extra vector and one select per iteration. A breakdown (p.Ap = 0, NaN)
+    ends the loop and returns the best finite iterate.
+
+    Like ``cg_solve``: ``jax.lax.while_loop``, not reverse-differentiable.
+
+    Returns
+    -------
+    x         : solution, or the best iterate if the cap was hit
+    converged : bool array -- true residual of the returned x within tol
+    """
+    M_op = (lambda v: v) if M is None else M
+    atol2 = jnp.square(tol) * jnp.vdot(b, b).real
+
+    r0 = b - A(x0)
+    z0 = M_op(r0)
+    gamma0 = jnp.vdot(r0, z0).real
+    rs0 = jnp.vdot(r0, r0).real
+
+    def cond_fun(v):
+        _, _, _, _, k, rs, _, _ = v
+        return (rs > atol2) & (k < maxiter)
+
+    def body_fun(v):
+        x, r, gamma, p, k, _, x_best, rs_best = v
+        Ap = A(p)
+        alpha = gamma / jnp.vdot(p, Ap).real
+        x_new = x + alpha * p
+        r_new = r - alpha * Ap
+        z_new = M_op(r_new)
+        gamma_new = jnp.vdot(r_new, z_new).real
+        p_new = z_new + (gamma_new / gamma) * p
+        rs_new = jnp.vdot(r_new, r_new).real
+        better = rs_new < rs_best            # False for NaN: a breakdown never wins
+        return (x_new, r_new, gamma_new, p_new, k + 1, rs_new,
+                jnp.where(better, x_new, x_best), jnp.where(better, rs_new, rs_best))
+
+    init = (x0, r0, gamma0, z0, 0, rs0, x0, rs0)
+    x_last, _, _, _, _, rs_last, x_best, _ = jax.lax.while_loop(cond_fun, body_fun, init)
+    x = jnp.where(rs_last <= atol2, x_last, x_best)
+    converged = jnp.linalg.norm(b - A(x)) <= tol * jnp.linalg.norm(b)
+    return x, converged
+
+
 def cg_solve_diff(A, b, x0, tol, maxiter, M=None):
     """
     Differentiable counterpart of ``cg_solve`` via implicit differentiation
