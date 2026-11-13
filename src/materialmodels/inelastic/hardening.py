@@ -165,9 +165,11 @@ class IsotropicHardening:
         hi = jnp.where(r0 > 0.0, hi, jnp.zeros_like(hi))
         lo = jnp.zeros_like(hi)
         dlam = 0.5 * (lo + hi)
+        best = _BestIterate(dlam)
 
         for _ in range(_NEWTON_ITERS):
             r = residual(dlam)
+            best.offer(dlam, r)
             dr = -B - self.dsigma_y(alpha_prev + dlam)
             # R decreasing: r > 0 means the root lies ABOVE dlam.
             lo = jnp.where(r > 0.0, dlam, lo)
@@ -180,8 +182,41 @@ class IsotropicHardening:
             # bisecting away from the converged root.
             take = (dlam_newton >= lo) & (dlam_newton <= hi)
             dlam = jnp.where(take, dlam_newton, 0.5 * (lo + hi))
+        best.offer(dlam, residual(dlam))
 
-        return jnp.maximum(dlam, 0.0)
+        return jnp.maximum(best.x, 0.0)
+
+
+class _BestIterate:
+    """
+    The iterate with the smallest |residual| seen so far, for the fixed-count
+    safeguarded Newton loops here and in plasticity_drucker_prager.
+
+    Why they return this and not their last iterate. Once Newton has
+    converged its step is round-off, and round-off can put the next iterate a
+    few ulps outside the bracket. Under jit it can also leave the bracket
+    un-updated: XLA may compute the residual in two fusions with different
+    rounding (FMA contraction), so the two sign tests that update lo and hi
+    disagree. Either way the Newton step is rejected and the loop bisects a
+    bracket that can still be wide, AWAY from the root it had already found.
+    With a fixed iteration count it may not get back. Measured: the
+    tip-rounded tabulated return left f = 0.04 at 1 of 2160 jitted states
+    (test_materialmodels_drucker_prager check 12; eager mode never does it).
+
+    Keeping the best iterate needs no tolerance and changes nothing else: the
+    iteration runs exactly as before, and when it never bisects away the
+    result moves by round-off at most. Every residual it is used with has a
+    single root in its bracket, so a small |residual| means close to the root.
+    """
+
+    def __init__(self, x):
+        self.x = x
+        self.r = jnp.full_like(x, jnp.inf)
+
+    def offer(self, x, r):
+        better = jnp.abs(r) < self.r
+        self.x = jnp.where(better, x, self.x)
+        self.r = jnp.where(better, jnp.abs(r), self.r)
 
 
 class LinearHardening(IsotropicHardening):

@@ -75,6 +75,14 @@ Fifteen checks
    bought, across all three flow regimes including a_g = 0, where Voce's
    saturation makes the _unreachable limit live.
 
+16. A return mapping is a projection: re-returning its own converged state
+   moves nothing. For every law shape the tip-rounded return dispatches on
+   (linear; table with ideal tail -> affine path with segment pick; table
+   with exponential tail -> general path), on both tips, under jit + vmap.
+   The tabulated + rounded-tip return used to fail this on the plateau
+   (bug I7, stress off by up to 1e16 relative at ~0.5 % of states). Plus
+   the exponential tail's tangent against finite differences.
+
 Usage
 -----
     python test/test_materialmodels_drucker_prager.py
@@ -671,5 +679,77 @@ assert n_pl15 > 400, (
 )
 assert worst_f15 < 1e-6 * SY, worst_f15
 print("[15] PASSED")
+
+# ── 16. re-returning a converged state is a no-op (bug I7) ──────────────────
+# Fed its own converged state back (same strain; eps_p and alpha from the
+# first return), the trial state sits ON the surface (f_trial ~ 1e-14) and a
+# projection must leave it where it is. The tabulated + rounded-tip return
+# did not when alpha_prev was on the plateau: its segment pick compared two
+# equal numbers there, round-off chose the segment BELOW alpha_prev, and that
+# segment's extrapolation read the state as elastic (sim/sim/14_root_cause,
+# I7). jit + vmap on purpose: the other half of I7, a solve that bisected
+# away from a root it had already found, only appeared compiled.
+TABLE16 = [[0.0, SY], [0.03, SY + 0.03 * H]]         # linear to 3 %, then the tail
+laws16 = {
+    "linear":            dict(sigma_y0=SY, H=H),
+    "table, ideal tail": dict(hardening={"law": "piecewise_linear", "table": TABLE16}),
+    "table, exp tail":   dict(hardening={"law": "piecewise_linear", "table": TABLE16,
+                                         "tail": "exponential", "b": 30.0}),
+}
+rng16 = np.random.default_rng(16)
+M16 = 4000
+eps16 = jnp.array(rng16.normal(scale=.04, size=(M16, 3, 3)))
+eps16 = 0.5 * (eps16 + eps16.transpose(0, 2, 1))
+epp16 = jnp.array(rng16.normal(scale=.01, size=(M16, 3, 3)))
+epp16 = 0.5 * (epp16 + epp16.transpose(0, 2, 1))
+al16 = jnp.array(rng16.uniform(0.0, 0.12, size=M16))
+for name16, law16 in laws16.items():
+    for a_tip16 in (0.0, 0.1 * SY):
+        dp16 = DruckerPrager(E=E, nu=NU, a_f=A_F, a_g=0.05, a_tip=a_tip16, **law16)
+        st16 = jax.jit(jax.vmap(dp16.stress))
+        s1_16, (ep1_16, a1_16) = st16(eps16, epp16, al16)
+        s2_16, (ep2_16, a2_16) = st16(eps16, ep1_16, a1_16)
+        move16 = jnp.max(jnp.abs(s2_16 - s1_16), axis=(1, 2)) / (
+            1.0 + jnp.max(jnp.abs(s1_16), axis=(1, 2)))
+        q16, p16 = _q_p(s1_16)
+        f16 = (jnp.sqrt(q16 ** 2 + a_tip16 ** 2) + 3.0 * A_F * p16
+               - dp16.hardening.sigma_y(a1_16))
+        plastic16 = a1_16 > al16 + 1e-14
+        worst_f16 = float(jnp.max(jnp.where(plastic16, jnp.abs(f16), 0.0)))
+        n_tail16 = int(jnp.sum(a1_16 > 0.03))
+        print(f"[16] {name16:17s} a_tip={a_tip16:3.1f}: {int(plastic16.sum())} plastic, "
+              f"{n_tail16} past alpha=0.03; re-return max rel move "
+              f"{float(move16.max()):.1e}, max|dalpha| {float(jnp.max(jnp.abs(a2_16 - a1_16))):.1e}, "
+              f"max|f| {worst_f16:.1e}")
+        assert bool(jnp.all(jnp.isfinite(s1_16))), name16
+        assert n_tail16 > 500, (name16, n_tail16)
+        # 1e-8, not round-off: re-returning a SHARP-apex state (s = 0) sees
+        # q_trial = sqrt(1.5*_EPS_TINY) ~ 1e-6 MPa from the sqrt guard rather
+        # than 0, and moves by ~1e-9. The I7 failures this guards against
+        # moved by 1e-4 to 1e16.
+        assert float(move16.max()) < 1e-8, (name16, a_tip16, float(move16.max()))
+        assert worst_f16 < 1e-8 * SY, (name16, a_tip16, worst_f16)
+
+# The exponential tail's consistent tangent, on states that stay inside the
+# tail for the whole return (the default Q makes alpha_t slope-continuous, so
+# a straddling state would pass too, but keep the test about the tail).
+dp16x = DruckerPrager(E=E, nu=NU, a_f=A_F, a_g=0.05, a_tip=0.1 * SY,
+                      **laws16["table, exp tail"])
+st16x = jax.jit(jax.vmap(dp16x.stress))
+s16x, (_, a16x) = st16x(eps16, epp16, al16)
+sel16 = np.flatnonzero(np.asarray((al16 > 0.035) & (a16x > al16 + 1e-6)))[:80]
+e_s16, p_s16, a_s16 = eps16[sel16], epp16[sel16], al16[sel16]
+C16 = jax.jit(jax.vmap(dp16x.stress_and_tangent))(e_s16, p_s16, a_s16)[1]
+worst_t16 = 0.0
+for i in range(3):
+    for j in range(3):
+        dE = jnp.zeros((3, 3)).at[i, j].add(1e-6)
+        fd = (st16x(e_s16 + dE, p_s16, a_s16)[0] - st16x(e_s16 - dE, p_s16, a_s16)[0]) / 2e-6
+        scale = jnp.maximum(jnp.max(jnp.abs(fd), axis=(1, 2)), 1.0)
+        worst_t16 = max(worst_t16, float(jnp.max(
+            jnp.max(jnp.abs(fd - C16[:, :, :, i, j]), axis=(1, 2)) / scale)))
+print(f"[16] exp tail + a_tip: tangent FD rel err over {len(sel16)} in-tail states = {worst_t16:.2e}")
+assert len(sel16) > 40 and worst_t16 < 1e-6, (len(sel16), worst_t16)
+print("[16] PASSED")
 
 print("\ntest_materialmodels_drucker_prager: all checks passed")

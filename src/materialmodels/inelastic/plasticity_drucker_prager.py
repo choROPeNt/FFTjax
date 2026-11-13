@@ -66,7 +66,8 @@ import jax.numpy as jnp
 import numpy as np
 
 from materialmodels.base import ConstitutiveModel
-from materialmodels.inelastic.hardening import IsotropicHardening, resolve_hardening
+from materialmodels.inelastic.hardening import (
+    IsotropicHardening, _BestIterate, resolve_hardening)
 
 _EPS_TINY = 1e-12
 
@@ -562,15 +563,22 @@ class DruckerPrager(ConstitutiveModel):
         q = jnp.clip(q_trial - 3.0 * self.mu * dlam0, 0.0, q_trial)
         lo = jnp.zeros_like(q_trial)
         hi = q_trial
+        # The loop's LAST iterate is not always its best: after converging it
+        # can bisect away from the root (see hardening._BestIterate) -- the
+        # cause of check 12's failure and of half of bug I7.
+        best = _BestIterate(q)
 
         for _ in range(self._newton_iters):
             psi, dpsi = psi_and_slope(q)
+            best.offer(q, psi)
             lo = jnp.where(psi < 0.0, q, lo)
             hi = jnp.where(psi >= 0.0, q, hi)
             slope = jnp.where(jnp.abs(dpsi) > _EPS_TINY, dpsi, 1.0)
             q_newton = q - psi / slope
             take = (q_newton >= lo) & (q_newton <= hi)
             q = jnp.where(take, q_newton, 0.5 * (lo + hi))
+        best.offer(q, psi_and_slope(q)[0])
+        q = best.x
 
         # Tangent from one Newton step AT the root, not through the loop
         # (implicit function theorem): value q, derivative -dPsi/dtheta /
@@ -722,15 +730,21 @@ class DruckerPrager(ConstitutiveModel):
 
         lo = jnp.zeros_like(hi)
         dlam = 0.5 * (lo + hi)
+        # Last iterate is not always the best one: see hardening._BestIterate.
+        # R is non-decreasing with a single root, so the smallest |R| is the
+        # closest to it.
+        best = _BestIterate(dlam)
         for _ in range(_NEWTON_ITERS_GENERAL):
             R, dR = residual(dlam)
+            best.offer(dlam, R)
             lo = jnp.where(R < 0.0, dlam, lo)
             hi = jnp.where(R >= 0.0, dlam, hi)
             slope = jnp.where(jnp.abs(dR) > _EPS_TINY, dR, 1.0)
             dlam_newton = dlam - R / slope
             take = (dlam_newton >= lo) & (dlam_newton <= hi)
             dlam = jnp.where(take, dlam_newton, 0.5 * (lo + hi))
-        dlam = jnp.maximum(dlam, 0.0)
+        best.offer(dlam, value(dlam))
+        dlam = jnp.maximum(best.x, 0.0)
 
         xi_new, _ = self._xi_and_slope(dlam, p_trial, alpha_prev)
         return dlam, _q_of(xi_new)
@@ -895,7 +909,17 @@ class DruckerPrager(ConstitutiveModel):
             # and the selection contributes exactly the zero derivative a
             # piecewise-linear law should. An empty slice (LinearHardening) sums
             # to 0, leaving the single-segment path bit-for-bit unchanged.
-            j = jnp.sum(brk_dlam_r > brk_dlam)
+            #
+            # A breakpoint at or below alpha_prev is below the root of every
+            # plastic return (dlam > 0), so it counts unconditionally. The
+            # test cannot be trusted there: on a PLATEAU sigma_y(alpha_b) =
+            # sigma_y(alpha_prev), so for a trial state on the surface
+            # (f_trial ~ 0, e.g. re-returning a converged state) both sides
+            # are 0 up to round-off, and the segment BELOW alpha_prev,
+            # extrapolated, reads the state as elastic. Its solve then has no
+            # root in [0, q_trial] and returns q > q_trial: stress scaled up,
+            # alpha unchanged, f = O(1) (bug I7, sim/sim/14_root_cause).
+            j = jnp.sum((brk_dlam_r > brk_dlam) | (alpha_lo[1:] <= alpha_prev))
 
             xi_0_j, c_j, k_j = xi_0[j], c[j], k[j]
             q_seg = self._solve_q_hyperbolic(q_trial, xi_trial, xi_0_j, c_j, k_j)
