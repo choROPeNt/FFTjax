@@ -108,9 +108,15 @@ fracture:
                     # (voxel = 6e-4 mm for configs/generation/rve_random_small.yaml)
 
   formulation:  displacement      # REQUIRED for this material (see the header)
-  toler_lin:    1.0e-8            # inner CG; tighter than the brittle config,
-                                   # since it now sits inside a Newton loop
-  maxiter_cg:   600
+  # The three Newton-path settings CLAUDE.md pins, together. toler_lin is only
+  # the accuracy of each Newton CORRECTION here (equilibrium is toler_nr's
+  # job), so it is loose and the cap high: CG stops early where the system is
+  # easy and may finish where it is hard, once a crack has formed. A brittle
+  # config must NOT copy this toler_lin -- there it is the accuracy of the
+  # mechanics solve itself.
+  toler_lin:    1.0e-3
+  maxiter_cg:   4000
+  newton_line_search: 4           # max step halvings; 0 = full Newton steps
 
   toler_nr:     1.0e-7            # Newton (mechanical) convergence
   maxiter_nr:   40

@@ -70,6 +70,13 @@ change — decide it before tuning further production values.
 - **`maxiter_st: 200`**, not 40. At 40 the rejected attempts took 58-76% of
   wall time; at 20 the runs entered a cutback death spiral (a crack running at
   fixed strain is re-run from scratch after every rejection).
+- **`toler_lin: 1e-3`, `maxiter_cg: 4000`, `newton_line_search: 4`** for a
+  Drucker-Prager matrix (the Newton path), all three together. `toler_lin` is
+  there only the accuracy of each Newton correction; equilibrium is set by
+  `toler_nr`. With `1e-7` / `500` and full steps BD-Z 60^3 had a failed Newton
+  in 97 of 761 sweeps, with these in 0 of 2,397, at the same cost per sweep
+  (`FINDINGS.md` F25, F27). **Not for a brittle (linear-path) config:** there
+  `toler_lin` is the accuracy of the mechanics solve itself.
 - **`d_cap: 0.975`** is a conditioning regularization and a deliberate
   modelling change. Quote it alongside any result — a crack never fully opens
   and dissipated energy is slightly under-counted.
