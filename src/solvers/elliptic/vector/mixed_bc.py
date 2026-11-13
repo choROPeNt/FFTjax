@@ -83,6 +83,45 @@ def sm2sv(sm: jnp.ndarray, pairs: Tuple[Tuple[int, int], ...]) -> jnp.ndarray:
     return jnp.stack([sm[i, j] if i == j else sm[i, j] + sm[j, i] for i, j in pairs])
 
 
+def macro_block_preconditioner(C0_ref: jnp.ndarray, pairs: Tuple[Tuple[int, int], ...],
+                               Nv: int, dtype) -> jnp.ndarray:
+    """
+    (K, K) matrix ``P`` for the macroscopic-strain block of the bordered
+    displacement system's CG preconditioner: ``z_sv = solve(P, r_sv)``.
+
+        P = +Nv * sm2sv . C0 . sv2sm        POSITIVE definite
+
+    The sign is the point. The bordered operator (solve_displacement_based's
+    and solve_displacement_based_nonlinear's ``A_op``) is ``A = -E^H C E``,
+    with E the map from (displacement fluctuation, macroscopic strain
+    unknowns) to strain: negative semidefinite on BOTH blocks. Preconditioned
+    CG on it is CG on the SPD system ``-A`` exactly when the preconditioner M
+    is positive definite. Its displacement block is ``+K0^-1``, so this block
+    has to be positive too, i.e. approximate ``-A``'s macroscopic block
+    ``+Nv C0``, not A's own.
+
+    It used to be ``-Nv ...``, "matching the sign of A_op's extra_out", which
+    made M indefinite: positive on the displacement unknowns, negative on
+    these. CG still converged, with ``r.Mr`` changing sign along the way, but
+    2.5-3x slower: on a 24^3 fibre cell with 5 stress-controlled components
+    and a plastic, partly cracked matrix, 826 -> 275 iterations to 1e-7 before
+    the first fully damaged voxel, and a relative residual of 5e-4 instead of
+    2e-2 after 500 iterations once 64 voxels are at the damage cap.
+
+    Parameters
+    ----------
+    C0_ref : (3, 3, 3, 3)  reference stiffness of the preconditioner
+    pairs  : active (i, j) pairs, see ``_active_pairs`` -- must be non-empty
+    Nv     : number of voxels (the macroscopic rows are voxel SUMS)
+    dtype  : dtype of the unknowns
+    """
+    basis = jnp.eye(len(pairs), dtype=dtype)
+    return jnp.stack([
+        Nv * sm2sv(jnp.einsum("ijkl,kl->ij", C0_ref, sv2sm(basis[k], pairs)), pairs)
+        for k in range(len(pairs))
+    ], axis=1)
+
+
 def _isotropic_stiffness(lam, mu) -> jnp.ndarray:
     """(3,3,3,3) isotropic stiffness tensor from Lame parameters -- same formula
     as materialmodels.elastic.isotropic.LinearElasticIsotropic.elastic_stiffness_tensor,
