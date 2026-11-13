@@ -53,6 +53,15 @@ Three checks
    non-driven macroscopic stress at round-off, and must actually develop the
    coupled shear strain. A mask that clamped the non-driven shears would
    leave sigma_12 (resp. sigma_23) nonzero instead.
+8. The macroscopic-strain block of the mixed-BC CG preconditioner
+   (macro_block_preconditioner, shared by solve_displacement_based and the
+   Newton correction here) is symmetric POSITIVE definite, for the
+   free-surface masks and for partial ones. The bordered operator is negative
+   semidefinite and the displacement block of its preconditioner positive, so
+   CG on that pair is CG on an SPD system only if this block is positive too.
+   It used to carry the operator's own (negative) sign, which made the
+   preconditioner indefinite: every solve with a stress-controlled component
+   still converged, but 2.5-3x slower on a plastic tangent.
 
 Usage
 -----
@@ -77,6 +86,7 @@ from operators.green import build_freq_grid
 from problems.mechanics import solve_displacement_based_nonlinear
 from problems.utils.loadcases import free_surface_control
 from solvers.elliptic.vector.displacement_based import solve_displacement_based
+from solvers.elliptic.vector.mixed_bc import _active_pairs, macro_block_preconditioner
 
 phase_np, n, L, phi_act = make_square_composite_rve(
     phi=0.5, r_fiber=0.005, dx=0.0002, N_min=16, nz=1,
@@ -347,5 +357,21 @@ for (i, j), (ci, cj) in (((0, 0), (0, 1)), ((0, 2), (1, 2))):
     assert abs(eps_coupled) > 1e-6, \
         f"driven ({i},{j}): the layering must load eps_{ci + 1}{cj + 1}, or this check is vacuous"
 print("[7] PASSED")
+
+# ── 8. macroscopic block of the mixed-BC preconditioner: positive definite ──
+
+Nv_lay = int(np.prod(n_lay))
+C0_lay = jnp.mean(C_lay, axis=-1)
+masks = (free_surface_control(0, 0), free_surface_control(0, 2),
+         ((1, 0, 0), (0, 1, 0), (0, 0, 1)), ((0, 0, 0), (0, 1, 0), (0, 0, 1)))
+worst_P = np.inf
+for mask in masks:
+    pairs = _active_pairs(mask)
+    P = np.asarray(macro_block_preconditioner(C0_lay, pairs, Nv_lay, C0_lay.dtype))
+    assert np.allclose(P, P.T, rtol=1e-12, atol=0.0), f"{mask}: P_extra is not symmetric"
+    worst_P = min(worst_P, float(np.linalg.eigvalsh(P).min()))
+print(f"[8] macro_block_preconditioner over {len(masks)} masks: min eig = {worst_P:.3e} (> 0)")
+assert worst_P > 0.0, "macro_block_preconditioner must be positive definite"
+print("[8] PASSED")
 
 print("\ntest_problems_mechanics_nonlinear: all checks passed")
