@@ -129,12 +129,19 @@ Three behaviours worth knowing before reading a result
   with the crack. Do NOT symmetrize the tangent to "fix" this: that would
   break the quadratic Newton convergence it exists to provide.
 
-  WHAT IS KNOWN about this. The asymmetry does cost the inner CG accuracy --
-  on the 40^3 two-fibre cell it routinely stops at its 500-iteration cap at
-  relative residual 1e-4..1e-6 against toler_lin = 1e-7, from the first
-  damaged increment on -- but that has NOT been seen to stop Newton: those
-  inexact steps still converge it in 3-8 iterations over that cell's whole
-  load path to d_max = 0.96.
+  WHAT IS KNOWN about this. On the 40^3 two-fibre cell the inner CG routinely
+  stopped at its 500-iteration cap at relative residual 1e-4..1e-6 against
+  toler_lin = 1e-7, from the first damaged increment on, and that was put
+  down to this asymmetry. It was NOT the asymmetry (corrected 2026-11-12):
+  the CG preconditioner of the mixed-BC system was indefinite
+  (solvers.elliptic.vector.mixed_bc.macro_block_preconditioner). With it
+  positive definite, CG needs the same number of iterations on this tangent
+  and on its symmetric part -- 275 vs 280 to 1e-7 on a plastic 24^3 fibre
+  cell before the first fully damaged voxel, 1259 vs 1234 with 64 voxels at
+  the damage cap (CODE_REVIEW.md, R1 and N3). The asymmetry is real, but on
+  the states measured so far it does not slow CG. Those capped, inexact
+  steps had not stopped Newton either: it converged in 3-8 iterations over
+  that cell's whole load path to d_max = 0.96.
 
   The failure that used to appear past the softening branch -- Newton
   stalling once the transmitted stress was three to four orders below peak,

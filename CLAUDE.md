@@ -2,7 +2,10 @@
 
 Project guidance for Claude Code sessions in this repo. Keep entries here
 short and factual; the long-form reasoning lives in the per-study handoffs
-under `sim/sim/*/HANDOFF.md`.
+under `sim/sim/*/HANDOFF.md`. Solver findings for DP + phase-field fracture
+(what converges, what was tried and failed) are logged in `FINDINGS.md`; code
+defects and performance issues of that solver path, with their status, in
+`CODE_REVIEW.md`.
 
 ## Running things
 
