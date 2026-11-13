@@ -205,11 +205,13 @@ duck-types on ``stress_and_tangent_field``, would otherwise return
 completely undamaged stresses for this material.
 """
 
+import copy
 import sys
 
 import jax
 import jax.numpy as jnp
 
+from materialmodels.inelastic.hardening import OffsetHardening
 from materialmodels.inelastic.plasticity_drucker_prager import DruckerPrager
 from materialmodels.phasefield.degradation import degradation_at2
 from materialmodels.phasefield.splits import amor_split
@@ -240,6 +242,10 @@ class PhaseFieldDruckerPrager(DruckerPrager):
                 See the module docstring for why this exists and why raising
                 Gc is not an alternative.
     k_res     : float  AT2 residual stiffness
+    plastic_freeze_onset, plastic_freeze_full : float | None
+                damage range over which plastic flow is switched off (both or
+                neither). None (default) keeps plastic flow at every d, i.e.
+                the model exactly as it was. See ``_freeze_offset``.
     name      : str    optional label
     """
 
@@ -249,10 +255,24 @@ class PhaseFieldDruckerPrager(DruckerPrager):
                  a_tip: float = 0.0,
                  hardening=None, beta_p: float = 0.0,
                  sigma_crit: float | None = None,
+                 plastic_freeze_onset: float | None = None,
+                 plastic_freeze_full: float | None = None,
                  name: str = "", k_res: float = 1e-6):
         super().__init__(E, nu, sigma_y0=sigma_y0, H=H, a_f=a_f, a_g=a_g,
                          a_tip=a_tip, hardening=hardening, name=name,
                          k_res=k_res, Gc=Gc)
+        if (plastic_freeze_onset is None) != (plastic_freeze_full is None):
+            raise ValueError(
+                f"PhaseFieldDruckerPrager {self.name!r}: give both "
+                "plastic_freeze_onset and plastic_freeze_full, or neither")
+        self.plastic_freeze = None
+        if plastic_freeze_onset is not None:
+            d0, d1 = float(plastic_freeze_onset), float(plastic_freeze_full)
+            if not 0.0 <= d0 < d1 <= 1.0:
+                raise ValueError(
+                    f"PhaseFieldDruckerPrager {self.name!r}: need 0 <= "
+                    f"plastic_freeze_onset < plastic_freeze_full <= 1, got {d0}, {d1}")
+            self.plastic_freeze = (d0, d1)
         self.beta_p = float(beta_p)
         if self.beta_p < 0.0:
             raise ValueError(
@@ -367,7 +387,17 @@ class PhaseFieldDruckerPrager(DruckerPrager):
         # guard in DruckerPrager applies unchanged because d appears nowhere
         # in it. It symmetrizes eps again internally; harmless, and it keeps
         # this call correct if ever made directly.
-        sigma_eff, (eps_p, alpha) = super().stress(eps, eps_p_prev, alpha_prev)
+        if self.plastic_freeze is None:
+            sigma_eff, (eps_p, alpha) = super().stress(eps, eps_p_prev, alpha_prev)
+        else:
+            # Same return against a yield curve lifted by _freeze_offset(d):
+            # zero below the onset (bit-for-bit the line above), out of reach
+            # near the cap. A shallow copy carries the lifted law, so nothing
+            # on self is mutated while tracing.
+            lifted = copy.copy(self)
+            lifted.hardening = OffsetHardening(self.hardening, self._freeze_offset(d))
+            sigma_eff, (eps_p, alpha) = DruckerPrager.stress(
+                lifted, eps, eps_p_prev, alpha_prev)
 
         p_eff = jnp.trace(sigma_eff) / 3.0
         s_eff = sigma_eff - p_eff * I3
@@ -396,6 +426,31 @@ class PhaseFieldDruckerPrager(DruckerPrager):
         W_p = W_p_prev + dW_p
 
         return sigma, (eps_p, alpha, W_p)
+
+    def _freeze_offset(self, d):
+        """
+        Yield-stress offset that switches plastic flow off as the voxel cracks:
+
+            Y(d) = 1e3 * sigma_y0 * s^2,   s = clip((d - d0)/(d1 - d0), 0, 1)
+
+        with (d0, d1) = (plastic_freeze_onset, plastic_freeze_full). Zero for
+        d <= d0, so the model is unchanged until a voxel is nearly cracked;
+        C1 at d0; already ~1e2 sigma_y0 at a tenth of the way to d1, i.e. no
+        reachable effective stress makes such a voxel flow.
+
+        Why. In the effective-stress model a voxel near the cap must transmit
+        its share of the load through g(d) ~ 1e-3, so its effective stress has
+        to be ~1e3x larger. With plastic flow allowed, the effective material
+        supplies that by hardening up the apex of the cone without limit
+        (equivalent plastic strain 2-8, effective pressure ~GPa), and the
+        plastic work and tensile energy taken from that state drive the crack
+        and wreck the tangent. Frozen, the voxel is a degraded elastic
+        material (tangent g C) and its plastic state stops evolving. See
+        sim/sim/14_root_cause/README.md.
+        """
+        d0, d1 = self.plastic_freeze
+        s = jnp.clip((d - d0) / (d1 - d0), 0.0, 1.0)
+        return 1.0e3 * self.sigma_y0 * s * s
 
     def stress_and_tangent(self, eps, d, eps_p_prev, alpha_prev, W_p_prev):
         """
@@ -465,7 +520,10 @@ class PhaseFieldDruckerPrager(DruckerPrager):
         mode = "brittle" if self.beta_p == 0.0 else f"ductile, beta_p={self.beta_p:.3g}"
         thr = ("" if self.sigma_crit is None
                else f", sigma_crit={self.sigma_crit:.4g} (psi_c={self.psi_c:.4g})")
+        frz = ("" if self.plastic_freeze is None
+               else f", plastic flow frozen over d = {self.plastic_freeze[0]:.3g}"
+                    f"..{self.plastic_freeze[1]:.3g}")
         return (f"PhaseFieldDruckerPrager{tag}: E={self.E:.3g}, nu={self.nu:.3g}, "
                 f"Gc={self.Gc:.3g}, hardening={self.hardening}, "
-                f"a_f={self.a_f:.3g}, a_g={self.a_g:.3g} ({flow}){tip}{thr}, "
+                f"a_f={self.a_f:.3g}, a_g={self.a_g:.3g} ({flow}){tip}{thr}{frz}, "
                 f"k_res={self.k_res:.3g} [{mode}]")

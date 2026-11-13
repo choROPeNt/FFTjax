@@ -582,6 +582,49 @@ class PiecewiseLinearExponentialHardening(PiecewiseLinearHardening):
                 f"Q={self.Q:.4g}, b={self.b:.4g}]")
 
 
+class OffsetHardening(IsotropicHardening):
+    """
+    ``base`` with its whole yield curve shifted up by ``offset``:
+    sigma_y(alpha) = base.sigma_y(alpha) + offset.
+
+    Not a law a config selects. It is how PhaseFieldDruckerPrager stops plastic
+    flow in cracked voxels (``plastic_freeze_onset``): the offset is a traced,
+    per-voxel function of the damage, so a voxel close to the cap sees a
+    yield surface it cannot reach and responds elastically, while the return
+    stays a true projection (re-returning from the converged state changes
+    nothing). An offset preserves every slope, so the static conditioning
+    DruckerPrager derives from the base law at construction stays valid.
+
+    sigma_y_max is reported as inf: with a damage-dependent offset there is no
+    fixed ceiling. That switches off DruckerPrager's unreachable-state guard,
+    which only ever applies to a non-dilatant material (a_g = 0).
+    """
+
+    sigma_y_max = float("inf")
+
+    def __init__(self, base: IsotropicHardening, offset):
+        self.base = base
+        self.offset = offset
+        self.sigma_y0 = base.sigma_y0
+
+    def sigma_y(self, alpha):
+        return self.base.sigma_y(alpha) + self.offset
+
+    def dsigma_y(self, alpha):
+        return self.base.dsigma_y(alpha)
+
+    def solve_return(self, A, B, alpha_prev):
+        # A - B*dlam = sigma_y(...) + offset  <=>  (A - offset) - B*dlam = sigma_y(...)
+        return self.base.solve_return(A - self.offset, B, alpha_prev)
+
+    def affine_segments(self):
+        segs = self.base.affine_segments()
+        if segs is None:
+            return None
+        alpha_lo, sigma_lo, H, alpha_hi = segs
+        return alpha_lo, sigma_lo + self.offset, H, alpha_hi
+
+
 _HARDENING = {
     "linear":           LinearHardening,
     "piecewise_linear": PiecewiseLinearHardening,
