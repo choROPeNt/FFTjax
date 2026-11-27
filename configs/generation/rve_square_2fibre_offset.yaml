@@ -1,0 +1,37 @@
+# Square 2-fibre unit cell with the SYMMETRY BROKEN — the localizing variant of
+# configs/generation/rve_square_2fibre.yaml.
+#
+# That cell converged cleanly through the whole transverse load path and never
+# cracked, because it is too symmetric to localize: its two candidate crack
+# planes are exact images of one another under the body-centring translation
+# (L/2, L/2), damage grew on both at a peak ratio of 1.000000, and the whole
+# damage field reproduced the cell's symmetry group to 1e-13. Nothing could win.
+#
+# Everything here is identical to that config EXCEPT offset_vox. The centre
+# fibre moves 3 voxels in x and 2 in y, which is enough to destroy the
+# body-centring translation, both axis reflections and the diagonal mirror,
+# while leaving the packing visibly regular and phi essentially untouched.
+#
+# The x and y components differ ON PURPOSE. An equal shift (d, d) would slide
+# the centre fibre along the cell diagonal and preserve the mirror about it,
+# leaving a residual symmetry for the damage field to sit on -- which is the
+# exact failure mode this cell exists to escape.
+#
+# Concretely, it makes the two matrix gaps along the LOAD axis unequal. In the
+# symmetric cell the fibre-free y-bands are [4.1, 15.9] and [24.1, 35.9], both
+# 11.8 voxels wide and exactly equivalent. Here they become [4.1, 17.9] and
+# [26.1, 35.9] -- 13.8 against 9.8, a 40% difference. One crack plane is now
+# cheaper than the other.
+
+geometry:
+  phi:       0.0646
+  r_fib:     0.0070         # mm -- measured off the random UD RVE (7.0 um)
+  vox:       0.001729443    # mm -- that RVE's voxel; realized 1.725884e-3
+  N_min:     32
+  nz:        40
+  offset_vox: [3.0, 2.0]    # THE ONLY DIFFERENCE from rve_square_2fibre.yaml
+  fibre_dir: [0.0, 0.0, 1.0]
+  Vf_yarn:   1.0
+
+output:  sim/sim/11_mini_square
+jobname: "rve_square_2fibre_offset"

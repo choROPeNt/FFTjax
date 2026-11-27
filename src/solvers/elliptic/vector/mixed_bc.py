@@ -106,7 +106,8 @@ def macro_block_preconditioner(C0_ref: jnp.ndarray, pairs: Tuple[Tuple[int, int]
     2.5-3x slower: on a 24^3 fibre cell with 5 stress-controlled components
     and a plastic, partly cracked matrix, 826 -> 275 iterations to 1e-7 before
     the first fully damaged voxel, and a relative residual of 5e-4 instead of
-    2e-2 after 500 iterations once 64 voxels are at the damage cap.
+    2e-2 after 500 iterations once 64 voxels are at the damage cap. See
+    CODE_REVIEW.md, R1.
 
     Parameters
     ----------

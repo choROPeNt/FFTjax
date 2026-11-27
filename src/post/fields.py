@@ -56,7 +56,8 @@ def from_voigt(voigt: np.ndarray, mandel: bool = False) -> np.ndarray:
     Parameters
     ----------
     voigt : array (..., 6)
-        Voigt field. Index order: [xx, yy, zz, yz, xz, xy]  (11,22,33,23,13,12)
+        Voigt field. Index order: [11, 22, 33, 12, 13, 23] (Abaqus
+        convention, to_voigt's -- both use _VOIGT_IJ)
     mandel : bool
         If True, undo Mandel scaling (divide shear by √2).
 

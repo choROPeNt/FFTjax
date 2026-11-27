@@ -12,8 +12,8 @@ so these checks are mostly about [*]: that each law solves it, that the
 solution really satisfies it, and that a law the module has never seen can
 be dropped in and work.
 
-Eight checks
-------------
+Nine checks
+-----------
 1. The tabulated curve itself: exact at the nodes, linearly interpolated
    between them, and PERFECTLY PLASTIC past the last one (the plateau
    convention -- a voxel running off the end of calibrated data must not
@@ -43,6 +43,11 @@ Eight checks
    belongs is still a number).
 8. The config path: build_hardening/resolve_hardening, including the
    mutually-exclusive H-vs-hardening spellings.
+9. The exponential tail (``tail: exponential``): the table bit-for-bit below
+   its last row, continuous there -- slope-continuous with the default Q --
+   and sigma_t + Q*(exp(b*(alpha - alpha_t)) - 1) past it; solve_return
+   solves [*] across alpha_t; Q = 0 is the ideal tail; config keys and
+   validation errors.
 
 Usage
 -----
@@ -61,8 +66,8 @@ import jax.numpy as jnp
 import numpy as np
 
 from materialmodels.inelastic.hardening import (
-    IsotropicHardening, LinearHardening, PiecewiseLinearHardening,
-    build_hardening, resolve_hardening,
+    IsotropicHardening, LinearHardening, PiecewiseLinearExponentialHardening,
+    PiecewiseLinearHardening, VoceHardening, build_hardening, resolve_hardening,
 )
 from materialmodels.inelastic.plasticity_drucker_prager import DruckerPrager
 from materialmodels.inelastic.plasticity_j2 import J2Plasticity
@@ -166,10 +171,13 @@ print("[4] PASSED")
 class Voce(IsotropicHardening):
     """sigma_y = sigma_y0 + Q*(1 - exp(-b*alpha)) -- smooth, saturating.
 
-    Defined in the TEST, not the module: it implements only sigma_y and
-    dsigma_y and inherits solve_return, which is exactly what a future
-    production law would do. It deliberately does not override
-    affine_segments, so it is not usable with a_tip > 0 (see check 7).
+    Kept defined in the TEST even though the module now ships
+    VoceHardening, and deliberately so: it implements ONLY sigma_y and
+    dsigma_y and inherits everything else, which is exactly the contract a
+    third-party law extends. If the generic solve_return ever regrows a
+    dependency on affine_segments or on a law-specific attribute, this class
+    is what notices -- the shipped VoceHardening might satisfy it by
+    accident. Check 8 cross-checks the two against each other.
     """
 
     def __init__(self, sigma_y0, Q, b):
@@ -259,13 +267,26 @@ raises(lambda: J2Plasticity(E=E, nu=NU, sigma_y0=SY0, H=H_LIN, hardening=pw), "m
 raises(lambda: J2Plasticity(E=E, nu=NU), "needs a hardening law")
 raises(lambda: J2Plasticity(E=E, nu=NU, sigma_y0=1.0, hardening=pw), "contradicts")
 raises(lambda: DruckerPrager(E=E, nu=NU, hardening=pw), "a_f is required")
-# a smooth law has no affine segments, so it cannot use the tip-rounded branch
-raises(lambda: DruckerPrager(E=E, nu=NU, hardening=voce, a_f=0.13, a_tip=5.0),
-       "not piecewise affine")
-# ...but the tabulated one can
-DruckerPrager(E=E, nu=NU, hardening=pw, a_f=0.13, a_g=0.05, a_tip=0.1 * SY0)
-print("[7] 11 validation errors raise as documented (transposed table, softening, "
-      "H+hardening, missing a_f, smooth law with a_tip, ...)")
+# A smooth law with a_tip > 0 used to raise here ("not piecewise affine"):
+# the tip-rounded branch solved for q per affine segment, so it needed the
+# law decomposed into segments. It now solves for the plastic multiplier and
+# only ever evaluates sigma_y/dsigma_y, so BOTH of these are valid -- and the
+# smooth one has to actually work, not merely construct, which is what the
+# on-surface assertion below checks (test_materialmodels_drucker_prager's
+# check 14 covers it across every flow regime).
+for law_7, tag_7 in ((voce, "smooth"), (pw, "tabulated")):
+    dp_7 = DruckerPrager(E=E, nu=NU, hardening=law_7, a_f=0.13, a_g=0.05,
+                         a_tip=0.1 * SY0)
+    eps_7 = jnp.array([[0.02, 0.004, 0.0], [0.004, -0.005, 0.0], [0.0, 0.0, -0.005]])
+    sig_7, (ep_7, al_7) = dp_7.stress(eps_7, jnp.zeros((3, 3)), jnp.asarray(0.0))
+    p_7 = jnp.trace(sig_7) / 3.0
+    q_7 = jnp.sqrt(1.5 * jnp.sum((sig_7 - p_7 * jnp.eye(3)) ** 2))
+    f_7 = (jnp.sqrt(q_7 ** 2 + (0.1 * SY0) ** 2) + 3.0 * 0.13 * p_7
+           - law_7.sigma_y(al_7))
+    assert float(al_7) > 1e-12, f"{tag_7} law: state is elastic, nothing tested"
+    assert abs(float(f_7)) < 1e-6 * SY0, f"{tag_7} law with a_tip: f = {float(f_7)}"
+print("[7] 10 validation errors raise as documented (transposed table, softening, "
+      "H+hardening, missing a_f, ...), and a smooth law now runs WITH a_tip")
 print("[7] PASSED")
 
 
@@ -274,7 +295,15 @@ b_pw = build_hardening({"law": "piecewise_linear", "table": TABLE})
 assert float(b_pw.sigma_y(jnp.asarray(0.05))) == float(pw.sigma_y(jnp.asarray(0.05)))
 b_lin = build_hardening({"law": "linear", "sigma_y0": SY0, "H": "1.0e3"})  # YAML str exponent
 assert isinstance(b_lin, LinearHardening) and b_lin.H == H_LIN
-raises(lambda: build_hardening({"law": "voce", "Q": 1.0}), "unknown law")
+b_voce = build_hardening({"law": "voce", "sigma_y0": SY0, "Q": 22.0, "b": "1.5e1"})
+assert isinstance(b_voce, VoceHardening)
+assert float(b_voce.sigma_y(jnp.asarray(0.05))) == float(voce.sigma_y(jnp.asarray(0.05))), (
+    "build_hardening's voce disagrees with the test's own reference Voce -- one of "
+    "the two has the wrong formula"
+)
+assert b_voce.sigma_y_max == SY0 + 22.0
+raises(lambda: build_hardening({"law": "ludwik", "Q": 1.0}), "unknown law")
+raises(lambda: build_hardening({"law": "voce", "sigma_y0": SY0, "Q": 22.0, "b": 0.0}), "must be > 0")
 raises(lambda: build_hardening({"law": "piecewise_linear"}), "requires a 'table'")
 raises(lambda: build_hardening({"law": "piecewise_linear", "table": TABLE, "H": 1.0}), "unexpected key")
 raises(lambda: build_hardening(TABLE), "'law'")
@@ -284,5 +313,73 @@ assert resolve_hardening(pw, SY0, None) is pw          # consistent sigma_y0 is 
 print("[8] build_hardening/resolve_hardening: both laws, YAML string exponents, "
       "and 4 config errors")
 print("[8] PASSED")
+
+
+# ── [9] the exponential tail ────────────────────────────────────────────────
+# tail: exponential replaces the plateau past the last row by
+# sigma_t + Q*(exp(b*(alpha - alpha_t)) - 1). Below alpha_t it must be the
+# table itself; at alpha_t continuous, and with the default Q = H_last/b
+# slope-continuous too; past it the exponential, solved by the generic Newton
+# (the table's closed form does not cover the tail), including roots that
+# cross alpha_t within one return.
+B_X = 25.0
+pwx = build_hardening({"law": "piecewise_linear", "table": TABLE,
+                       "tail": "exponential", "b": B_X})
+assert isinstance(pwx, PiecewiseLinearExponentialHardening)
+assert pwx.affine_segments() is None, "the tail is not affine -- must take the general paths"
+assert abs(pwx.Q - H1 / B_X) < 1e-12 and pwx.sigma_y_max == float("inf")
+for al in [0.0, 0.01, 0.02, 0.06, 0.1]:
+    assert float(pwx.sigma_y(jnp.asarray(al))) == float(pw.sigma_y(jnp.asarray(al))), al
+for dal in [1e-3, 0.02, 0.1, 0.3]:
+    want = 78.0 + pwx.Q * np.expm1(B_X * dal)
+    got = float(pwx.sigma_y(jnp.asarray(0.1 + dal)))
+    assert abs(got - want) < 1e-10 * want, (dal, got, want)
+d_left = float(pwx.dsigma_y(jnp.asarray(0.1 - 1e-9)))
+d_right = float(pwx.dsigma_y(jnp.asarray(0.1 + 1e-9)))
+assert abs(d_left - H1) < 1e-9 and abs(d_right - H1) < 1e-5, (d_left, d_right)
+for al in [0.11, 0.2, 0.35]:
+    fd = (float(pwx.sigma_y(jnp.asarray(al + 1e-7)))
+          - float(pwx.sigma_y(jnp.asarray(al - 1e-7)))) / 2e-7
+    assert abs(float(pwx.dsigma_y(jnp.asarray(al))) - fd) < 1e-6 * abs(fd), (al, fd)
+
+worst_x, n_pl_x, n_cross_x = 0.0, 0, 0
+for A in np.linspace(40.0, 400.0, 61):
+    for alpha_prev in [0.0, 0.05, 0.099, 0.1, 0.12, 0.25]:
+        dlam = float(pwx.solve_return(jnp.asarray(A), jnp.asarray(B_J2),
+                                      jnp.asarray(alpha_prev)))
+        assert np.isfinite(dlam) and dlam >= 0.0, (A, alpha_prev, dlam)
+        if A - float(pwx.sigma_y(jnp.asarray(alpha_prev))) > 0.0:
+            n_pl_x += 1
+            worst_x = max(worst_x, abs(residual(pwx, A, B_J2, alpha_prev, dlam)))
+            n_cross_x += alpha_prev <= 0.1 < alpha_prev + dlam
+        else:
+            assert dlam == 0.0, (A, alpha_prev, dlam)
+assert worst_x < 1e-10 and n_cross_x > 5, (worst_x, n_cross_x)
+dl_x = jax.jit(jax.vmap(lambda a, p: pwx.solve_return(a, B_J2, p)))(A_batch, ap_batch)
+g_x = jax.jit(jax.vmap(jax.grad(lambda a, p: pwx.solve_return(a, B_J2, p))))(A_batch, ap_batch)
+assert np.all(np.isfinite(dl_x)) and np.all(np.isfinite(g_x))
+
+pw0 = PiecewiseLinearExponentialHardening(TABLE, b=B_X, Q=0.0)       # Q = 0: ideal tail
+assert pw0.sigma_y_max == 78.0 and float(pw0.sigma_y(jnp.asarray(5.0))) == 78.0
+pw_str = build_hardening({"law": "piecewise_linear", "table": TABLE, "tail": "exponential",
+                          "b": "2.5e1", "Q": "4.0"})                  # YAML str exponents
+assert pw_str.b == 25.0 and pw_str.Q == 4.0
+pw_ideal = build_hardening({"law": "piecewise_linear", "table": TABLE, "tail": "ideal"})
+assert type(pw_ideal) is PiecewiseLinearHardening
+raises(lambda: PiecewiseLinearExponentialHardening(TABLE, b=0.0), "must be > 0")
+raises(lambda: PiecewiseLinearExponentialHardening(TABLE, b=B_X, Q=-1.0), "softening")
+raises(lambda: PiecewiseLinearExponentialHardening([[0.0, 50.0], [0.1, 50.0]], b=B_X),
+       "Give Q")
+raises(lambda: build_hardening({"law": "piecewise_linear", "table": TABLE,
+                                "tail": "exponential"}), "requires 'b'")
+raises(lambda: build_hardening({"law": "piecewise_linear", "table": TABLE,
+                                "tail": "voce"}), "expected 'ideal'")
+raises(lambda: build_hardening({"law": "piecewise_linear", "table": TABLE, "b": B_X}),
+       "unexpected key")
+print(f"[9] exponential tail: table unchanged below alpha_t, slope {d_left:g} -> "
+      f"{d_right:.6g} across it (default Q = {pwx.Q:g}); {n_pl_x} plastic returns "
+      f"({n_cross_x} crossing alpha_t), max|residual of [*]| = {worst_x:.2e}; "
+      "Q = 0 is the ideal tail; 6 config/validation errors raise")
+print("[9] PASSED")
 
 print("\ntest_materialmodels_hardening: all checks passed")

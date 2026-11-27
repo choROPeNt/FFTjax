@@ -122,6 +122,31 @@ def free_surface_control(i: int, j: int) -> tuple[tuple[int, int, int], ...]:
     return tuple(tuple(row) for row in control)
 
 
+def driven_component(eps_bar: Any) -> tuple[int, int]:
+    """
+    The one component a single-component load drives, read off a full (3, 3)
+    target strain -- for drivers that take ``eps_bar`` as a tensor rather
+    than a named case (solve_fracture.py), so ``free_surfaces`` can derive
+    their mask through free_surface_control exactly as resolve_cases does.
+
+    Raises ValueError unless exactly one upper-triangle entry is nonzero:
+    with two driven components there is no single "every other surface" to
+    free, and with none there is no load.
+    """
+    eps = np.asarray(eps_bar, dtype=float)
+    if eps.shape != (3, 3):
+        raise ValueError(f"eps_bar must be (3, 3), got shape {eps.shape}")
+    driven = [(i, j) for i in range(3) for j in range(i, 3)
+              if eps[i, j] != 0.0 or eps[j, i] != 0.0]
+    if len(driven) != 1:
+        raise ValueError(
+            "free_surfaces needs eps_bar to drive exactly one component, got "
+            f"{len(driven)} nonzero ({', '.join(voigt_label(i, j) for i, j in driven) or 'none'}) "
+            "-- give an explicit `control` mask instead."
+        )
+    return driven[0]
+
+
 def cycle_gammas(gamma_max: float, n_load: int, n_unload: int, n_reload: int) -> np.ndarray:
     """
     The load / unload / reload path 0 -> gamma_max -> -gamma_max -> gamma_max

@@ -22,8 +22,9 @@ split: the models own the yield surface, this module owns sigma_y(alpha).
 below) make the residual R(dlam) = A - B*dlam - sigma_y(alpha_prev + dlam)
 strictly decreasing, so a law that cannot invert [*] in closed form can
 always fall back on the safeguarded Newton in IsotropicHardening.solve_return
--- which is exactly what a future smooth law (Voce, power-law) would inherit.
-The two laws shipped here both override it with their exact closed forms.
+-- which is what the smooth laws here (Voce, and the tabulated law with an
+exponential tail) inherit. Linear and tabulated-with-ideal-tail override it
+with their exact closed forms.
 
 Autodiff
 --------
@@ -50,12 +51,23 @@ import numpy as np
 
 _EPS_TINY = 1e-12
 
-# Safeguarded-Newton iterations for the GENERIC solve_return fallback (no
-# shipped law uses it -- both invert [*] exactly). Same fixed-count rationale
-# as plasticity_drucker_prager._NEWTON_ITERS: a batched while_loop runs until
+# Safeguarded-Newton iterations for the GENERIC solve_return fallback, used
+# by any law that does not invert [*] in closed form -- VoceHardening is the
+# first. Same fixed-count rationale as
+# plasticity_drucker_prager._NEWTON_ITERS_TIP: a batched while_loop runs until
 # every voxel in the grid has converged, so vmap pays the worst voxel anyway
 # and a fixed count is cheaper and predictable.
-_NEWTON_ITERS = 8
+#
+# 32, not the 8 this held while nothing reached it: the bracket below is now
+# found by doubling rather than by the closed form max(R(0), 0)/B, which
+# degenerates at B = 0 (see solve_return). A doubled bracket can need one
+# bisection per halving, and 8 left DruckerPrager's non-dilatant apex return
+# off the yield surface by O(0.5 MPa).
+_NEWTON_ITERS = 32
+
+# Geometric doublings allowed when bracketing that solve from above -- same
+# device, and same count, as plasticity_drucker_prager._BRACKET_DOUBLINGS.
+_BRACKET_DOUBLINGS = 8
 
 
 class IsotropicHardening:
@@ -95,11 +107,14 @@ class IsotropicHardening:
         intervals on which sigma_y is exactly affine, or ``None`` if the law
         is not piecewise affine.
 
-        Only DruckerPrager's tip-rounded branch needs this: it runs its own
-        Newton in q and needs the per-segment affine coefficients to set it
-        up (see _stress_hyperbolic). A law returning None simply cannot be
-        combined with ``a_tip > 0`` until that branch grows a general nested
-        solve -- rejected at construction, not silently.
+        Nothing requires this any more. DruckerPrager's tip-rounded branch
+        used to: it solved for q per affine segment and pre-selected the one
+        holding the root, so a law returning None was rejected at
+        construction. That branch now solves for the plastic multiplier
+        instead, where only sigma_y/dsigma_y are ever evaluated (see
+        plasticity_drucker_prager._solve_dlam_hyperbolic), so a non-affine law
+        is no longer a special case. Kept because it still describes a real
+        property of a law, and a future consumer may want it.
         """
         return None
 
@@ -108,25 +123,53 @@ class IsotropicHardening:
         Solve [*] for dlam >= 0 -- generic safeguarded Newton, for any law
         that does not override it.
 
-        The bracket is free: R is strictly decreasing, R(0) = A -
-        sigma_y(alpha_prev), and since sigma_y is non-decreasing,
-        R(dlam) <= R(0) - B*dlam, so dlam_hi = max(R(0), 0)/B always has
-        R(dlam_hi) <= 0. An elastic state gives dlam_hi = 0 and every
-        iteration below leaves dlam at exactly 0, which is the required
-        elastic identity -- no separate branch.
-        """
-        B_safe = jnp.maximum(B, _EPS_TINY)
+        R is strictly decreasing, and R(0) = A - sigma_y(alpha_prev) <= 0 is
+        exactly the elastic condition, which the max(., 0) on the seed turns
+        into dlam = 0 through every iteration below -- the required elastic
+        identity, with no separate branch.
 
+        The upper bracket is found by DOUBLING a linearized seed rather than
+        taken as max(R(0), 0)/B. The closed form is the honest bound while
+        B > 0, but DruckerPrager's apex return calls this with
+        B = 9*K*a_f*a_g, which is exactly 0 for a non-dilatant material --
+        and then max(R(0), 0)/B_safe is R(0)*1e12, a bracket 12 orders of
+        magnitude too wide for a fixed iteration count to close. It returned
+        an apex stress off the yield surface by O(0.5 MPa), silently. That was
+        unreachable while every law overrode this method with a closed form;
+        the first law to use this generic path (VoceHardening) hit it
+        immediately, caught by test_materialmodels_drucker_prager's check 14.
+
+        With B = 0 the residual is A - sigma_y(alpha_prev + dlam), so a root
+        exists only if sigma_y can still rise to A, i.e. A <= sigma_y_max.
+        Where it cannot, the doubling below exhausts and dlam comes back at
+        the bracket's end -- which is the same combination (no dilatancy, a
+        capped sigma_y, a tensile trial pressure) that DruckerPrager._unreachable
+        already detects and NaNs out, so such a state never reaches a caller
+        as a plausible-looking number.
+        """
         def residual(dlam):
             return A - B * dlam - self.sigma_y(alpha_prev + dlam)
 
         r0 = A - self.sigma_y(alpha_prev)
-        hi = jnp.maximum(r0, 0.0) / B_safe
+        # Linearized first step: the tangent at dlam = 0 of the whole
+        # residual, so the seed is right to first order for any law and needs
+        # no doubling at all in the common well-conditioned case.
+        seed_slope = jnp.maximum(B + self.dsigma_y(alpha_prev), _EPS_TINY)
+        hi = jnp.maximum(jnp.maximum(r0, 0.0) / seed_slope, _EPS_TINY)
+        for _ in range(_BRACKET_DOUBLINGS):
+            hi = jnp.where(residual(hi) > 0.0, 2.0 * hi, hi)
+        # An elastic state has r0 <= 0, hence hi at its _EPS_TINY floor and
+        # residual(hi) < 0, so no doubling fires and the loop below stays at
+        # ~0 -- preserving the elastic identity the old bracket got from
+        # hi = 0 exactly.
+        hi = jnp.where(r0 > 0.0, hi, jnp.zeros_like(hi))
         lo = jnp.zeros_like(hi)
         dlam = 0.5 * (lo + hi)
+        best = _BestIterate(dlam)
 
         for _ in range(_NEWTON_ITERS):
             r = residual(dlam)
+            best.offer(dlam, r)
             dr = -B - self.dsigma_y(alpha_prev + dlam)
             # R decreasing: r > 0 means the root lies ABOVE dlam.
             lo = jnp.where(r > 0.0, dlam, lo)
@@ -139,8 +182,41 @@ class IsotropicHardening:
             # bisecting away from the converged root.
             take = (dlam_newton >= lo) & (dlam_newton <= hi)
             dlam = jnp.where(take, dlam_newton, 0.5 * (lo + hi))
+        best.offer(dlam, residual(dlam))
 
-        return jnp.maximum(dlam, 0.0)
+        return jnp.maximum(best.x, 0.0)
+
+
+class _BestIterate:
+    """
+    The iterate with the smallest |residual| seen so far, for the fixed-count
+    safeguarded Newton loops here and in plasticity_drucker_prager.
+
+    Why they return this and not their last iterate. Once Newton has
+    converged its step is round-off, and round-off can put the next iterate a
+    few ulps outside the bracket. Under jit it can also leave the bracket
+    un-updated: XLA may compute the residual in two fusions with different
+    rounding (FMA contraction), so the two sign tests that update lo and hi
+    disagree. Either way the Newton step is rejected and the loop bisects a
+    bracket that can still be wide, AWAY from the root it had already found.
+    With a fixed iteration count it may not get back. Measured: the
+    tip-rounded tabulated return left f = 0.04 at 1 of 2160 jitted states
+    (test_materialmodels_drucker_prager check 12; eager mode never does it).
+
+    Keeping the best iterate needs no tolerance and changes nothing else: the
+    iteration runs exactly as before, and when it never bisects away the
+    result moves by round-off at most. Every residual it is used with has a
+    single root in its bracket, so a small |residual| means close to the root.
+    """
+
+    def __init__(self, x):
+        self.x = x
+        self.r = jnp.full_like(x, jnp.inf)
+
+    def offer(self, x, r):
+        better = jnp.abs(r) < self.r
+        self.x = jnp.where(better, x, self.x)
+        self.r = jnp.where(better, jnp.abs(r), self.r)
 
 
 class LinearHardening(IsotropicHardening):
@@ -208,7 +284,9 @@ class PiecewiseLinearHardening(IsotropicHardening):
     """
     Tabulated sigma_y(alpha), linearly interpolated between the rows and
     PERFECTLY PLASTIC beyond the last one (Abaqus' convention for a
-    ``*PLASTIC`` table).
+    ``*PLASTIC`` table; ``tail: ideal`` in a config). For a curve that turns
+    exponential there instead, see PiecewiseLinearExponentialHardening
+    (``tail: exponential``).
 
     Parameters
     ----------
@@ -346,9 +424,211 @@ class PiecewiseLinearHardening(IsotropicHardening):
         return f"piecewise_linear[{self.n_segments} pts: {pts}, then plateau]"
 
 
+class VoceHardening(IsotropicHardening):
+    """
+    Saturating exponential (Voce) law
+
+        sigma_y(alpha) = sigma_y0 + Q*(1 - exp(-b*alpha))
+
+    which rises from sigma_y0 with initial slope Q*b and saturates at
+    sigma_y0 + Q -- the usual fit for a metal or polymer whose hardening
+    clearly rolls off, where a piecewise-linear table would need many rows to
+    round the knee.
+
+    The first law here that is NOT piecewise affine, so ``affine_segments``
+    stays None (inherited). That used to rule it out of DruckerPrager's
+    tip-rounded branch entirely; that branch now solves for the plastic
+    multiplier directly and needs only sigma_y/dsigma_y, so a smooth law is
+    no longer a special case -- see
+    materialmodels.inelastic.plasticity_drucker_prager._solve_dlam_hyperbolic.
+
+    Parameters
+    ----------
+    sigma_y0 : float  initial (virgin) yield stress, > 0
+    Q        : float  saturation increment, >= 0 (0 = perfectly plastic)
+    b        : float  saturation rate, > 0 -- initial slope is Q*b
+    """
+
+    def __init__(self, sigma_y0: float, Q: float, b: float):
+        self.sigma_y0 = float(sigma_y0)
+        self.Q = float(Q)
+        self.b = float(b)
+        # Bounded by construction: the exponential saturates. DruckerPrager
+        # uses this to decide whether a tensile trial state is reachable at
+        # all (see its _unreachable).
+        self.sigma_y_max = self.sigma_y0 + self.Q
+        if self.sigma_y0 <= 0.0:
+            raise ValueError(
+                f"VoceHardening: sigma_y0={self.sigma_y0} must be > 0 -- a "
+                "material that yields at zero stress has no elastic range"
+            )
+        if self.Q < 0.0:
+            raise ValueError(
+                f"VoceHardening: Q={self.Q} < 0 -- softening is not supported, "
+                "for the reason LinearHardening's H < 0 check gives"
+            )
+        if self.b <= 0.0:
+            raise ValueError(
+                f"VoceHardening: b={self.b} must be > 0 -- b = 0 leaves "
+                "sigma_y identically sigma_y0, which is LinearHardening(H=0); "
+                "b < 0 diverges instead of saturating"
+            )
+
+    def sigma_y(self, alpha):
+        return self.sigma_y0 + self.Q * (1.0 - jnp.exp(-self.b * alpha))
+
+    def dsigma_y(self, alpha):
+        return self.Q * self.b * jnp.exp(-self.b * alpha)
+
+    def __repr__(self) -> str:
+        return (f"voce(sigma_y0={self.sigma_y0:.4g}, Q={self.Q:.4g}, "
+                f"b={self.b:.4g}, sigma_y_max={self.sigma_y_max:.4g})")
+
+
+# Ceiling on the exponent of the exponential tail. exp(30) ~ 1e13, so the
+# capped yield stress is ~1e13*Q MPa: far beyond any stress a return mapping
+# can meet, yet finite, and so is its square (in float32 too, as long as
+# Q < ~1e6). Finite matters: the bracket doublings in solve_return and
+# _solve_dlam_hyperbolic evaluate sigma_y well past the root, and an inf there
+# turns the discarded branch's tangent into NaN (0 * inf) under jacfwd.
+_EXP_CAP = 30.0
+
+
+class PiecewiseLinearExponentialHardening(PiecewiseLinearHardening):
+    """
+    A tabulated curve that turns EXPONENTIAL past its last row, where
+    PiecewiseLinearHardening goes perfectly plastic (ideal):
+
+        sigma_y(alpha) = table(alpha)                                 alpha <= alpha_t
+                         sigma_t + Q*(exp(b*(alpha - alpha_t)) - 1)   alpha >  alpha_t
+
+    with (alpha_t, sigma_t) the last row. Config: ``law: piecewise_linear``
+    with ``tail: exponential`` (see build_hardening).
+
+    The two tails of a tabulated curve, side by side: ``tail: ideal`` caps the
+    yield stress at sigma_t, ``tail: exponential`` caps the plastic strain
+    instead -- past alpha_t every further increment costs exponentially more
+    stress, so a voxel effectively stops flowing a few 1/b beyond alpha_t.
+    That is the property wanted in a crack band, where linear hardening lets
+    the apex of a cracked voxel's cone run to several hundred per cent
+    (sim/sim/14_root_cause).
+
+    Parameters
+    ----------
+    table : as PiecewiseLinearHardening
+    b     : float  steepness, > 0 -- the tail's slope grows by a factor e
+            every 1/b of plastic strain
+    Q     : float | None  scale of the tail, >= 0; its slope at alpha_t is
+            Q*b. None (default) takes Q = H_last/b, H_last being the table's
+            last slope, so the slope is CONTINUOUS at alpha_t: the curve keeps
+            its last slope and steepens from there. Any other Q puts a kink at
+            alpha_t, like a breakpoint of the table. Q = 0 is the ideal tail,
+            reached through the generic solves.
+
+    Not piecewise affine, so affine_segments() is None: DruckerPrager's
+    rounded tip takes its general path (_solve_dlam_hyperbolic, ~3x slower
+    per voxel), and solve_return is the generic safeguarded Newton -- the
+    table's closed form does not cover the tail.
+    """
+
+    def __init__(self, table, b: float, Q: float | None = None):
+        super().__init__(table)
+        self.b = float(b)
+        if not self.b > 0.0:
+            raise ValueError(
+                f"PiecewiseLinearExponentialHardening: b={self.b} must be > 0 -- "
+                "b <= 0 does not stiffen the tail")
+        H_last = float(self._H[-2])
+        if Q is None:
+            if H_last <= 0.0:
+                raise ValueError(
+                    "PiecewiseLinearExponentialHardening: Q not given, and the "
+                    "table's last segment is flat, so the slope-continuous "
+                    "default Q = H_last/b would be 0 -- the ideal tail. Give Q")
+            Q = H_last / self.b
+        self.Q = float(Q)
+        if self.Q < 0.0:
+            raise ValueError(
+                f"PiecewiseLinearExponentialHardening: Q={self.Q} < 0 -- softening "
+                "is not supported, for the reason LinearHardening's H < 0 check gives")
+        self.alpha_t = float(self.table[-1, 0])
+        self.sigma_t = float(self.table[-1, 1])
+        self.sigma_y_max = float("inf") if self.Q > 0.0 else self.sigma_t
+
+    def sigma_y(self, alpha):
+        # The table's own sigma_y is flat (= sigma_t) past alpha_t, so adding
+        # the tail there gives sigma_t + Q*(exp(..) - 1); below alpha_t the
+        # clip makes the tail exactly 0.
+        x = jnp.clip(self.b * (alpha - self.alpha_t), 0.0, _EXP_CAP)
+        return super().sigma_y(alpha) + self.Q * jnp.expm1(x)
+
+    def dsigma_y(self, alpha):
+        # Right-hand slope at alpha_t, as the table's segment lookup gives at
+        # its own breakpoints: Q*b there, not the plateau's 0.
+        z = self.b * (alpha - self.alpha_t)
+        x = jnp.clip(z, 0.0, _EXP_CAP)
+        tail = jnp.where((z >= 0.0) & (z < _EXP_CAP), self.Q * self.b * jnp.exp(x), 0.0)
+        return super().dsigma_y(alpha) + tail
+
+    def solve_return(self, A, B, alpha_prev):
+        return IsotropicHardening.solve_return(self, A, B, alpha_prev)
+
+    def affine_segments(self):
+        return None
+
+    def __repr__(self) -> str:
+        pts = ", ".join(f"({a:.4g}, {s:.4g})" for a, s in self.table)
+        return (f"piecewise_linear[{self.n_segments} pts: {pts}, then exponential "
+                f"Q={self.Q:.4g}, b={self.b:.4g}]")
+
+
+class OffsetHardening(IsotropicHardening):
+    """
+    ``base`` with its whole yield curve shifted up by ``offset``:
+    sigma_y(alpha) = base.sigma_y(alpha) + offset.
+
+    Not a law a config selects. It is how PhaseFieldDruckerPrager stops plastic
+    flow in cracked voxels (``plastic_freeze_onset``): the offset is a traced,
+    per-voxel function of the damage, so a voxel close to the cap sees a
+    yield surface it cannot reach and responds elastically, while the return
+    stays a true projection (re-returning from the converged state changes
+    nothing). An offset preserves every slope, so the static conditioning
+    DruckerPrager derives from the base law at construction stays valid.
+
+    sigma_y_max is reported as inf: with a damage-dependent offset there is no
+    fixed ceiling. That switches off DruckerPrager's unreachable-state guard,
+    which only ever applies to a non-dilatant material (a_g = 0).
+    """
+
+    sigma_y_max = float("inf")
+
+    def __init__(self, base: IsotropicHardening, offset):
+        self.base = base
+        self.offset = offset
+        self.sigma_y0 = base.sigma_y0
+
+    def sigma_y(self, alpha):
+        return self.base.sigma_y(alpha) + self.offset
+
+    def dsigma_y(self, alpha):
+        return self.base.dsigma_y(alpha)
+
+    def solve_return(self, A, B, alpha_prev):
+        # A - B*dlam = sigma_y(...) + offset  <=>  (A - offset) - B*dlam = sigma_y(...)
+        return self.base.solve_return(A - self.offset, B, alpha_prev)
+
+    def affine_segments(self):
+        segs = self.base.affine_segments()
+        if segs is None:
+            return None
+        alpha_lo, sigma_lo, H, alpha_hi = segs
+        return alpha_lo, sigma_lo + self.offset, H, alpha_hi
+
+
 _HARDENING = {
     "linear":           LinearHardening,
     "piecewise_linear": PiecewiseLinearHardening,
+    "voce":             VoceHardening,
 }
 
 
@@ -369,7 +649,22 @@ def build_hardening(cfg: dict) -> IsotropicHardening:
           table:                # (plastic_strain, yield_stress)
             - [0.000, 56.1]
             - [0.020, 70.0]
-            - [0.100, 78.0]     # perfectly plastic beyond here
+            - [0.100, 78.0]     # perfectly plastic beyond here (tail: ideal)
+
+        hardening:
+          law: piecewise_linear
+          table:
+            - [0.000, 17.0]
+            - [0.075, 35.75]    # linear up to here...
+          tail: exponential     # ...then 35.75 + Q*(exp(b*(alpha - 0.075)) - 1)
+          b: 30.0
+          Q: 8.333              # optional; default H_last/b keeps the slope continuous
+
+        hardening:
+          law: voce             # smooth, saturating at sigma_y0 + Q
+          sigma_y0: 56.1
+          Q: 40.0
+          b: 60.0
 
     ``law`` is REQUIRED and has no default, for the reason
     factory.build_material gives about fiber_dir: quietly assuming one here
@@ -392,18 +687,37 @@ def build_hardening(cfg: dict) -> IsotropicHardening:
         table = cfg.pop("table", None)
         if table is None:
             raise ValueError("hardening: law 'piecewise_linear' requires a 'table' key")
+        # What the curve does past its last row. 'ideal' (perfectly plastic) is
+        # the Abaqus convention and the default; 'exponential' stiffens it.
+        tail = cfg.pop("tail", "ideal")
+        if tail == "exponential":
+            if "b" not in cfg:
+                raise ValueError(
+                    "hardening: piecewise_linear with tail 'exponential' requires 'b' "
+                    "(and optionally 'Q', default: slope-continuous)")
+            b = float(cfg.pop("b"))
+            Q = cfg.pop("Q", None)
+            law_obj = PiecewiseLinearExponentialHardening(
+                table, b=b, Q=None if Q is None else float(Q))
+        elif tail == "ideal":
+            law_obj = PiecewiseLinearHardening(table)
+        else:
+            raise ValueError(
+                f"hardening: piecewise_linear tail {tail!r}, expected 'ideal' or "
+                "'exponential'")
         if cfg:
             raise ValueError(
-                f"hardening: unexpected key(s) {list(cfg)} for law 'piecewise_linear'"
+                f"hardening: unexpected key(s) {list(cfg)} for law 'piecewise_linear' "
+                f"with tail {tail!r}"
             )
-        return PiecewiseLinearHardening(table)
+        return law_obj
 
     # YAML's float regex misses exponents without an explicit sign ("1.0e3"
     # loads as a str), so cast here -- same reason factory.build_material does.
     try:
-        return LinearHardening(**{k: float(v) for k, v in cfg.items()})
+        return _HARDENING[law](**{k: float(v) for k, v in cfg.items()})
     except TypeError as exc:
-        raise ValueError(f"hardening: law 'linear' -- {exc}") from None
+        raise ValueError(f"hardening: law {law!r} -- {exc}") from None
 
 
 def resolve_hardening(hardening, sigma_y0, H, who: str = "") -> IsotropicHardening:

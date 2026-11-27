@@ -120,6 +120,7 @@ class IncrementalWriter:
         fields: dict[str, np.ndarray | jax.Array],
         time: float | None = None,
         point_fields: set[str] | frozenset[str] | None = None,
+        attrs: dict[str, float] | None = None,
     ) -> None:
         """
         Write one increment to HDF5.
@@ -143,7 +144,14 @@ class IncrementalWriter:
             Vector" filter can use it directly. Each such field is interpolated
             from its n voxel values to the n+1 corner-node values per axis via
             periodic box averaging (see module docstring) before being written.
+        attrs : dict[str, float] | None
+            Extra per-increment metadata, stored as attributes of the
+            increment's HDF5 group next to ``time`` (the XDMF does not see
+            them) -- e.g. the step size a checkpoint needs for a restart, see
+            problems.fracture.solve_fracture_incremental's write_checkpoint.
         """
+        if attrs is not None and "time" in attrs:
+            raise ValueError("attrs may not set 'time' -- pass it as time=")
         grp = self._h5.require_group(f"increment_{increment:06d}")
         written: list[tuple[str, str]] = []
 
@@ -163,8 +171,13 @@ class IncrementalWriter:
             grp.create_dataset(name, data=arr, compression="gzip", compression_opts=4)
             written.append((name, "point" if is_point else "cell"))
 
-        self._h5.flush()
         time_val = float(increment) if time is None else float(time)
+        # Also in the HDF5 itself (the XDMF is only a view of it), so a
+        # restart can read back the load fraction an increment was written at.
+        grp.attrs["time"] = time_val
+        for key, value in (attrs or {}).items():
+            grp.attrs[key] = value
+        self._h5.flush()
         self._increments.append((increment, written, time_val))
         self._write_xdmf()  # rewrite XDMF so it is always valid on disk
 

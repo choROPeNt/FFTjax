@@ -187,6 +187,8 @@ def solve_automatic(
     max_cutbacks: int   = 5,
     max_steps:    int   = 1000,
     on_increment: Callable[[IncrementResult], None] | None = None,
+    t_start:      float = 0.0,
+    first_step:   int   = 1,
 ) -> list[IncrementResult]:
     """
     Adaptive load-fraction step: grows by ``factor_inc`` after a converged
@@ -199,7 +201,19 @@ def solve_automatic(
     increment -- never on a failed cutback attempt, since those don't
     represent real progress (e.g. shouldn't be written to disk as if they
     were).
+
+    ``t_start`` (default 0) is the load fraction the path starts from -- a
+    restart from a written increment; the caller's solve_fn must already
+    hold that increment's state. ``first_step`` (default 1) is the number
+    the first increment taken here gets, as in solve_path: a restart from
+    increment k passes k + 1, so its increments keep the original run's
+    numbers. ``max_steps`` counts the increments taken in this call. To
+    resume the original step sequence exactly, pass ``dt_init =
+    min(dt_k * factor_inc, dt_max)`` with dt_k increment k's accepted step --
+    the step the original run tried next.
     """
+    if not (0.0 <= t_start < 1.0):
+        raise ValueError(f"t_start must be in [0, 1), got {t_start}")
     if not (0.0 < dt_min <= dt_init <= dt_max):
         raise ValueError(
             f"require 0 < dt_min <= dt_init <= dt_max, got {dt_min}, {dt_init}, {dt_max}"
@@ -207,10 +221,10 @@ def solve_automatic(
 
     mon = get_monitor()
     results = []
-    t, dt, step = 0.0, dt_init, 0
+    t, dt, step = float(t_start), dt_init, first_step - 1
 
     while t < 1.0:
-        if step >= max_steps:
+        if step - first_step + 1 >= max_steps:
             raise RuntimeError(f"Exceeded max_steps={max_steps} before reaching t=1 (t={t:.4f})")
         step += 1
         dt = min(dt, dt_max, 1.0 - t)   # don't overshoot t=1

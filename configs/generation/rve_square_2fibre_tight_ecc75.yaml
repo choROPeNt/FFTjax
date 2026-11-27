@@ -1,0 +1,59 @@
+# Square 2-fibre cell at 75th-PERCENTILE ECCENTRICITY — sized off the large
+# RVE's nearest-neighbour statistics rather than guessed.
+#
+# ---------------------------------------------------------------------------
+# HOW THE TARGET WAS SET, AND WHY THE EARLIER ONE WAS WRONG
+# ---------------------------------------------------------------------------
+# The first attempt at a concentrator (rve_square_2fibre_tight.yaml) was aimed
+# at the 1st percentile of the random UD RVE's ALL-PAIRS gap distribution. That
+# reference was wrong: in a 29-fibre cell most pairs are not neighbours at all,
+# so the all-pairs distribution is dominated by fibres on opposite sides of the
+# cell and its median sits at 13 l0, which means nothing mechanically.
+#
+# Redone over 1468 fibre NEAREST-NEIGHBOUR gaps in the same RVE:
+#
+#     percentile      1     5    10    25    50    75    90    95
+#     NN gap / l0  -0.04  0.62  0.89  1.39  2.25  3.17  4.20  5.00
+#     (negative = touching; the minimum is -1.41 l0)
+#
+# Note the direction: a HIGHER gap percentile means fibres FURTHER apart, i.e.
+# LESS eccentric. So 75th-percentile ECCENTRICITY is the 25th-percentile GAP,
+# = 1.39 l0. Where the existing cells actually sat, measured on their written
+# phase fields rather than from the design formula:
+#
+#     rve_square_2fibre_offset  gap 4.32 l0 -> 91st pct gap =  9th pct ecc
+#     rve_square_2fibre_tight   gap 1.62 l0 -> 30th pct gap = 70th pct ecc
+#
+# So the _offset cell was one of the LOOSEST configurations the real RVE
+# contains, which is why its eccentricity is barely visible. The _tight cell
+# was already near the target.
+#
+# The offset below was found by a numerical search over the actual VOXELIZED
+# geometry -- generating each candidate and measuring the realized gap, not
+# evaluating the continuum formula, because rasterization moves the fibre
+# centroid and radius by a few tenths of a voxel. Components stay in a 5:3
+# ratio so the diagonal mirror stays broken.
+
+#
+# The phi 0.148 cell moved onto the SAME eccentricity percentile as its phi
+# 0.065 sibling above, so the two now differ in fibre volume fraction ALONE.
+# That is what makes the phi comparison clean; until now the two cells differed
+# in both phi and spacing at once.
+#
+# The change from rve_square_2fibre_tight.yaml is small -- offset (5,3) ->
+# (5.75,3.45), gap 1.62 l0 -> 1.42 l0 -- because that cell was already at the
+# 70th eccentricity percentile. Realized ratio widest/closest 2.70.
+
+geometry:
+  phi:       0.15
+  r_fib:     0.0070         # mm -- measured equivalent radius of the large RVE
+  vox:       0.001416
+  N_min:     32
+  nz:        32
+  offset_vox: [5.75, 3.45]   # 75th-pct eccentricity, searched on the
+                            # voxelized geometry; = 18.0% / 10.8% of the side
+  fibre_dir: [0.0, 0.0, 1.0]
+  Vf_yarn:   1.0
+
+output:  sim/sim/11_mini_square
+jobname: "rve_square_2fibre_tight_ecc75"

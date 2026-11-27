@@ -45,7 +45,8 @@ def _remove_isolated_voxels(phase_2d):
     return cleaned
 
 
-def make_square_composite_rve(phi, r_fiber, dx, N_min=32, nz=1, clean_isolated=True):
+def make_square_composite_rve(phi, r_fiber, dx, N_min=32, nz=1, clean_isolated=True,
+                              offset_vox=(0.0, 0.0)):
     """
     Build the 2-fibre square-cell RVE for given volume fraction and resolution.
 
@@ -70,6 +71,28 @@ def make_square_composite_rve(phi, r_fiber, dx, N_min=32, nz=1, clean_isolated=T
     clean_isolated : bool  reassign single-voxel phase islands to their
                   majority neighbour phase (see _remove_isolated_voxels).
                   Default True; set False for the raw voxelisation.
+    offset_vox  : (float, float)  shift of the CENTRE fibre off the cell
+                  centre, in VOXELS of the realized in-plane grid (not in
+                  length units, and not in the `dx` that was asked for --
+                  N is rounded up, so the two differ). Default (0, 0) leaves
+                  the cell exactly as before.
+
+                  This exists to break the cell's symmetry. Unperturbed, the
+                  two fibres sit on a body-centred square lattice, so the cell
+                  maps onto itself under the translation (L/2, L/2) and under
+                  reflection in either axis. A damage field solved on it
+                  inherits all of that: the candidate crack planes come in
+                  exact images of one another, damage grows on each at
+                  identical rates, and nothing localizes -- measured at
+                  1.000000 peak-damage ratio between planes, with the field
+                  symmetric to 1e-13. A cell used to study LOCALIZATION needs
+                  a few voxels of offset here; one used as a correctness
+                  fixture wants the symmetry left intact, since reproducing it
+                  to round-off is a strong check on the solver.
+
+                  Sub-voxel values are meaningful: the circle is rasterized
+                  from a continuous centre, so 0.5 shifts which voxels round
+                  into the fibre.
 
     Returns
     -------
@@ -97,7 +120,11 @@ def make_square_composite_rve(phi, r_fiber, dx, N_min=32, nz=1, clean_isolated=T
         dy = Y - cy;  dy -= L_side * np.round(dy / L_side)
         return dx**2 + dy**2 < r_fiber**2
 
-    phase_2d = (_circle(0.5*L_side, 0.5*L_side) | _circle(0.0, 0.0)).astype(int)
+    # Only the centre fibre moves. Offsetting the corner one instead would be
+    # the same cell viewed from a shifted origin -- it is the RELATIVE position
+    # of the two that carries the symmetry.
+    ox, oy = (v * (L_side / N) for v in offset_vox)
+    phase_2d = (_circle(0.5*L_side + ox, 0.5*L_side + oy) | _circle(0.0, 0.0)).astype(int)
     if clean_isolated:
         phase_2d = _remove_isolated_voxels(phase_2d)
     phase_np = np.repeat(phase_2d[:, :, np.newaxis], nz, axis=2)  # (N, N, nz)

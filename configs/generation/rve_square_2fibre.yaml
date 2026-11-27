@@ -1,0 +1,64 @@
+# Square-packed 2-fibre unit cell — the CONTROLLED REPRODUCER for the
+# transverse phase-field fracture problem.
+#
+# ---------------------------------------------------------------------------
+# WHY THIS GEOMETRY EXISTS
+# ---------------------------------------------------------------------------
+# The 152^3 random UD RVE (sim/sim/01_uni/ReVE_num_fibers=20_uni.vti) stops
+# converging once the crack localizes: the staggered loop hits its 40-sweep cap
+# and stays there through three cutbacks, at ~16500 s per load step. That is
+# far too slow to iterate on. This cell is built to reproduce the same physics
+# at 1/55 the cost, with the microstructure reduced to the simplest thing that
+# still has a transverse crack path: a perfectly regular square array.
+#
+# generation.rve.make_square_composite_rve places ONE fibre at the cell centre
+# and ONE at the corner, which the periodic wrap renders as four quarters --
+# two fibres per cell, evenly distributed. Fibres are perfectly straight and
+# perfectly aligned along Z (the extrusion axis), so the geometry is
+# z-invariant: any z-modulation in the damage field is a solver artifact, not
+# microstructure. That makes it a free correctness check the random RVE cannot
+# give.
+#
+# ---------------------------------------------------------------------------
+# EVERY NUMBER BELOW IS MATCHED TO THE RANDOM RVE, so the only variable that
+# changes between the two runs is the packing.
+# ---------------------------------------------------------------------------
+#   quantity          random UD RVE           this cell
+#   voxel size        1.729443e-3 mm          1.725884e-3 mm   (-0.21%)
+#   fibre radius      4.05 vox (measured)     4.056 vox
+#   phi               0.0646                  0.0646
+#   grid              152^3 = 3.51 M          40^3 = 64 k      (55x smaller)
+#
+# The fibre radius is MEASURED off the random RVE, not taken from its filename:
+# an x-perpendicular slice through it cuts 26-32 fibre cross-sections of 41-64
+# voxels each, i.e. ~29 fibres of equivalent radius 4.05 voxels (7.0 um), NOT
+# the 20 fibres the filename claims. Sizing this cell from "20 fibres at
+# phi = 0.065" would have given r = 4.87 voxels and a 20% fatter fibre.
+#
+# Resulting matrix ligaments, surface to surface, against l0 = 4 voxels:
+#   centre -> corner (the cell diagonal, and the narrow one): 20.2 vox = 5.0 l0
+#   corner -> corner (the cell edge)                        : 31.9 vox = 8.0 l0
+# So the crack path is the diagonal, and it is 5 regularization lengths wide --
+# enough for an AT2 band (~2*l0) to form inside it without touching both fibre
+# surfaces at once.
+
+geometry:
+  phi:       0.0646         # matches the random UD RVE's measured 0.0646
+  r_fib:     0.0070         # mm -- measured equivalent radius of that RVE's
+                            #       fibres (7.0 um; 14 um diameter, standard
+                            #       E-glass). NOT derived from the filename.
+  vox:       0.001729443    # mm -- the random RVE's own voxel size, L/152.
+                            #       A TARGET: N is rounded UP, so the realized
+                            #       in-plane voxel is 1.725884e-3 (-0.21%).
+  N_min:     32             # inert here -- the phi/r_fib pair already gives 40
+  nz:        40             # cube. The fibre axis is z and the geometry is
+                            # z-invariant, so the exact solution is too and nz
+                            # is physically irrelevant -- it buys the
+                            # z-invariance check described above. 40 gives the
+                            # damage band (~2*l0 = 8 vox) 5x its own width of
+                            # room along z to modulate in, if it is going to.
+  fibre_dir: [0.0, 0.0, 1.0]   # must match the extrusion axis
+  Vf_yarn:   1.0            # solid fibre, no sub-tow packing
+
+output:  sim/sim/11_mini_square
+jobname: "rve_square_2fibre"

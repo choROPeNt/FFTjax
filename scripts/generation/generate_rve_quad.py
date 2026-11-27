@@ -53,6 +53,9 @@ def main():
         dx      = float(gcfg["vox"]),
         N_min   = int(gcfg.get("N_min", 32)),
         nz      = int(gcfg.get("nz", 1)),
+        # Breaks the cell's body-centred symmetry -- see make_square_composite_rve.
+        # Omitted/zero keeps the exactly-symmetric cell every earlier config built.
+        offset_vox = tuple(float(v) for v in gcfg.get("offset_vox", (0.0, 0.0))),
     )
     Nv = int(np.prod(n))
 
@@ -68,6 +71,9 @@ def main():
     vf = fibre_mask.astype(float) * Vf_yarn
 
     print(f"phi_target = {gcfg['phi']:.3f}   phi_actual = {phi_act:.4f}")
+    off = tuple(float(v) for v in gcfg.get("offset_vox", (0.0, 0.0)))
+    if any(off):
+        print(f"Offset  : centre fibre shifted {off} voxels -- cell symmetry BROKEN")
     print(f"Grid    : {n}   Nv = {Nv:,}")
     print(f"Domain  : {tuple(f'{v:.4g}' for v in L)}")
 
