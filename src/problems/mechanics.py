@@ -68,7 +68,7 @@ from solvers.elliptic.vector.displacement_based import DisplacementBasedSolver
 from solvers.elliptic.vector.fourier_galerkin import FourierGalerkinSolver
 from solvers.elliptic.vector.lippmann_schwinger import LippmannSchwingerMixedBCSolver, LippmannSchwingerSolver
 from solvers.elliptic.vector.mixed_bc import (
-    _ZERO_CONTROL, _active_pairs, sv2sm as _sv2sm, sm2sv as _sm2sv,
+    _ZERO_CONTROL, _active_pairs, macro_block_preconditioner, sv2sm as _sv2sm, sm2sv as _sm2sv,
 )
 from solvers.krylov.cg import cg_solve
 from solvers.solution import ElasticitySolution
@@ -604,17 +604,15 @@ def solve_displacement_based_nonlinear(
         K0_inv  = jnp.moveaxis(jnp.linalg.inv(jnp.moveaxis(K0_hat, -1, 0)), 0, -1)
 
         # "extra" block preconditioner: self-coupling of the macroscopic-
-        # strain unknowns at the reference medium, sign-matched to A_op's
-        # extra_out above (same as solve_displacement_based's own P_extra) --
-        # keeping M positive definite against a negative definite A, which is
-        # the pairing that makes preconditioned CG on this system equivalent
-        # to CG on an SPD one.
+        # strain unknowns at the reference medium. A_op is negative
+        # semidefinite on both blocks (it is -E^H C E) and the displacement
+        # block of M is +K0^-1, so this block must be POSITIVE as well:
+        # preconditioned CG on (A, M) is CG on an SPD system only for a
+        # positive definite M. See macro_block_preconditioner -- until
+        # 2026-11-12 this block had A_op's own (negative) sign, which made M
+        # indefinite and cost CG a factor 2.5-3 in iterations.
         if pairs:
-            basis   = jnp.eye(len(pairs), dtype=eps_bar.dtype)
-            P_extra = jnp.stack([
-                -Nv * sm2sv(jnp.einsum("ijkl,kl->ij", C0_ref, sv2sm(basis[k])))
-                for k in range(len(pairs))
-            ], axis=1)
+            P_extra = macro_block_preconditioner(C0_ref, pairs, Nv, C0_ref.dtype)
 
         def M(x_flat):
             du, sv = unpack(x_flat)

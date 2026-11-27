@@ -32,7 +32,7 @@ from operators.fft_distributed import (
 from operators.green import nyquist_safe_xi
 from solvers.elliptic.vector.base import ElasticitySolver
 from solvers.elliptic.vector.mixed_bc import (
-    _ZERO_CONTROL, _active_pairs, sv2sm as _sv2sm, sm2sv as _sm2sv,
+    _ZERO_CONTROL, _active_pairs, macro_block_preconditioner, sv2sm as _sv2sm, sm2sv as _sm2sv,
 )
 from solvers.krylov.cg import cg_solve, cg_solve_pmap
 from solvers.solution import ElasticitySolution
@@ -173,14 +173,11 @@ def _solve_displacement_based_local(n, C_field, xi_flat, eps_bar, control, stres
         return ifft_(z_hat)
 
     # "extra" block: self-coupling of the macroscopic-strain unknowns,
-    # approximated with the same reference stiffness (-Nv * C0 : sv2sm(·)),
-    # matching the sign of A_op's extra_out.
+    # approximated with the same reference stiffness. POSITIVE definite, like
+    # the displacement block above, against the negative semidefinite A_op --
+    # see macro_block_preconditioner for why its sign is not A_op's.
     if pairs:
-        basis   = jnp.eye(len(pairs), dtype=eps_bar.dtype)
-        P_extra = jnp.stack([
-            -Nv * sm2sv(jnp.einsum("ijkl,kl->ij", C0_ref, sv2sm(basis[k])))
-            for k in range(len(pairs))
-        ], axis=1)
+        P_extra = macro_block_preconditioner(C0_ref, pairs, Nv, eps_bar.dtype)
 
     def M(x_flat):
         du, sv = unpack(x_flat)
@@ -273,11 +270,7 @@ def _solve_displacement_based_sharded(n, C_field, xi_flat, eps_bar, control, str
         K0_inv  = jnp.moveaxis(jnp.linalg.inv(jnp.moveaxis(K0_hat, -1, 0)), 0, -1)
 
         if pairs:
-            basis   = jnp.eye(len(pairs), dtype=eps_bar.dtype)
-            P_extra = jnp.stack([
-                -Nv * sm2sv(jnp.einsum("ijkl,kl->ij", C0_ref, sv2sm(basis[k])))
-                for k in range(len(pairs))
-            ], axis=1)
+            P_extra = macro_block_preconditioner(C0_ref, pairs, Nv, eps_bar.dtype)
 
         def M(x_flat):
             du, sv = unpack(x_flat)
